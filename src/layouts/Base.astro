@@ -1,0 +1,429 @@
+---
+import '../styles/global.css';
+import SettingsDialog from '../components/islands/SettingsDialog';
+import { APP_VERSION } from '../lib/app-version';
+
+interface Props {
+  title?: string;
+}
+
+const { title = 'TestBench' } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const path = Astro.url.pathname;
+
+function isHome(): boolean {
+  const stripped = path.replace(/\/$/, '');
+  return stripped === base.replace(/\/$/, '');
+}
+
+function pathHas(seg: string): boolean {
+  return path.includes(`/${seg}`);
+}
+
+const docsOpen = pathHas('requirements') || pathHas('templates');
+
+const navItem = (active: boolean) =>
+  ['tw-nav-item', active ? 'is-active font-medium' : ''].filter(Boolean).join(' ');
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" sizes="32x32" href={`${base}favicon.png`} />
+    <link rel="apple-touch-icon" href={`${base}apple-touch-icon.png`} />
+    <title>{title}</title>
+    <script is:inline>
+      (function () {
+        try {
+          var raw = localStorage.getItem('tw.app.config.v1');
+          if (raw) {
+            var cfg = JSON.parse(raw);
+            var g = (cfg && cfg.general) || {};
+            var root = document.documentElement;
+            var size = typeof g.sessionFontSize === 'number' ? Math.round(g.sessionFontSize) : 14;
+            if (size < 12) size = 12;
+            if (size > 22) size = 22;
+            var px = size + 'px';
+            root.style.setProperty('--tw-ui-font-size', px);
+            root.style.setProperty('--tw-session-font-size', px);
+            var appearance = g.appearance;
+            var theme =
+              appearance === 'dark' || appearance === 'light'
+                ? appearance
+                : window.matchMedia('(prefers-color-scheme: dark)').matches
+                  ? 'dark'
+                  : 'light';
+            root.dataset.theme = theme;
+            root.style.colorScheme = theme;
+            if (g.language === 'en') root.lang = 'en';
+          }
+          if (localStorage.getItem('tw.nav.collapsed') === '1') {
+            document.documentElement.dataset.navCollapsed = '1';
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="tw-body antialiased">
+    <div class="tw-shell min-h-screen">
+      <aside class="tw-nav-aside fixed inset-y-0 left-0 flex flex-col z-20" id="tw-nav-aside">
+        <div class="tw-nav-brand">
+          <div class="tw-nav-brand-row">
+            <a href={base} class="tw-nav-brand-link min-w-0 flex-1">
+              <span class="tw-nav-brand-mark" aria-hidden="true">
+                <img
+                  class="tw-nav-brand-mark-img"
+                  src={`${base}brand-mark.png`}
+                  alt=""
+                  width="44"
+                  height="44"
+                />
+              </span>
+              <span class="tw-nav-brand-text">
+                <span class="tw-nav-brand-title-row">
+                  <span class="tw-nav-brand-title" data-i18n="nav.brand">
+                    TestBench
+                  </span>
+                  <span class="tw-nav-brand-ver" title={`平台版本 v${APP_VERSION}`}>
+                    v{APP_VERSION}
+                  </span>
+                </span>
+                <span class="tw-nav-tagline" data-i18n="nav.tagline">
+                  让测试更高效一点
+                </span>
+              </span>
+            </a>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          id="tw-nav-toggle"
+          class="tw-nav-toggle"
+          title="收起导航"
+          aria-label="收起或展开左侧导航"
+          aria-expanded="true"
+          aria-controls="tw-nav-aside"
+        >
+          <svg
+            class="tw-nav-toggle-icon is-collapse"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M15 6l-6 6 6 6"></path>
+          </svg>
+          <svg
+            class="tw-nav-toggle-icon is-expand"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9 6l6 6-6 6"></path>
+          </svg>
+        </button>
+
+        <nav class="tw-nav-list flex-1 overflow-y-auto">
+          <a href={base} class={navItem(isHome())} data-i18n-title="nav.home" title="我的工作台">
+            <svg
+              class="tw-nav-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <path d="M3 10.5 12 3l9 7.5"></path>
+              <path d="M5 9.5V20h14V9.5"></path>
+            </svg>
+            <span class="tw-nav-label" data-i18n="nav.home">
+              我的工作台
+            </span>
+          </a>
+
+          <a href={`${base}cases/library/`} class={navItem(pathHas('cases'))} title="用例管理">
+            <svg
+              class="tw-nav-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <path d="M9 11l3 3L22 4"></path>
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+            </svg>
+            <span class="tw-nav-label" data-i18n="nav.caseManage">
+              用例管理
+            </span>
+          </a>
+
+          <a href={`${base}prompts/`} class={navItem(pathHas('prompts'))} title="提示词管理">
+            <svg
+              class="tw-nav-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+            </svg>
+            <span class="tw-nav-label" data-i18n="nav.prompts">
+              提示词管理
+            </span>
+          </a>
+
+          <a href={`${base}knowledge/`} class={navItem(pathHas('knowledge'))} title="知识库管理">
+            <svg
+              class="tw-nav-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </svg>
+            <span class="tw-nav-label" data-i18n="nav.knowledge">
+              知识库管理
+            </span>
+          </a>
+
+          <details class="tw-nav-details group/docs" open>
+            <summary
+              class:list={[
+                'tw-nav-item tw-nav-summary',
+                docsOpen ? 'is-branch-active' : '',
+              ]}
+              title="文档库"
+            >
+              <!-- 收起：合上文件夹；展开（details open）：打开文件夹 -->
+              <svg
+                class="tw-nav-ico tw-nav-ico--closed"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                aria-hidden="true"
+              >
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"
+                ></path>
+              </svg>
+              <svg
+                class="tw-nav-ico tw-nav-ico--open"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
+                ></path>
+              </svg>
+              <span class="tw-nav-label" data-i18n="nav.docs">
+                文档库
+              </span>
+              <svg
+                class="tw-nav-chevron opacity-70 transition-transform group-open/docs:rotate-90"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                aria-hidden="true"
+              >
+                <path d="M7 5l6 5-6 5" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </summary>
+            <div class="tw-nav-subtree">
+              <a
+                href={`${base}requirements/`}
+                class={navItem(pathHas('requirements'))}
+                title="需求文档库"
+              >
+                <span class="tw-nav-label" data-i18n="nav.requirements">
+                  需求文档库
+                </span>
+              </a>
+              <a
+                href={`${base}templates/`}
+                class={navItem(pathHas('templates'))}
+                title="测试模板库"
+              >
+                <span class="tw-nav-label" data-i18n="nav.templates">
+                  测试模板库
+                </span>
+              </a>
+            </div>
+          </details>
+
+          <a
+            href={`${base}changelog/`}
+            class={navItem(pathHas('changelog'))}
+            title="版本日志"
+            data-i18n-title="nav.changelogShort"
+          >
+            <svg
+              class="tw-nav-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+            <span class="tw-nav-label" data-i18n="nav.changelogShort">版本日志</span>
+          </a>
+        </nav>
+
+        <div class="tw-nav-meta">
+        <div class="tw-nav-ext" aria-label="外部链接">
+          <a
+            href="https://github.com/yychuiyan/ai-testbench"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="tw-nav-ext-btn"
+            title="GitHub 仓库"
+            data-i18n-title="nav.repo"
+            aria-label="GitHub 仓库"
+          >
+            <svg class="tw-nav-ext-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path
+                d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.71.5.1.68-.22.68-.48 0-.24-.01-.87-.01-1.7-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 7.1c.85 0 1.71.12 2.51.35 1.9-1.32 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.38-.01 2.48-.01 2.82 0 .26.18.59.69.48A10.05 10.05 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"
+              ></path>
+            </svg>
+            <span class="tw-nav-ext-label" data-i18n="nav.repoShort">仓库</span>
+          </a>
+          <a
+            href="https://www.npmjs.com/package/ai-testbench"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="tw-nav-ext-btn"
+            title="npm 包"
+            data-i18n-title="nav.npm"
+            aria-label="npm 包"
+          >
+            <svg class="tw-nav-ext-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path
+                d="M4 4h16v16H4V4zm2.5 2.5v11H12v-8.5h3.5v8.5H19.5v-11H6.5z"
+              ></path>
+            </svg>
+            <span class="tw-nav-ext-label" data-i18n="nav.npmShort">npm</span>
+          </a>
+          <a
+            href="https://docs.yychuiyan.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="tw-nav-ext-btn"
+            title="炊烟小站"
+            data-i18n-title="nav.site"
+            aria-label="炊烟小站"
+          >
+            <svg
+              class="tw-nav-ext-ico"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M3 12h18" stroke-linecap="round"></path>
+              <path
+                d="M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"
+                stroke-linecap="round"
+              ></path>
+            </svg>
+            <span class="tw-nav-ext-label" data-i18n="nav.siteShort">小站</span>
+          </a>
+        </div>
+        </div>
+
+        <div class="tw-nav-foot">
+          <SettingsDialog client:load />
+        </div>
+      </aside>
+
+      <script is:inline>
+        (function () {
+          var root = document.documentElement;
+          var btn = document.getElementById('tw-nav-toggle');
+          function apply(collapsed) {
+            if (collapsed) root.dataset.navCollapsed = '1';
+            else delete root.dataset.navCollapsed;
+            try {
+              localStorage.setItem('tw.nav.collapsed', collapsed ? '1' : '0');
+            } catch (e) {}
+            if (btn) {
+              btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+              btn.title = collapsed ? '展开导航' : '收起导航';
+            }
+          }
+          apply(root.dataset.navCollapsed === '1');
+          if (btn) {
+            btn.addEventListener('click', function () {
+              apply(root.dataset.navCollapsed !== '1');
+            });
+          }
+
+          try {
+            var raw = localStorage.getItem('tw.app.config.v1');
+            if (!raw) return;
+            var g = JSON.parse(raw).general || {};
+            if (g.language !== 'en') return;
+            var en = {
+              'nav.brand': 'TestBench',
+              'nav.tagline': 'Make testing a bit more efficient',
+              'nav.home': 'My Workbench',
+              'nav.caseManage': 'Test Cases',
+              'nav.prompts': 'Prompts',
+              'nav.knowledge': 'Knowledge Mgmt',
+              'nav.docs': 'Documents',
+              'nav.requirements': 'Requirements',
+              'nav.templates': 'Test Templates',
+              'nav.settings': 'Settings',
+              'nav.changelog': 'Changelog',
+              'nav.changelogShort': 'Changelog',
+              'nav.repo': 'GitHub',
+              'nav.repoShort': 'Repo',
+              'nav.npm': 'npm package',
+              'nav.npmShort': 'npm',
+              'nav.site': 'Yycy Docs',
+              'nav.siteShort': 'Site',
+            };
+            document.querySelectorAll('[data-i18n]').forEach(function (el) {
+              var key = el.getAttribute('data-i18n');
+              if (key && en[key]) el.textContent = en[key];
+            });
+            document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+              var key = el.getAttribute('data-i18n-title');
+              if (key && en[key]) el.setAttribute('title', en[key]);
+            });
+          } catch (e) {}
+        })();
+      </script>
+      <main class="tw-main min-h-screen">
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>

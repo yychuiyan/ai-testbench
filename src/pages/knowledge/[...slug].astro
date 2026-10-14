@@ -1,0 +1,52 @@
+---
+import Base from '../../layouts/Base.astro';
+import { getCollection, render } from 'astro:content';
+
+export async function getStaticPaths() {
+  const entries = await getCollection('knowledge');
+  return entries.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+const base = import.meta.env.BASE_URL;
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+---
+
+<Base title={`${entry.data.title} · 知识库`}>
+  <article class="max-w-3xl mx-auto px-8 py-8">
+    <nav class="mb-6 text-sm">
+      <a href={`${base}knowledge`} class="text-stone-400 hover:text-amber-700 transition-colors">
+        知识库
+      </a>
+      <span class="mx-2 text-stone-300">/</span>
+      <span class="text-stone-600">{entry.data.category}</span>
+    </nav>
+
+    <header class="mb-8 pb-6 border-b border-stone-200">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-xs px-2 py-0.5 bg-amber-100 text-amber-800 rounded">
+          {entry.data.category}
+        </span>
+      </div>
+      <h1 class="text-2xl font-bold text-stone-900">{entry.data.title}</h1>
+      {entry.data.description && (
+        <p class="mt-2 text-sm text-stone-500 leading-6">{entry.data.description}</p>
+      )}
+      <div class="mt-4">
+        <a
+          href={`${base}raw/knowledge/${entry.id}.md`}
+          class="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 bg-stone-900 text-white rounded-md hover:bg-stone-700 transition-colors"
+        >
+          下载 .md 源文件
+        </a>
+      </div>
+    </header>
+
+    <div class="prose prose-stone max-w-none">
+      <Content />
+    </div>
+  </article>
+</Base>

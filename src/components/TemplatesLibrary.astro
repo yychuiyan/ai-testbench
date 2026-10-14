@@ -1,0 +1,150 @@
+---
+import type { TemplateListItem } from '../lib/template-files';
+import { formatLabel } from '../lib/template-files';
+import ExcelFieldTags from './islands/ExcelFieldTags';
+
+interface Props {
+  base: string;
+  /** null = 全部 */
+  activeCategory: string | null;
+  categories: readonly string[];
+  groups: Map<string, TemplateListItem[]>;
+}
+
+const { base, activeCategory, categories, groups } = Astro.props;
+
+const visibleCats = activeCategory ? categories.filter((c) => c === activeCategory) : categories;
+
+const total = [...groups.values()].reduce((n, list) => n + list.length, 0);
+---
+
+<div class="min-h-[calc(100vh-0px)] flex flex-col md:flex-row">
+  <aside class="md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-stone-200 bg-white md:min-h-screen">
+    <div class="px-4 pt-6 pb-3 hidden md:block">
+      <h1 class="text-sm font-semibold text-stone-900 tracking-wide">测试模板库</h1>
+      <p class="mt-1 text-[11px] text-stone-400 leading-4">按分类浏览 · {total} 份</p>
+    </div>
+    <nav class="flex md:flex-col gap-1 px-2 py-2 md:py-0 overflow-x-auto">
+      <a
+        href={`${base}templates/`}
+        aria-current={activeCategory === null ? 'page' : undefined}
+        class:list={[
+          'shrink-0 md:w-full text-left px-3 py-2 rounded-md text-sm transition-colors',
+          activeCategory === null
+            ? 'bg-amber-400/15 text-amber-800 font-medium'
+            : 'text-stone-500 hover:bg-stone-100 hover:text-stone-800',
+        ]}
+      >
+        <span class="block">全部</span>
+        <span class="hidden md:block text-[11px] text-stone-400 mt-0.5 font-normal">
+          {total} 份
+        </span>
+      </a>
+      {categories.map((cat) => {
+        const count = groups.get(cat)?.length ?? 0;
+        const active = activeCategory === cat;
+        return (
+          <a
+            href={`${base}templates/c/${encodeURIComponent(cat)}/`}
+            aria-current={active ? 'page' : undefined}
+            class:list={[
+              'shrink-0 md:w-full text-left px-3 py-2 rounded-md text-sm transition-colors',
+              active
+                ? 'bg-amber-400/15 text-amber-800 font-medium'
+                : 'text-stone-500 hover:bg-stone-100 hover:text-stone-800',
+            ]}
+          >
+            <span class="block">{cat}</span>
+            <span class="hidden md:block text-[11px] text-stone-400 mt-0.5 font-normal">
+              {count} 份
+            </span>
+          </a>
+        );
+      })}
+    </nav>
+  </aside>
+
+  <div class="flex-1 min-w-0 px-6 md:px-8 py-6 md:py-8 max-w-6xl">
+    <header class="mb-6">
+      <h2 class="text-xl font-bold text-stone-900">{activeCategory ?? '全部模板'}</h2>
+      <p class="mt-2 text-sm text-stone-500 leading-6">
+        支持 <code class="px-1.5 py-0.5 bg-stone-200/70 rounded text-xs">.md</code> /
+        <code class="px-1.5 py-0.5 bg-stone-200/70 rounded text-xs">.xlsx</code> /
+        <code class="px-1.5 py-0.5 bg-stone-200/70 rounded text-xs">.docx</code>
+        等；放入 <code class="px-1.5 py-0.5 bg-stone-200/70 rounded text-xs">templates/</code>
+        对应分类目录后自动上架。Office 文件仅提供下载，不做在线预览。
+      </p>
+    </header>
+
+    <div class="space-y-8">
+      {visibleCats.map((cat) => (
+        <section>
+          {!activeCategory && (
+            <div class="flex items-center gap-3 mb-3">
+              <span class="w-1.5 h-4 bg-amber-400 rounded-sm"></span>
+              <h3 class="text-base font-semibold text-stone-800">{cat}</h3>
+              <span class="text-xs text-stone-400">{groups.get(cat)!.length} 份</span>
+            </div>
+          )}
+          <ul class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {groups.get(cat)!.map((e) => (
+              <li>
+                <div class="h-full bg-white border border-stone-200 rounded-lg p-4 flex gap-3 items-start hover:border-amber-400 hover:shadow-sm transition-all">
+                  <div class="flex-1 min-w-0">
+                    {e.format === 'md' ? (
+                      <a
+                        href={e.href}
+                        class="font-medium text-stone-900 hover:text-amber-700 transition-colors"
+                      >
+                        {e.title}
+                      </a>
+                    ) : (
+                      <span class="font-medium text-stone-900">{e.title}</span>
+                    )}
+                    <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <span class="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">
+                        {formatLabel(e.format)}
+                      </span>
+                      {e.version && (
+                        <span class="text-[11px] px-1.5 py-0.5 bg-stone-100 text-stone-500 rounded">
+                          v{e.version}
+                        </span>
+                      )}
+                    </div>
+                    {e.format === 'md' && e.description && (
+                      <p class="mt-1.5 text-sm text-stone-500 leading-6 line-clamp-2">
+                        {e.description}
+                      </p>
+                    )}
+                    {e.sheets && e.sheets.length > 0 && e.sheets[0]!.fields.length > 0 && (
+                      <div class="excel-field-tags-host w-full min-w-0">
+                        <ExcelFieldTags
+                          client:load
+                          fields={e.sheets[0]!.fields}
+                          sheetNames={e.sheets.map((s) => s.name)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <a
+                    href={e.downloadHref}
+                    class="shrink-0 text-xs px-2.5 py-1.5 rounded-md bg-stone-900 text-white hover:bg-stone-700 transition-colors"
+                  >
+                    下载
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  </div>
+</div>
+
+<style>
+  .excel-field-tags-host > :global(astro-island) {
+    display: block;
+    width: 100%;
+  }
+</style>

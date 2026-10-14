@@ -1,0 +1,11 @@
+---
+import { TEMPLATE_CATEGORY_ORDER } from '../../../lib/templates-meta';
+
+export async function getStaticPaths() {
+  return TEMPLATE_CATEGORY_ORDER.map((category) => ({
+    params: { category },
+  }));
+}
+
+return Astro.redirect(`${import.meta.env.BASE_URL}templates/`);
+---

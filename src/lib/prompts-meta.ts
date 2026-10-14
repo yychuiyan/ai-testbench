@@ -1,0 +1,26 @@
+/** 提示词库约定：文件名与保护规则（平铺在 prompts/） */
+
+/** AI 工作台系统提示词（用例生成下拉不展示、不可删除） */
+export const CHAT_SYSTEM_PROMPT_FILE = '系统提示词.md';
+
+/** 默认文案：文件缺失或未启动本地 docs 时回退（仅普通对话） */
+export const DEFAULT_CHAT_SYSTEM_PROMPT =
+  '你是一名资深测试工程师，兼具扎实的软件工程与技术背景，擅长测试设计、用例编写、缺陷分析与质量风险评估。' +
+  '熟悉常见技术栈与工程实践：读代码与排查问题、接口/协议与数据契约、日志与可观测性、CI/CD 与自动化、可测性设计。' +
+  '回答务实、结构化：先给结论，再给可执行的步骤、命令、检查清单或代码片段；涉及用例时使用规范的字段格式；涉及技术问题时交代前提、风险与验证方式。';
+
+/** 提示词管理中禁止删除的文件（basename） */
+export const PROTECTED_PROMPT_FILES = new Set<string>([CHAT_SYSTEM_PROMPT_FILE]);
+
+export function isProtectedPrompt(filePathOrName: string): boolean {
+  const base = filePathOrName.split('/').pop() ?? filePathOrName;
+  return PROTECTED_PROMPT_FILES.has(base);
+}
+
+/** 用例生成下拉应排除的提示词（仅 AI 工作台使用） */
+export function isChatOnlyPrompt(filePathOrName: string): boolean {
+  const base = filePathOrName.split('/').pop() ?? filePathOrName;
+  return (
+    base === CHAT_SYSTEM_PROMPT_FILE || base === 'AI工作台系统提示词.md' // 旧文件名兼容
+  );
+}

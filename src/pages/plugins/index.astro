@@ -1,0 +1,8 @@
+---
+import Base from '../../layouts/Base.astro';
+import PluginsPage from '../../components/islands/PluginsPage';
+---
+
+<Base title="我的插件 · TestBench">
+  <PluginsPage client:only="react" tab="mine" />
+</Base>

@@ -1,0 +1,35 @@
+node_modules/
+dist/
+.astro/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+.DS_Store
+*.log
+*.tgz
+.vite/
+# 本地会话记忆（不提交）
+.local/
+.cursor/
+# 本地文档库内容（磁盘英文目录；界面中文 label）
+requirements/*
+!requirements/.gitkeep
+cases/*
+!cases/.gitkeep
+templates/*
+!templates/.gitkeep
+# prompts / knowledge：默认忽略本机草稿；下列种子内容入库
+prompts/*
+!prompts/.gitkeep
+!prompts/系统提示词.md
+knowledge/*
+!knowledge/.gitkeep
+!knowledge/方法论/
+!knowledge/方法论/**
+!knowledge/测试规范/
+!knowledge/测试规范/**
+!knowledge/环境约定/
+!knowledge/环境约定/**
+

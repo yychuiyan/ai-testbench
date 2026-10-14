@@ -1,0 +1,89 @@
+/**
+ * 右侧抽屉：滑入/滑出动画 + Esc / 遮罩关闭。
+ */
+import { useEffect, useState, type ReactNode } from 'react';
+
+const EXIT_MS = 220;
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  /** 遮罩 aria-label */
+  closeAriaLabel?: string;
+  children: ReactNode;
+  footer?: ReactNode;
+}
+
+export default function SlideOverDrawer({
+  open,
+  onClose,
+  title,
+  closeAriaLabel = '关闭面板',
+  children,
+  footer,
+}: Props) {
+  const [mounted, setMounted] = useState(open);
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      const id = window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => setEntered(true));
+      });
+      return () => window.cancelAnimationFrame(id);
+    }
+    setEntered(false);
+    const t = window.setTimeout(() => setMounted(false), EXIT_MS);
+    return () => window.clearTimeout(t);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [open, onClose]);
+
+  if (!mounted) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex justify-end" role="dialog" aria-modal="true">
+      <button
+        type="button"
+        className={`absolute inset-0 bg-stone-900/30 transition-opacity duration-200 ease-out ${
+          entered ? 'opacity-100' : 'opacity-0'
+        }`}
+        aria-label={closeAriaLabel}
+        onClick={onClose}
+      />
+      <aside
+        className={`tw-slide-over relative w-full max-w-md h-full shadow-2xl border-l border-stone-200 flex flex-col transition-transform duration-200 ease-out will-change-transform ${
+          entered ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <header className="shrink-0 h-12 px-4 border-b border-stone-100 flex items-center gap-2">
+          <h2 className="tw-slide-over-title text-sm font-semibold text-stone-800 flex-1">
+            {title}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="tw-icon-btn w-8 h-8 rounded-lg"
+            title="关闭（Esc）"
+          >
+            ✕
+          </button>
+        </header>
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">{children}</div>
+        {footer}
+      </aside>
+    </div>
+  );
+}

@@ -1,0 +1,35 @@
+import { Marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** 代码块带标题栏与复制按钮（dsh CodeBlock 形态）；复制由对话页事件委托处理 data-copy-code */
+const md = new Marked({
+  renderer: {
+    code({ text, lang, escaped }) {
+      const label = escapeHtml((lang ?? '').trim().split(/\s+/)[0] || '代码块');
+      const body = escaped ? text : escapeHtml(text);
+      return (
+        `<div class="code-block"><div class="code-block-head"><span>${label}</span>` +
+        `<button type="button" data-copy-code>复制</button></div>` +
+        `<pre><code>${body}</code></pre></div>`
+      );
+    },
+  },
+});
+
+/**
+ * 对话消息的客户端 Markdown 渲染。
+ * 必须经 DOMPurify 消毒 —— BYOK 场景下 XSS 即 Key 泄露。
+ */
+export function renderMarkdown(source: string): string {
+  const html = md.parse(source, { async: false }) as string;
+  return DOMPurify.sanitize(html);
+}

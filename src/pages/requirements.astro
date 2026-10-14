@@ -1,0 +1,17 @@
+---
+import Base from '../layouts/Base.astro';
+import RequirementsLibrary from '../components/islands/RequirementsLibrary';
+---
+
+<Base title="需求文档库 · TestBench">
+  <div class="max-w-6xl mx-auto px-8 py-8">
+    <header class="mb-6">
+      <h1 class="text-2xl font-bold text-stone-900">需求文档库</h1>
+      <p class="mt-2 text-sm text-stone-500">
+        左侧管理文件夹，右侧上传本地需求文档；支持本地打开与删除。文件保存在本机「需求文档库」目录，不提交到
+        Git。
+      </p>
+    </header>
+    <RequirementsLibrary client:only="react" />
+  </div>
+</Base>

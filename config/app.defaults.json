@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "model": {
+    "activeId": "",
+    "reasoningEffort": "high",
+    "providers": []
+  },
+  "access": "readonly",
+  "general": {
+    "language": "zh-CN",
+    "appearance": "system",
+    "sessionFontSize": 14,
+    "toolStepDetail": "standard",
+    "busySendBehavior": "queue"
+  },
+  "plugins": {
+    "caseGen": true,
+    "promptGen": true,
+    "knowledgeGen": true,
+    "knowledge": true,
+    "memory": true
+  }
+}

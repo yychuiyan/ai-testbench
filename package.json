@@ -1,0 +1,93 @@
+{
+  "name": "ai-testbench",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "TestBench —— 本地 npm 一体服务 + GitHub Pages 静态演示",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yychuiyan/ai-testbench.git"
+  },
+  "homepage": "https://github.com/yychuiyan/ai-testbench#readme",
+  "bin": {
+    "ai-testbench": "cli/ai-testbench.mjs"
+  },
+  "files": [
+    "dist",
+    "cli",
+    "dev-plugins",
+    "config",
+    "docs",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "start": "node cli/ai-testbench.mjs -y",
+    "astro": "astro",
+    "lint": "eslint src --max-warnings 50",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"dev-plugins/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"dev-plugins/**/*.mjs\"",
+    "prepare": "simple-git-hooks && node cli/ensure-dist.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npx lint-staged"
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx,astro,css,md,json}": [
+      "prettier --write"
+    ],
+    "src/**/*.{ts,tsx}": [
+      "eslint --max-warnings 50 --no-warn-ignored"
+    ],
+    "cli/**/*.mjs": [
+      "prettier --write"
+    ],
+    "dev-plugins/**/*.mjs": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@astrojs/react": "^4.2.0",
+    "@headlessui/react": "^2.2.10",
+    "astro": "^5.1.0",
+    "connect": "^3.7.0",
+    "dompurify": "^3.2.4",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "marked": "^15.0.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sirv": "^3.0.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/typography": "^0.5.16",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/jszip": "^3.4.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-astro": "^3.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
+    "prettier-plugin-astro": "^1.1.1",
+    "simple-git-hooks": "^2.14.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2"
+  }
+}
