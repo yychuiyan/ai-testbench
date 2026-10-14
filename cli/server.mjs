@@ -1,5 +1,5 @@
 /**
- * 本地一体服务：静态 dist + 现有 Vite 本地中间件（/__local_*）。
+ * 本地一体服务：静态 dist + 现有 Vite 本地中间件（/__tb_*）。
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -8,17 +8,19 @@ import { fileURLToPath } from 'node:url';
 import connect from 'connect';
 import sirv from 'sirv';
 
-import { localConfigPlugin } from '../dev-plugins/local-config.mjs';
-import { localFsPlugin } from '../dev-plugins/local-fs.mjs';
-import { localKbPlugin } from '../dev-plugins/local-kb.mjs';
-import { localMemoryPlugin } from '../dev-plugins/local-memory.mjs';
+import { tbConfigPlugin } from '../tb-plugins/tb-config.mjs';
+import { tbBashPlugin } from '../builtin/session/tb-bash.mjs';
+import { tbFsPlugin } from '../builtin/session/tb-fs.mjs';
+import { tbKbPlugin } from '../tb-plugins/tb-kb.mjs';
+import { tbMemoryPlugin } from '../tb-plugins/tb-memory.mjs';
+import { tbWebPlugin } from '../builtin/session/tb-web.mjs';
 import {
-  localCasesPlugin,
-  localKnowledgePlugin,
-  localPromptsPlugin,
-  localRequirementsPlugin,
-  localTemplatesPlugin,
-} from '../dev-plugins/local-project-docs.mjs';
+  tbCasesPlugin,
+  tbKnowledgePlugin,
+  tbPromptsPlugin,
+  tbRequirementsPlugin,
+  tbTemplatesPlugin,
+} from '../tb-plugins/tb-project-docs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = path.resolve(__dirname, '..');
@@ -58,15 +60,17 @@ function attachPlugins(app, dataRoot) {
     middlewares: app,
   };
   const plugins = [
-    localConfigPlugin(),
-    localMemoryPlugin(),
-    localKbPlugin(),
-    localFsPlugin(),
-    localRequirementsPlugin(),
-    localCasesPlugin(),
-    localTemplatesPlugin(),
-    localPromptsPlugin(),
-    localKnowledgePlugin(),
+    tbConfigPlugin(),
+    tbMemoryPlugin(),
+    tbKbPlugin(),
+    tbFsPlugin(),
+    tbBashPlugin(),
+    tbWebPlugin(),
+    tbRequirementsPlugin(),
+    tbCasesPlugin(),
+    tbTemplatesPlugin(),
+    tbPromptsPlugin(),
+    tbKnowledgePlugin(),
   ];
   for (const plugin of plugins) {
     if (typeof plugin.configureServer === 'function') {

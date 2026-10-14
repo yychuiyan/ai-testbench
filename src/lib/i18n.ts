@@ -13,6 +13,7 @@ const ZH = {
   'nav.docs': '文档库',
   'nav.prompts': '提示词管理',
   'nav.knowledge': '知识库管理',
+  'nav.plugins': '我的插件',
   'nav.brand': 'TestBench',
   'nav.tagline': '让测试更高效一点',
   'nav.settings': '设置',
@@ -24,6 +25,8 @@ const ZH = {
   'nav.npmShort': 'npm',
   'nav.site': '炊烟小站',
   'nav.siteShort': '小站',
+  'nav.board': '留言板',
+  'nav.boardShort': '留言',
 
   'settings.general': '通用设置',
   'settings.model': '模型',
@@ -73,9 +76,9 @@ const ZH = {
   'settings.recognizeKeep': '刷新失败，沿用已有列表',
   'settings.deleteConfirm': '确定删除该模型提供商？',
 
-  'chat.emptyTitle': '开始与 AI 测试助手对话',
-  'chat.emptyWithModel': '当前模型：{model}。可以直接提问，或从下面的建议话题开始。',
-  'chat.emptyNoModel': '使用前请先配置模型（BYOK，Key 仅存本机）。',
+  'chat.emptyTitle': '欢迎使用 TestBench',
+  'chat.emptyBenefits': '你的 AI 小助理，帮助你梳理测试点、设计用例、执行脚本、对齐规范与风险。',
+  'chat.emptyNoModel': '使用前请先配置模型。',
   'chat.configureModel': '配置模型',
   'chat.workbench': '我的工作台',
   'chat.newSession': '新会话',
@@ -91,6 +94,8 @@ const ZH = {
   'tool.kind.kb': '知识库',
   'tool.kind.fs': '本地文件',
   'tool.kind.memory': '会话记忆',
+  'tool.kind.webSearch': '网页搜索',
+  'tool.kind.webFetch': '网页获取',
 } as const;
 
 type MsgKey = keyof typeof ZH;
@@ -104,6 +109,7 @@ const EN: Record<MsgKey, string> = {
   'nav.docs': 'Documents',
   'nav.prompts': 'Prompts',
   'nav.knowledge': 'Knowledge Mgmt',
+  'nav.plugins': 'My Plugins',
   'nav.brand': 'TestBench',
   'nav.tagline': 'Make testing a bit more efficient',
   'nav.settings': 'Settings',
@@ -115,6 +121,8 @@ const EN: Record<MsgKey, string> = {
   'nav.npmShort': 'npm',
   'nav.site': 'Yycy Docs',
   'nav.siteShort': 'Site',
+  'nav.board': 'Message board',
+  'nav.boardShort': 'Board',
 
   'settings.general': 'General',
   'settings.model': 'Models',
@@ -165,9 +173,10 @@ const EN: Record<MsgKey, string> = {
   'settings.recognizeKeep': 'Refresh failed — keeping previous list',
   'settings.deleteConfirm': 'Delete this model provider?',
 
-  'chat.emptyTitle': 'Start chatting with the AI testing assistant',
-  'chat.emptyWithModel': 'Model: {model}. Ask anything, or pick a suggestion below.',
-  'chat.emptyNoModel': 'Configure a model first (BYOK; key stays on this device).',
+  'chat.emptyTitle': 'Welcome to TestBench',
+  'chat.emptyBenefits':
+    'A little AI assistant for QA engineers: clarify test points, design cases, run scripts, and align on standards and risks.',
+  'chat.emptyNoModel': 'Configure a model to get started.',
   'chat.configureModel': 'Configure model',
   'chat.workbench': 'My Workbench',
   'chat.newSession': 'New chat',
@@ -183,6 +192,8 @@ const EN: Record<MsgKey, string> = {
   'tool.kind.kb': 'knowledge base',
   'tool.kind.fs': 'local files',
   'tool.kind.memory': 'memory',
+  'tool.kind.webSearch': 'web search',
+  'tool.kind.webFetch': 'web fetch',
 };
 
 const DICT: Record<AppLanguage, Record<MsgKey, string>> = {

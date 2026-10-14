@@ -84,7 +84,13 @@ export type StreamChunk =
   | { type: 'reasoning'; delta: string } // 思考过程增量（DeepSeek 思考模式 reasoning_content）
   | { type: 'content'; delta: string } // 最终回答增量
   | { type: 'usage'; usage: UsageInfo } // 流结束前的用量统计
-  | { type: 'tool'; name: string; status: 'running' | 'done' }; // 记忆等工具调用进度
+  | {
+      type: 'tool';
+      name: string;
+      status: 'running' | 'done';
+      args?: string;
+      result?: string;
+    }; // 工具调用进度（供时间线）
 
 /**
  * 模型上下文窗口（tokens）。DeepSeek 官方「模型 & 价格」页核准：flash/v4-pro 均为 1M；
@@ -256,11 +262,65 @@ interface CompletionResult {
   usage?: UsageInfo;
 }
 
-/** DeepSeek V4 DSML 标签中的管道符：全角 ｜ 或 ASCII | */
-const DSML_PIPE = String.raw`[\uFF5C|]`;
+/** DeepSeek V4 DSML 标签中的管道符：全角 ｜ 或 ASCII |（供 RegExp 源串拼接） */
+const DSML_PIPE = '[\\uFF5C|]';
+/**
+ * 开/闭标签里 DSML 与动词之间的分隔：
+ * - 单竖线：`<|DSML|calls>` / `<｜DSML｜invoke>`
+ * - 双竖线（V4 常见）：`<|DSML||calls>` / `<|DSML||invoke>`
+ */
+const DSML_SEP = `${DSML_PIPE}{1,2}`;
+/** 开标签前缀：`<|DSML||` 或 `<｜DSML｜`（普通模板，`\\s` → RegExp 空白） */
+const DSML_OPEN = `<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_SEP}`;
+/** 闭标签前缀：`</|DSML||` */
+const DSML_CLOSE = `<\\/\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_SEP}`;
 
 function newDsmlCallId(index: number): string {
   return `dsml_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseDsmlParams(paramBody: string, paramRe: RegExp): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  paramRe.lastIndex = 0;
+  let paramMatch: RegExpExecArray | null;
+  while ((paramMatch = paramRe.exec(paramBody)) !== null) {
+    const key = paramMatch[1];
+    const asString = paramMatch[2] === 'true';
+    const raw = paramMatch[3] ?? '';
+    if (!key) continue;
+    if (asString) {
+      args[key] = raw;
+    } else {
+      try {
+        args[key] = JSON.parse(raw);
+      } catch {
+        args[key] = raw;
+      }
+    }
+  }
+  return args;
+}
+
+function collectDsmlInvokes(scope: string, invokeRe: RegExp, paramRe: RegExp): ToolCall[] {
+  const calls: ToolCall[] = [];
+  invokeRe.lastIndex = 0;
+  let invokeMatch: RegExpExecArray | null;
+  while ((invokeMatch = invokeRe.exec(scope)) !== null) {
+    const name = (invokeMatch[1] ?? '').trim();
+    if (!name) continue;
+    const args = parseDsmlParams(invokeMatch[2] ?? '', paramRe);
+    calls.push({
+      id: newDsmlCallId(calls.length),
+      type: 'function',
+      function: { name, arguments: JSON.stringify(args) },
+    });
+  }
+  return calls;
+}
+
+/** 文本是否仍含 DSML 工具调用痕迹（用于 UI / 产出闸门） */
+export function looksLikeDsml(text: string): boolean {
+  return typeof text === 'string' && /DSML/i.test(text);
 }
 
 /**
@@ -273,21 +333,21 @@ export function parseDsmlToolCalls(content: string): { calls: ToolCall[]; cleane
   }
 
   const blockRe = new RegExp(
-    `<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*(?:tool_)?calls\\s*>` +
+    `${DSML_OPEN}\\s*(?:tool_)?calls\\s*>` +
       `([\\s\\S]*?)` +
-      `<\\/\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*(?:tool_)?calls\\s*>`,
+      `${DSML_CLOSE}\\s*(?:tool_)?calls\\s*>`,
     'gi',
   );
   const invokeRe = new RegExp(
-    `<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*invoke\\s+name="([^"]+)"\\s*>` +
+    `${DSML_OPEN}\\s*invoke\\s+name="([^"]+)"\\s*>` +
       `([\\s\\S]*?)` +
-      `<\\/\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*invoke\\s*>`,
+      `${DSML_CLOSE}\\s*invoke\\s*>`,
     'gi',
   );
   const paramRe = new RegExp(
-    `<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*parameter\\s+name="([^"]+)"\\s+string="(true|false)"\\s*>` +
+    `${DSML_OPEN}\\s*parameter\\s+name="([^"]+)"\\s+string="(true|false)"\\s*>` +
       `([\\s\\S]*?)` +
-      `<\\/\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}\\s*parameter\\s*>`,
+      `${DSML_CLOSE}\\s*parameter\\s*>`,
     'gi',
   );
 
@@ -297,55 +357,60 @@ export function parseDsmlToolCalls(content: string): { calls: ToolCall[]; cleane
   const blocks: string[] = [];
   while ((blockMatch = blockRe.exec(content)) !== null) {
     blocks.push(blockMatch[0]);
-    const body = blockMatch[1] ?? '';
-    invokeRe.lastIndex = 0;
-    let invokeMatch: RegExpExecArray | null;
-    while ((invokeMatch = invokeRe.exec(body)) !== null) {
-      const name = (invokeMatch[1] ?? '').trim();
-      if (!name) continue;
-      const args: Record<string, unknown> = {};
-      const paramBody = invokeMatch[2] ?? '';
-      paramRe.lastIndex = 0;
-      let paramMatch: RegExpExecArray | null;
-      while ((paramMatch = paramRe.exec(paramBody)) !== null) {
-        const key = paramMatch[1];
-        const asString = paramMatch[2] === 'true';
-        const raw = paramMatch[3] ?? '';
-        if (!key) continue;
-        if (asString) {
-          args[key] = raw;
-        } else {
-          try {
-            args[key] = JSON.parse(raw);
-          } catch {
-            args[key] = raw;
-          }
-        }
-      }
-      calls.push({
-        id: newDsmlCallId(calls.length),
-        type: 'function',
-        function: { name, arguments: JSON.stringify(args) },
-      });
-    }
+    calls.push(...collectDsmlInvokes(blockMatch[1] ?? '', invokeRe, paramRe));
+  }
+
+  // 无完整 calls 包裹时：仍尝试解析散落的 invoke（部分网关/模型变体）
+  if (!calls.length) {
+    calls.push(...collectDsmlInvokes(content, invokeRe, paramRe));
   }
 
   for (const block of blocks) {
     cleaned = cleaned.replace(block, '');
   }
-  // 未闭合的 DSML 块：从首个标记起整段丢掉，避免半截标签进 UI
+  // 未闭合或未知变体：从首个 DSML 痕迹起整段丢掉，禁止标签进 UI
   cleaned = scrubDsmlArtifacts(cleaned);
   cleaned = cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return { calls, cleaned };
 }
 
-/** 去掉残留 / 未闭合的 DSML 标记及其后内容 */
+/**
+ * 去掉残留 / 未闭合 / 未知变体的 DSML 痕迹及其后内容。
+ * 宁可少显示正文，也不把工具调用标签露给用户。
+ */
 export function scrubDsmlArtifacts(text: string): string {
   if (!text || !/DSML/i.test(text)) return text;
-  const startRe = new RegExp(`<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}`, 'i');
-  const m = startRe.exec(text);
-  if (!m || m.index == null) return text;
-  return text.slice(0, m.index).trimEnd();
+
+  const detectors: RegExp[] = [
+    new RegExp(DSML_OPEN, 'i'),
+    /<\s*\/?\s*[^>]*DSML/i,
+    /[\uFF5C|]\s*DSML\s*[\uFF5C|]{1,2}/i,
+    /DSML\s*[\uFF5C|]{0,2}\s*(?:tool_)?calls/i,
+    /DSML\s*[\uFF5C|]{0,2}\s*invoke/i,
+    /DSML\s*[\uFF5C|]{0,2}\s*parameter/i,
+  ];
+
+  let cut = -1;
+  for (const re of detectors) {
+    const m = re.exec(text);
+    if (m && m.index != null && (cut < 0 || m.index < cut)) cut = m.index;
+  }
+  if (cut >= 0) return text.slice(0, cut).trimEnd();
+
+  // 最后兜底：丢掉任何含 DSML 的行
+  return text
+    .split('\n')
+    .filter((line) => !/DSML/i.test(line))
+    .join('\n')
+    .trim();
+}
+
+/** 产出前闸门：保证交给 UI 的正文不含 DSML */
+export function sanitizeAssistantContent(text: string | null | undefined): string {
+  if (!text) return '';
+  if (!looksLikeDsml(text)) return text;
+  const { cleaned } = parseDsmlToolCalls(text);
+  return scrubDsmlArtifacts(cleaned);
 }
 
 /** 优先用结构化 tool_calls；否则从 content 解析 DSML */
@@ -356,16 +421,16 @@ function resolveToolCalls(result: CompletionResult): {
   const structured = result.tool_calls?.filter((c) => c?.function?.name) ?? [];
   const rawContent = result.content;
   if (structured.length) {
-    if (typeof rawContent === 'string' && /DSML/i.test(rawContent)) {
+    if (typeof rawContent === 'string' && looksLikeDsml(rawContent)) {
       const { cleaned } = parseDsmlToolCalls(rawContent);
-      return { calls: structured, content: cleaned || null };
+      return { calls: structured, content: sanitizeAssistantContent(cleaned) || null };
     }
     return { calls: structured, content: rawContent };
   }
   if (typeof rawContent === 'string' && rawContent) {
     const { calls, cleaned } = parseDsmlToolCalls(rawContent);
-    if (calls.length) return { calls, content: cleaned || null };
-    return { calls: [], content: scrubDsmlArtifacts(rawContent) };
+    if (calls.length) return { calls, content: sanitizeAssistantContent(cleaned) || null };
+    return { calls: [], content: sanitizeAssistantContent(rawContent) || null };
   }
   return { calls: [], content: rawContent };
 }
@@ -499,9 +564,16 @@ export async function* streamChatWithTools(
       apiMessages.push(assistantMsg);
       for (const call of calls) {
         const name = call.function.name;
-        yield { type: 'tool', name, status: 'running' };
-        const out = await runTool(name, call.function.arguments ?? '{}');
-        yield { type: 'tool', name, status: 'done' };
+        const args = call.function.arguments ?? '{}';
+        yield { type: 'tool', name, status: 'running', args };
+        const out = await runTool(name, args);
+        yield {
+          type: 'tool',
+          name,
+          status: 'done',
+          args,
+          result: out.length > 800 ? `${out.slice(0, 800)}…` : out,
+        };
         apiMessages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -515,8 +587,9 @@ export async function* streamChatWithTools(
     if (result.reasoning_content) {
       yield { type: 'reasoning', delta: result.reasoning_content };
     }
-    if (content) {
-      yield { type: 'content', delta: content };
+    const safeContent = sanitizeAssistantContent(content);
+    if (safeContent) {
+      yield { type: 'content', delta: safeContent };
     }
     if (result.usage) {
       yield { type: 'usage', usage: result.usage };
@@ -549,7 +622,7 @@ async function* streamChatScrubbingDsml(
     }
     contentBuf += chunk.delta;
     if (!dsmlHold) {
-      const startRe = new RegExp(`<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_PIPE}`, 'i');
+      const startRe = new RegExp(DSML_OPEN, 'i');
       const m = startRe.exec(contentBuf);
       if (m && m.index != null) {
         dsmlHold = true;
@@ -561,8 +634,8 @@ async function* streamChatScrubbingDsml(
         }
         continue;
       }
-      // 保留尾部，避免半截 `<｜DS` 被提前吐出
-      const hold = 12;
+      // 保留更长尾部，避免半截 `<|DSML||` / `<｜DSML｜` 被提前吐出
+      const hold = 24;
       if (contentBuf.length > hold) {
         const safe = contentBuf.slice(0, contentBuf.length - hold);
         const delta = safe.slice(visibleEmitted.length);
@@ -575,8 +648,7 @@ async function* streamChatScrubbingDsml(
     }
   }
 
-  const { calls, cleaned } = parseDsmlToolCalls(contentBuf);
-  const finalText = calls.length ? cleaned : scrubDsmlArtifacts(contentBuf);
+  const finalText = sanitizeAssistantContent(contentBuf);
   const rest = finalText.slice(visibleEmitted.length);
   if (rest) yield { type: 'content', delta: rest };
 }

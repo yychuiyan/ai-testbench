@@ -75,11 +75,13 @@ function SuiteRow({
           </button>
         ) : null}
       </div>
-      {open ? (
-        <div className="px-3 pb-3 border-t border-stone-100 pt-3">
-          <CaseTable cases={cases} />
+      <div className={`tw-collapse ${open ? 'is-open' : ''}`}>
+        <div className="tw-collapse-inner">
+          <div className="px-3 pb-3 border-t border-stone-100 pt-3">
+            <CaseTable cases={cases} />
+          </div>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -177,27 +179,29 @@ export default function CaseLibrary({
             <span className="text-sm font-medium text-stone-700">知识库 · 测试用例</span>
             <span className="text-[11px] text-stone-400">{knowledgeWithCases.length} 套</span>
           </button>
-          {groupOpen.knowledge ? (
-            <div className="px-3 pb-3 space-y-2">
-              {knowledgeWithCases.length === 0 ? (
-                <p className="text-xs text-stone-400 px-1 py-2">
-                  暂无带用例表的知识库文档。可在 knowledge/测试用例/ 添加 Markdown 表格。
-                </p>
-              ) : (
-                knowledgeWithCases.map((s) => (
-                  <SuiteRow
-                    key={s.id}
-                    title={s.title}
-                    meta={s.description}
-                    count={s.cases.length}
-                    open={Boolean(openMap[`k:${s.id}`])}
-                    onToggle={() => toggle(`k:${s.id}`)}
-                    cases={s.cases}
-                  />
-                ))
-              )}
+          <div className={`tw-collapse ${groupOpen.knowledge ? 'is-open' : ''}`}>
+            <div className="tw-collapse-inner">
+              <div className="px-3 pb-3 space-y-2">
+                {knowledgeWithCases.length === 0 ? (
+                  <p className="text-xs text-stone-400 px-1 py-2">
+                    暂无带用例表的知识库文档。可在 knowledge/测试用例/ 添加 Markdown 表格。
+                  </p>
+                ) : (
+                  knowledgeWithCases.map((s) => (
+                    <SuiteRow
+                      key={s.id}
+                      title={s.title}
+                      meta={s.description}
+                      count={s.cases.length}
+                      open={Boolean(openMap[`k:${s.id}`])}
+                      onToggle={() => toggle(`k:${s.id}`)}
+                      cases={s.cases}
+                    />
+                  ))
+                )}
+              </div>
             </div>
-          ) : null}
+          </div>
         </div>
 
         <div className="rounded-lg border border-stone-200/80 bg-white/70 overflow-hidden">
@@ -210,29 +214,31 @@ export default function CaseLibrary({
             <span className="text-sm font-medium text-stone-700">本机生成历史</span>
             <span className="text-[11px] text-stone-400">{localSuites.length} 套</span>
           </button>
-          {groupOpen.local ? (
-            <div className="px-3 pb-3 space-y-2">
-              {localSuites.length === 0 ? (
-                <p className="text-xs text-stone-400 px-1 py-2">
-                  暂无保存的生成结果。在下方生成用例后点击「保存到用例库」。
-                </p>
-              ) : (
-                localSuites.map((s) => (
-                  <div key={s.id} id={`case-suite-${s.id}`}>
-                    <SuiteRow
-                      title={s.title}
-                      meta={fmtTime(s.createdAt)}
-                      count={s.cases.length}
-                      open={Boolean(openMap[s.id])}
-                      onToggle={() => toggle(s.id)}
-                      onDelete={() => setDeleteSuiteId(s.id)}
-                      cases={s.cases}
-                    />
-                  </div>
-                ))
-              )}
+          <div className={`tw-collapse ${groupOpen.local ? 'is-open' : ''}`}>
+            <div className="tw-collapse-inner">
+              <div className="px-3 pb-3 space-y-2">
+                {localSuites.length === 0 ? (
+                  <p className="text-xs text-stone-400 px-1 py-2">
+                    暂无保存的生成结果。在下方生成用例后点击「保存到用例库」。
+                  </p>
+                ) : (
+                  localSuites.map((s) => (
+                    <div key={s.id} id={`case-suite-${s.id}`}>
+                      <SuiteRow
+                        title={s.title}
+                        meta={fmtTime(s.createdAt)}
+                        count={s.cases.length}
+                        open={Boolean(openMap[s.id])}
+                        onToggle={() => toggle(s.id)}
+                        onDelete={() => setDeleteSuiteId(s.id)}
+                        cases={s.cases}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          ) : null}
+          </div>
         </div>
       </div>
 

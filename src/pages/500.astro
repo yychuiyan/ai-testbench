@@ -6,41 +6,113 @@ const message =
     ? Astro.props.error.message
     : typeof Astro.props.error === 'string'
       ? Astro.props.error
-      : '服务暂时不可用，请稍后重试。';
+      : '';
 
 const isDev = import.meta.env.DEV;
+const home = import.meta.env.BASE_URL || '/';
 ---
 
 <Base title="出错了 · TestBench">
-  <div class="min-h-[70vh] flex items-center justify-center px-6 py-16">
-    <div class="w-full max-w-lg rounded-2xl border border-stone-200 bg-white shadow-sm px-8 py-10 text-center">
-      <div class="mx-auto w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center text-xl font-semibold">
-        !
-      </div>
-      <h1 class="mt-5 text-xl font-semibold text-stone-900">页面出错了</h1>
-      <p class="mt-3 text-sm text-stone-500 leading-6">
-        可能是内容格式不完整（例如知识库 Markdown 缺少 title / category），或临时服务异常。
-      </p>
-      {isDev ? (
-        <pre class="mt-5 text-left text-xs text-stone-600 bg-stone-50 border border-stone-100 rounded-xl px-4 py-3 overflow-auto max-h-48 whitespace-pre-wrap break-words">
-            {message}
-          </pre>
-      ) : null}
-      <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-        <a
-          href={import.meta.env.BASE_URL || '/'}
-          class="inline-flex h-10 items-center px-4 rounded-lg text-sm font-medium text-white bg-[#4176e6] hover:bg-[#3565c7]"
-        >
-          返回工作台
-        </a>
-        <button
-          type="button"
-          class="inline-flex h-10 items-center px-4 rounded-lg text-sm text-stone-600 border border-stone-200 hover:bg-stone-50"
-          onclick="location.reload()"
-        >
-          刷新页面
-        </button>
-      </div>
+  <div class="tw-error-page">
+    <h1 class="tw-error-title">出错了</h1>
+    <p class="tw-error-desc">页面暂时无法打开，请返回重试。</p>
+    {
+      isDev && message ? (
+        <pre class="tw-error-pre">{message}</pre>
+      ) : null
+    }
+    <div class="tw-error-actions">
+      <a href={home} class="tw-error-btn tw-error-btn--primary">返回工作台</a>
+      <button type="button" class="tw-error-btn tw-error-btn--ghost" onclick="location.reload()">
+        刷新
+      </button>
     </div>
   </div>
 </Base>
+
+<style>
+  .tw-error-page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem 1.25rem;
+    text-align: center;
+    background: var(--tw-surface-page);
+  }
+
+  .tw-error-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 650;
+    color: var(--tw-label-primary);
+  }
+
+  .tw-error-desc {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--tw-label-secondary);
+  }
+
+  .tw-error-pre {
+    margin: 0.25rem 0 0;
+    max-width: 28rem;
+    max-height: 8rem;
+    overflow: auto;
+    padding: 0.65rem 0.85rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--tw-border);
+    background: color-mix(in srgb, var(--tw-surface-panel, #fff) 90%, transparent);
+    font-size: 0.7rem;
+    line-height: 1.5;
+    text-align: left;
+    color: var(--tw-label-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .tw-error-actions {
+    margin-top: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .tw-error-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2.25rem;
+    padding: 0 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 550;
+    text-decoration: none;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+
+  .tw-error-btn--primary {
+    color: #fff;
+    background: #4176e6;
+  }
+
+  .tw-error-btn--primary:hover {
+    background: #3565c7;
+  }
+
+  .tw-error-btn--ghost {
+    color: var(--tw-label-secondary);
+    background: transparent;
+    border-color: var(--tw-border);
+  }
+
+  .tw-error-btn--ghost:hover {
+    color: var(--tw-label-primary);
+  }
+</style>

@@ -48,7 +48,7 @@ export interface CaseSessionStore {
   activeId: string;
 }
 
-const API = '/__local_case_sessions';
+const API = '/__tb_case_sessions';
 const LS_KEY = 'tw.case.sessions.v1';
 
 let fileMode = false;

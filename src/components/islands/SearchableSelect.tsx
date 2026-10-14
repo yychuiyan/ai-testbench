@@ -69,7 +69,10 @@ export default function SearchableSelect({
             />
           </svg>
         </ComboboxButton>
-        <ComboboxOptions className="tw-select-menu absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-stone-200 py-1 shadow-lg focus:outline-none">
+        <ComboboxOptions
+          transition
+          className="tw-select-menu tw-menu-anim absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-stone-200 py-1 shadow-lg focus:outline-none"
+        >
           {allowEmpty ? (
             <ComboboxOption
               value={null}

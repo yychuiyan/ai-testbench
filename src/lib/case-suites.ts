@@ -18,7 +18,7 @@ export interface CaseSuiteStore {
   suites: CaseSuite[];
 }
 
-const API = '/__local_case_suites';
+const API = '/__tb_case_suites';
 const LS_KEY = 'tw.case.suites.v1';
 const CHANGED = 'tw-case-suites-changed';
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "description": "TestBench —— 本地 npm 一体服务 + GitHub Pages 静态演示",
+  "description": "TestBench",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yychuiyan/ai-testbench.git"
@@ -15,7 +15,8 @@
   "files": [
     "dist",
     "cli",
-    "dev-plugins",
+    "builtin",
+    "tb-plugins",
     "config",
     "docs",
     "CHANGELOG.md",
@@ -33,8 +34,9 @@
     "astro": "astro",
     "lint": "eslint src --max-warnings 50",
     "lint:fix": "eslint src --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"dev-plugins/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"dev-plugins/**/*.mjs\"",
+    "test": "tsx --test src/**/*.test.ts",
+    "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
     "prepare": "simple-git-hooks && node cli/ensure-dist.mjs",
     "prepublishOnly": "npm run build"
   },
@@ -51,7 +53,10 @@
     "cli/**/*.mjs": [
       "prettier --write"
     ],
-    "dev-plugins/**/*.mjs": [
+    "builtin/**/*.mjs": [
+      "prettier --write"
+    ],
+    "tb-plugins/**/*.mjs": [
       "prettier --write"
     ]
   },

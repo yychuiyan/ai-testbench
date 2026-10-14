@@ -1,10 +1,10 @@
 /**
  * 项目内固定根目录文档库（仅 `astro dev`）：
- * - requirements/ → `/__local_requirements`（界面：需求文档库）
- * - cases/        → `/__local_cases`（界面：用例管理）
- * - templates/    → `/__local_templates`（界面：测试模板库）
- * - prompts/      → `/__local_prompts`（界面：提示词管理）
- * - knowledge/    → `/__local_knowledge`（界面：知识库管理）
+ * - requirements/ → `/__tb_requirements`（界面：需求文档库）
+ * - cases/        → `/__tb_cases`（界面：用例管理）
+ * - templates/    → `/__tb_templates`（界面：测试模板库）
+ * - prompts/      → `/__tb_prompts`（界面：提示词管理）
+ * - knowledge/    → `/__tb_knowledge`（界面：知识库管理）
  * 支持 list / mkdir / upload / read / delete / open；路径不得逃出根目录。
  */
 import { execFile } from 'node:child_process';
@@ -398,30 +398,30 @@ function createDocsPlugin(opts) {
   };
 }
 
-export function localRequirementsPlugin() {
+export function tbRequirementsPlugin() {
   return createDocsPlugin({
-    prefix: '/__local_requirements',
+    prefix: '/__tb_requirements',
     dirName: 'requirements',
     legacyDirNames: ['需求文档库', '需求'],
-    name: 'local-requirements',
+    name: 'tb-requirements',
   });
 }
 
-export function localCasesPlugin() {
+export function tbCasesPlugin() {
   return createDocsPlugin({
-    prefix: '/__local_cases',
+    prefix: '/__tb_cases',
     dirName: 'cases',
     legacyDirNames: ['用例管理', '用例'],
-    name: 'local-cases',
+    name: 'tb-cases',
   });
 }
 
-export function localTemplatesPlugin() {
+export function tbTemplatesPlugin() {
   return createDocsPlugin({
-    prefix: '/__local_templates',
+    prefix: '/__tb_templates',
     dirName: 'templates',
     legacyDirNames: ['测试模板库', '模板'],
-    name: 'local-templates',
+    name: 'tb-templates',
   });
 }
 
@@ -467,12 +467,12 @@ function migratePromptFile(absRoot, fromNames, toName) {
 
 const KNOWLEDGE_CATEGORIES = ['测试规范', '方法论', '环境约定'];
 
-export function localKnowledgePlugin() {
+export function tbKnowledgePlugin() {
   return createDocsPlugin({
-    prefix: '/__local_knowledge',
+    prefix: '/__tb_knowledge',
     dirName: 'knowledge',
     legacyDirNames: ['知识库管理', '知识库'],
-    name: 'local-knowledge',
+    name: 'tb-knowledge',
     onReady(absRoot) {
       for (const cat of KNOWLEDGE_CATEGORIES) {
         fs.mkdirSync(path.join(absRoot, cat), { recursive: true });
@@ -481,12 +481,12 @@ export function localKnowledgePlugin() {
   });
 }
 
-export function localPromptsPlugin() {
+export function tbPromptsPlugin() {
   return createDocsPlugin({
-    prefix: '/__local_prompts',
+    prefix: '/__tb_prompts',
     dirName: 'prompts',
     legacyDirNames: ['提示词管理', '提示词'],
-    name: 'local-prompts',
+    name: 'tb-prompts',
     onReady(absRoot) {
       // 不再种子「默认提示词」：用例生成须在插件面板中显式选择提示词
       for (const n of LEGACY_CASE_DEFAULT_NAMES) {

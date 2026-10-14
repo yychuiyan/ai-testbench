@@ -10,10 +10,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const PREFIX = '/__local_config';
-const SESS_PREFIX = '/__local_sessions';
-const CASES_PREFIX = '/__local_case_suites';
-const CASE_SESS_PREFIX = '/__local_case_sessions';
+const PREFIX = '/__tb_config';
+const SESS_PREFIX = '/__tb_sessions';
+const CASES_PREFIX = '/__tb_case_suites';
+const CASE_SESS_PREFIX = '/__tb_case_sessions';
 
 /** 轻量读取数据目录下 `.env`（不依赖 vite，供 CLI 本地服务使用） */
 function loadDotEnv(root) {
@@ -191,9 +191,9 @@ function readBody(req) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function localConfigPlugin() {
+export function tbConfigPlugin() {
   return {
-    name: 'local-config',
+    name: 'tb-config',
     configureServer(server) {
       const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {

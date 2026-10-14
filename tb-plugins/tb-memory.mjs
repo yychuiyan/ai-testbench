@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const PREFIX = '/__local_memory';
+const PREFIX = '/__tb_memory';
 const SEP = '\n§\n';
 const TRACKS = ['user', 'memory', 'key', 'project', 'daily'];
 const CURATED = new Set(['user', 'memory', 'key']);
@@ -319,9 +319,9 @@ function countAll(paths) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function localMemoryPlugin() {
+export function tbMemoryPlugin() {
   return {
-    name: 'local-memory',
+    name: 'tb-memory',
     configureServer(server) {
       const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {

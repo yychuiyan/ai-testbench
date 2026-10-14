@@ -1,0 +1,591 @@
+/**
+ * 会话 shell 执行（对齐 dsh tool-bash / tool-pwsh + tool-jobs 子集）：
+ * - `/__tb_bash` · `/__tb_pwsh`；共用内存 job 注册表
+ * - 同步：超时 / 输出截断；后台：job_list / job_output / job_kill
+ * - 无沙箱升级、无跨进程持久化
+ */
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+const PREFIX_BASH = '/__tb_bash';
+const PREFIX_PWSH = '/__tb_pwsh';
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_OUT = 32 * 1024;
+const MAX_COMMAND = 8_000;
+const MAX_JOBS = 32;
+const JOB_BUF = 256 * 1024;
+
+/** @type {Map<string, object>} */
+const jobs = new Map();
+
+function sendJson(res, status, body) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(body));
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function normalizeAccess(raw) {
+  const a = String(raw || '').trim();
+  if (a === 'full' || a === 'readwrite' || a === 'readonly') return a;
+  return 'readonly';
+}
+
+function expandHome(p) {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function workspaceFile(projectRoot) {
+  return path.join(projectRoot, '.local', 'workspaces.json');
+}
+
+function legacyWorkspaceFile(projectRoot) {
+  return path.join(projectRoot, '.local', 'workspace.json');
+}
+
+function folderName(abs) {
+  const parts = abs.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || abs;
+}
+
+function ensureWorkspaceRegistry(projectRoot) {
+  const rootAbs = path.resolve(projectRoot);
+  const fp = workspaceFile(projectRoot);
+  let items = [];
+  let active = rootAbs;
+
+  try {
+    if (fs.existsSync(fp)) {
+      const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      if (Array.isArray(raw.items)) {
+        items = raw.items
+          .map((it) => ({
+            id: String(it.id || ''),
+            path: path.resolve(String(it.path || '')),
+            name: String(it.name || folderName(String(it.path || ''))),
+            addedAt: Number(it.addedAt) || Date.now(),
+          }))
+          .filter(
+            (it) =>
+              it.id && it.path && fs.existsSync(it.path) && fs.statSync(it.path).isDirectory(),
+          );
+      }
+      if (raw.active) active = path.resolve(String(raw.active));
+    } else if (fs.existsSync(legacyWorkspaceFile(projectRoot))) {
+      const legacy = JSON.parse(fs.readFileSync(legacyWorkspaceFile(projectRoot), 'utf8'));
+      const p = String(legacy.path || '').trim();
+      if (p && fs.existsSync(p) && fs.statSync(p).isDirectory()) {
+        active = path.resolve(p);
+        items = [
+          {
+            id: `ws_${Date.now().toString(36)}`,
+            path: active,
+            name: folderName(active),
+            addedAt: Date.now(),
+          },
+        ];
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (!items.some((it) => it.path === rootAbs)) {
+    items.unshift({
+      id: 'ws_project',
+      path: rootAbs,
+      name: folderName(rootAbs),
+      addedAt: 0,
+    });
+  }
+  if (!items.some((it) => it.path === active)) {
+    active = rootAbs;
+  }
+  return { active, items, projectRoot: rootAbs };
+}
+
+function readWorkspace(projectRoot) {
+  return ensureWorkspaceRegistry(projectRoot).active;
+}
+
+function isSystemSensitive(abs) {
+  const n = abs.replace(/\\/g, '/').toLowerCase();
+  const home = os.homedir().replace(/\\/g, '/').toLowerCase();
+  const prefixes = [
+    '/system',
+    '/usr',
+    '/bin',
+    '/sbin',
+    '/etc',
+    '/private/etc',
+    '/library/extensions',
+    '/dev',
+    '/proc',
+    '/windows',
+    '/program files',
+  ];
+  if (prefixes.some((p) => n === p || n.startsWith(`${p}/`))) return true;
+  if (n.startsWith(`${home}/`) || n === home) return false;
+  return false;
+}
+
+/**
+ * @returns {{ abs: string, display: string, inWorkspace: boolean }}
+ */
+function resolveWorkdir(workspaceRoot, input, access) {
+  let raw = String(input ?? '').trim() || '.';
+  if (raw.includes('\0')) throw new Error('invalid path');
+  raw = expandHome(raw);
+  const ws = path.resolve(workspaceRoot);
+
+  if (path.isAbsolute(raw)) {
+    const abs = path.resolve(raw);
+    if (isSystemSensitive(abs)) throw new Error('禁止访问系统敏感目录');
+    if (abs === ws || abs.startsWith(ws + path.sep)) {
+      const display = path.relative(ws, abs).split(path.sep).join('/') || '.';
+      return { abs, display, inWorkspace: true };
+    }
+    if (access !== 'full') {
+      throw new Error('该路径不在当前工作区内。请先设置工作区，或切换到「完全权限」使用绝对路径。');
+    }
+    return { abs, display: abs, inWorkspace: false };
+  }
+
+  const cleaned = raw.replace(/\\/g, '/').replace(/^\/+/, '');
+  const abs = path.resolve(ws, cleaned);
+  if (abs !== ws && !abs.startsWith(ws + path.sep)) {
+    throw new Error('路径超出当前工作区');
+  }
+  const display = path.relative(ws, abs).split(path.sep).join('/') || '.';
+  return { abs, display, inWorkspace: true };
+}
+
+function truncateText(s, max = MAX_OUT) {
+  const t = String(s ?? '');
+  if (t.length <= max) return { text: t, truncated: false };
+  return { text: `${t.slice(0, max)}\n…[truncated ${t.length - max} chars]`, truncated: true };
+}
+
+function bashBinary() {
+  return process.platform === 'win32' ? 'bash' : '/bin/bash';
+}
+
+function whichBinary(name) {
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const out = execFileSync(cmd, [name], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+    });
+    return (
+      String(out || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find(Boolean) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** 解析 PowerShell：优先 pwsh，Windows 回退 powershell.exe */
+function resolvePwshBinary() {
+  const order =
+    process.platform === 'win32'
+      ? ['pwsh.exe', 'pwsh', 'powershell.exe', 'powershell']
+      : ['pwsh'];
+  for (const name of order) {
+    const hit = whichBinary(name);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * @param {'bash' | 'pwsh'} shell
+ * @returns {{ bin: string, args: string[] } | { error: string }}
+ */
+function shellInvocation(shell, command) {
+  if (shell === 'bash') {
+    const bin = bashBinary();
+    return { bin, args: ['-lc', command] };
+  }
+  const bin = resolvePwshBinary();
+  if (!bin) {
+    return {
+      error:
+        'PowerShell not found. Install PowerShell 7+ (pwsh), or on Windows use Windows PowerShell.',
+    };
+  }
+  return {
+    bin,
+    args: ['-NoProfile', '-NonInteractive', '-Command', command],
+  };
+}
+
+/**
+ * @param {'bash' | 'pwsh'} shell
+ */
+async function runShell(shell, command, cwd, timeoutMs) {
+  const inv = shellInvocation(shell, command);
+  if ('error' in inv) {
+    return {
+      ok: false,
+      exitCode: null,
+      stdout: '',
+      stderr: '',
+      error: inv.error,
+      cwd,
+      durationMs: 0,
+    };
+  }
+  const started = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync(inv.bin, inv.args, {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: MAX_OUT * 4,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+    const out = truncateText(stdout);
+    const err = truncateText(stderr);
+    return {
+      ok: true,
+      exitCode: 0,
+      stdout: out.text,
+      stderr: err.text,
+      truncated: out.truncated || err.truncated,
+      cwd,
+      durationMs: Date.now() - started,
+    };
+  } catch (e) {
+    const err = e && typeof e === 'object' ? e : {};
+    const code = 'code' in err ? err.code : undefined;
+    if (code === 'ENOENT') {
+      return {
+        ok: false,
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        error: `${shell} not found (${inv.bin}).`,
+        cwd,
+        durationMs: Date.now() - started,
+      };
+    }
+    const killed = Boolean('killed' in err && err.killed);
+    const signal = 'signal' in err ? err.signal : undefined;
+    const timedOut = killed || signal === 'SIGTERM';
+    const out = truncateText('stdout' in err ? err.stdout : '');
+    const stderrRaw =
+      'stderr' in err && err.stderr
+        ? err.stderr
+        : timedOut
+          ? ''
+          : e instanceof Error
+            ? e.message
+            : String(e);
+    const errOut = truncateText(stderrRaw);
+    const exitCode = typeof code === 'number' ? code : timedOut ? null : 1;
+    return {
+      ok: !timedOut && exitCode === 0,
+      exitCode,
+      stdout: out.text,
+      stderr: errOut.text,
+      truncated: out.truncated || errOut.truncated,
+      timedOut,
+      error: timedOut ? `command timed out after ${timeoutMs}ms` : undefined,
+      cwd,
+      durationMs: Date.now() - started,
+    };
+  }
+}
+
+function appendJobBuf(job, stream, chunk) {
+  const s = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+  job[stream] += s;
+  if (job[stream].length > JOB_BUF) {
+    job[stream] = `…[truncated]\n${job[stream].slice(-JOB_BUF)}`;
+    job.truncated = true;
+  }
+}
+
+function pruneJobs() {
+  if (jobs.size <= MAX_JOBS) return;
+  const finished = [...jobs.values()]
+    .filter((j) => j.status !== 'running')
+    .sort((a, b) => (a.endedAt || 0) - (b.endedAt || 0));
+  while (jobs.size > MAX_JOBS && finished.length) {
+    const old = finished.shift();
+    if (old) jobs.delete(old.id);
+  }
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    shell: job.shell || 'bash',
+    command: job.command,
+    workdir: job.workdir,
+    status: job.status,
+    exitCode: job.exitCode,
+    pid: job.pid,
+    startedAt: job.startedAt,
+    endedAt: job.endedAt,
+    truncated: job.truncated,
+    stdoutBytes: Buffer.byteLength(job.stdout, 'utf8'),
+    stderrBytes: Buffer.byteLength(job.stderr, 'utf8'),
+  };
+}
+
+/**
+ * @param {'bash' | 'pwsh'} shell
+ */
+function startBackgroundJob(shell, command, cwd, workdirDisplay) {
+  const inv = shellInvocation(shell, command);
+  if ('error' in inv) {
+    throw new Error(inv.error);
+  }
+  const id = `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  let child;
+  try {
+    child = spawn(inv.bin, inv.args, {
+      cwd,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    throw new Error(e instanceof Error ? e.message : String(e));
+  }
+
+  const job = {
+    id,
+    shell,
+    command,
+    workdir: workdirDisplay,
+    cwd,
+    status: 'running',
+    exitCode: null,
+    stdout: '',
+    stderr: '',
+    truncated: false,
+    startedAt: Date.now(),
+    endedAt: null,
+    pid: child.pid ?? null,
+    child,
+  };
+
+  child.stdout?.on('data', (c) => appendJobBuf(job, 'stdout', c));
+  child.stderr?.on('data', (c) => appendJobBuf(job, 'stderr', c));
+  child.on('error', (e) => {
+    if (job.status === 'running') {
+      job.status = 'exited';
+      job.exitCode = 1;
+      job.endedAt = Date.now();
+    }
+    appendJobBuf(job, 'stderr', e?.message || String(e));
+    job.child = null;
+  });
+  child.on('close', (code, signal) => {
+    if (job.status === 'running') {
+      job.status = signal ? 'killed' : 'exited';
+    }
+    job.exitCode = typeof code === 'number' ? code : null;
+    job.endedAt = Date.now();
+    job.child = null;
+  });
+
+  jobs.set(id, job);
+  pruneJobs();
+  return publicJob(job);
+}
+
+function killJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return { ok: false, error: 'job not found' };
+  if (job.status !== 'running' || !job.child) {
+    return { ok: true, alreadyDone: true, job: publicJob(job) };
+  }
+  try {
+    job.child.kill('SIGTERM');
+    job.status = 'killed';
+    job.endedAt = Date.now();
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e), job: publicJob(job) };
+  }
+  return { ok: true, job: publicJob(job) };
+}
+
+/**
+ * @param {'bash' | 'pwsh'} shell
+ * @param {string} prefix
+ */
+async function handleShellExec(shell, req, res, projectRoot) {
+  const workspace = readWorkspace(projectRoot);
+  const body = JSON.parse((await readBody(req)) || '{}');
+  const access = normalizeAccess(body.access);
+  if (access === 'readonly') {
+    return sendJson(res, 403, {
+      error: `${shell} 需要「工作区内修改」或「完全权限」`,
+    });
+  }
+  const command = String(body.command ?? '').trim();
+  if (!command) return sendJson(res, 400, { error: 'command is required' });
+  if (command.length > MAX_COMMAND) {
+    return sendJson(res, 400, { error: `command too long (max ${MAX_COMMAND})` });
+  }
+  const timeoutMs = Math.min(
+    Math.max(Number(body.timeoutMs) || DEFAULT_TIMEOUT_MS, 1_000),
+    120_000,
+  );
+  const { abs, display } = resolveWorkdir(workspace, body.workdir || '.', access);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+    return sendJson(res, 400, { error: 'workdir is not a directory', path: display });
+  }
+  const background = Boolean(body.background);
+  if (background) {
+    const job = startBackgroundJob(shell, command, abs, display);
+    return sendJson(res, 200, {
+      ok: true,
+      background: true,
+      jobId: job.id,
+      job,
+      command,
+      workdir: display,
+      shell,
+    });
+  }
+  const result = await runShell(shell, command, abs, timeoutMs);
+  return sendJson(res, 200, {
+    ...result,
+    workdir: display,
+    command,
+    shell,
+  });
+}
+
+/**
+ * Vite / connect 中间件插件（bash + pwsh + jobs）
+ */
+export function tbBashPlugin() {
+  return {
+    name: 'tb-bash',
+    configureServer(server) {
+      const projectRoot = server.config.root;
+      server.middlewares.use(async (req, res, next) => {
+        const url = (req.url || '').split('?')[0];
+        const isBash = url.startsWith(PREFIX_BASH);
+        const isPwsh = url.startsWith(PREFIX_PWSH);
+        if (!isBash && !isPwsh) return next();
+
+        const prefix = isPwsh ? PREFIX_PWSH : PREFIX_BASH;
+        const shell = isPwsh ? 'pwsh' : 'bash';
+
+        try {
+          const workspace = readWorkspace(projectRoot);
+
+          if (url === `${prefix}/health` && req.method === 'GET') {
+            const running = [...jobs.values()].filter((j) => j.status === 'running').length;
+            if (shell === 'pwsh') {
+              const bin = resolvePwshBinary();
+              return sendJson(res, 200, {
+                ok: true,
+                mode: 'pwsh',
+                available: Boolean(bin),
+                pwsh: bin,
+                projectRoot: path.resolve(projectRoot),
+                workspace,
+                timeoutMs: DEFAULT_TIMEOUT_MS,
+                maxOut: MAX_OUT,
+                jobs: true,
+                jobCount: jobs.size,
+                runningJobs: running,
+              });
+            }
+            return sendJson(res, 200, {
+              ok: true,
+              mode: 'bash',
+              available: true,
+              projectRoot: path.resolve(projectRoot),
+              workspace,
+              bash: bashBinary(),
+              timeoutMs: DEFAULT_TIMEOUT_MS,
+              maxOut: MAX_OUT,
+              jobs: true,
+              jobCount: jobs.size,
+              runningJobs: running,
+            });
+          }
+
+          // jobs 仅挂在 bash 前缀（pwsh 后台任务也写入同一注册表）
+          if (isBash && url === `${PREFIX_BASH}/jobs` && req.method === 'GET') {
+            const list = [...jobs.values()]
+              .sort((a, b) => b.startedAt - a.startedAt)
+              .map(publicJob);
+            return sendJson(res, 200, { ok: true, jobs: list });
+          }
+
+          if (isBash && url === `${PREFIX_BASH}/job_output` && req.method === 'POST') {
+            const body = JSON.parse((await readBody(req)) || '{}');
+            const jobId = String(body.jobId ?? body.id ?? '').trim();
+            if (!jobId) return sendJson(res, 400, { error: 'jobId is required' });
+            const job = jobs.get(jobId);
+            if (!job) return sendJson(res, 404, { error: 'job not found', jobId });
+            const offset = Math.max(0, Number(body.offset) || 0);
+            const combined = `${job.stdout}${job.stderr ? (job.stdout ? '\n' : '') + job.stderr : ''}`;
+            const slice = combined.slice(offset);
+            return sendJson(res, 200, {
+              ok: true,
+              job: publicJob(job),
+              stdout: job.stdout,
+              stderr: job.stderr,
+              output: slice,
+              offset,
+              nextOffset: offset + slice.length,
+              truncated: job.truncated,
+            });
+          }
+
+          if (isBash && url === `${PREFIX_BASH}/job_kill` && req.method === 'POST') {
+            const body = JSON.parse((await readBody(req)) || '{}');
+            const access = normalizeAccess(body.access);
+            if (access === 'readonly') {
+              return sendJson(res, 403, {
+                error: 'job_kill 需要「工作区内修改」或「完全权限」',
+              });
+            }
+            const jobId = String(body.jobId ?? body.id ?? '').trim();
+            if (!jobId) return sendJson(res, 400, { error: 'jobId is required' });
+            const result = killJob(jobId);
+            return sendJson(res, result.ok ? 200 : 404, result);
+          }
+
+          if (url === `${prefix}/exec` && req.method === 'POST') {
+            return await handleShellExec(shell, req, res, projectRoot);
+          }
+
+          return sendJson(res, 404, { error: 'not found' });
+        } catch (e) {
+          return sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+        }
+      });
+    },
+  };
+}

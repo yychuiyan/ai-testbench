@@ -5,7 +5,12 @@
  */
 import { getCachedAppConfig, updateAppConfig, flushAppConfig } from './app-config';
 
-export type PluginId = 'memory' | 'knowledge' | 'caseGen' | 'promptGen' | 'knowledgeGen';
+export type PluginId =
+  | 'memory'
+  | 'knowledge'
+  | 'caseGen'
+  | 'promptGen'
+  | 'knowledgeGen';
 
 export interface PluginMeta {
   id: PluginId;

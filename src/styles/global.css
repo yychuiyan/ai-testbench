@@ -41,6 +41,25 @@ body {
   height: 100%;
 }
 
+/* 工作台内交互控件：去掉浏览器 / Headless 默认聚焦描边（保留 hover / data-open） */
+.tw-app button:focus,
+.tw-app button:focus-visible,
+.tw-app [role='button']:focus,
+.tw-app [role='button']:focus-visible,
+.tw-app summary:focus,
+.tw-app summary:focus-visible,
+.tw-app a:focus,
+.tw-app a:focus-visible {
+  outline: none !important;
+  box-shadow: none;
+}
+
+.tw-app button:focus-visible,
+.tw-app [role='button']:focus-visible {
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+
 /*
  * 锁定 html rem 基准，避免字号偏好改掉侧栏 w-60 / ml-60 等布局尺寸，
  * 切页时也不会因 rem 重算而跳动。正文用 --tw-ui-font-size。
@@ -64,6 +83,7 @@ body,
 }
 
 .tw-main {
+  position: relative;
   margin-left: var(--tw-nav-width);
   background-color: var(--tw-surface-page);
   color: var(--tw-label-primary);
@@ -205,29 +225,30 @@ html[data-nav-collapsed='1'] .tw-main {
   color: var(--tw-label-tertiary);
 }
 
-/* dsh：默认文件夹；悬停/展开时换成三角箭头 */
+/* dsh：默认文件夹；展开=打开文件夹；仅 hover / 菜单打开时才显示三角 */
 .tw-project-row .tw-chevron {
   display: none;
 }
 
+.tw-project-row .tw-folder {
+  display: inline-flex;
+  color: var(--tw-label-tertiary);
+}
+
 .tw-project-row:hover .tw-chevron,
-.tw-project-row.is-expanded .tw-chevron {
+.tw-project-row.is-menu-open .tw-chevron {
   display: inline-flex;
   color: var(--tw-label-tertiary);
 }
 
 .tw-project-row:hover .tw-folder,
-.tw-project-row.is-expanded .tw-folder {
+.tw-project-row.is-menu-open .tw-folder {
   display: none;
-}
-
-.tw-project-row .tw-folder {
-  color: var(--tw-label-tertiary);
 }
 
 .tw-project-row.is-active .tw-folder,
 .tw-project-row.is-active:hover .tw-chevron,
-.tw-project-row.is-active.is-expanded .tw-chevron {
+.tw-project-row.is-active.is-menu-open .tw-chevron {
   color: var(--tw-accent);
 }
 
@@ -490,11 +511,11 @@ html[data-nav-collapsed='1'] .tw-main {
   flex: none;
   width: 44px;
   height: 44px;
-  border-radius: 0;
+  border-radius: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  overflow: visible;
+  overflow: hidden;
   background: transparent;
 }
 
@@ -503,6 +524,7 @@ html[data-nav-collapsed='1'] .tw-main {
   height: 100%;
   object-fit: contain;
   display: block;
+  border-radius: 10px;
 }
 
 .tw-nav-brand-text {
@@ -649,11 +671,12 @@ html[data-nav-collapsed='1'] .tw-nav-toggle-icon.is-expand {
   display: none;
 }
 
-.tw-nav-details[open] > .tw-nav-summary .tw-nav-ico--closed {
+/* 收起动画期间（is-closing）立刻切回合上图标，避免动画结束后才闪一下 */
+.tw-nav-details[open]:not(.is-closing) > .tw-nav-summary .tw-nav-ico--closed {
   display: none;
 }
 
-.tw-nav-details[open] > .tw-nav-summary .tw-nav-ico--open {
+.tw-nav-details[open]:not(.is-closing) > .tw-nav-summary .tw-nav-ico--open {
   display: block;
 }
 
@@ -778,6 +801,36 @@ html[data-theme='dark'] .tw-toggle-knob {
   height: 14px;
   flex: none;
   margin-left: auto;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tw-nav-details[open]:not(.is-closing) > .tw-nav-summary .tw-nav-chevron {
+  transform: rotate(90deg);
+}
+
+.tw-nav-details > .tw-nav-subtree-anim {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease;
+}
+
+.tw-nav-details[open] > .tw-nav-subtree-anim,
+.tw-nav-details.is-opening > .tw-nav-subtree-anim {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.tw-nav-details.is-closing > .tw-nav-subtree-anim {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.tw-nav-subtree-anim > .tw-nav-subtree {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .tw-nav-subtree {
@@ -792,6 +845,25 @@ html[data-theme='dark'] .tw-toggle-knob {
 .tw-nav-subtree .tw-nav-item {
   min-height: 32px;
   padding-left: 8px;
+  transform: translateX(-4px);
+  opacity: 0.65;
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease;
+}
+
+.tw-nav-details[open]:not(.is-closing) > .tw-nav-subtree-anim .tw-nav-item {
+  transform: none;
+  opacity: 1;
+}
+
+.tw-nav-details[open]:not(.is-closing) > .tw-nav-subtree-anim .tw-nav-item:nth-child(2) {
+  transition-delay: 0.04s;
+}
+
+/* 路由 loading：暂隐藏（需要时去掉本规则即可恢复） */
+.tw-route-loading {
+  display: none !important;
 }
 
 .tw-nav-subtree .tw-nav-ico {
@@ -1198,6 +1270,37 @@ html[data-theme='dark'] .tw-confirm-dialog input {
   background-color: var(--tw-session-hover-bg);
 }
 
+/* 消息底栏：复制 / 用量 / 时间同一行高垂直居中 */
+.tw-msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  color: var(--tw-label-tertiary);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tw-msg-action-btn {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.tw-msg-action-meta {
+  height: 22px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tw-msg-action-time {
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--tw-label-tertiary);
+}
+
 html[data-theme='dark'] .tw-app .hover\:bg-stone-200\/60:hover,
 html[data-theme='dark'] .tw-app .hover\:bg-stone-200\/70:hover,
 html[data-theme='dark'] .tw-app .hover\:bg-stone-200\/50:hover,
@@ -1373,6 +1476,11 @@ html[data-theme='dark'] .tw-settings-dialog button.bg-\[\#4176e6\],
 html[data-theme='dark'] .tw-settings-dialog .bg-\[\#4176e6\] {
   background-color: var(--tw-accent) !important;
   color: #fff !important;
+}
+
+/* 插件页 toast */
+.tw-plugin-toast {
+  animation: tw-pop-in 160ms ease-out;
 }
 
 /* 插件页：卡片抬高一层，避免与页面底色糊成一片 */
@@ -1674,4 +1782,208 @@ html[data-theme='dark'] .prose a {
 html[data-theme='dark'] .prose a:hover {
   color: #bfdbfe;
   text-decoration-color: rgba(191, 219, 254, 0.7);
+}
+
+/* —— 路由 Loading：仅主内容区透明蒙版 —— */
+@keyframes tw-route-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tw-route-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--tw-surface-page, #f4f5f7) 42%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  transition:
+    opacity 0.22s ease,
+    visibility 0.22s ease;
+}
+
+.tw-route-loading.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tw-route-loading-spin {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 2.5px solid color-mix(in srgb, var(--tw-accent, #4176e6) 28%, transparent);
+  border-top-color: var(--tw-accent, #4176e6);
+  animation: tw-route-spin 0.7s linear infinite;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--tw-surface-page) 70%, transparent);
+}
+
+/* 工作台：切会话 / Tab 内容区 */
+@keyframes tw-pane-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tw-pane-enter {
+  animation: tw-pane-enter 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tw-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tw-anim-list > * {
+  animation: tw-fade-up 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.tw-anim-list > *:nth-child(1) {
+  animation-delay: 0.06s;
+}
+.tw-anim-list > *:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.tw-anim-list > *:nth-child(3) {
+  animation-delay: 0.14s;
+}
+.tw-anim-list > *:nth-child(4) {
+  animation-delay: 0.18s;
+}
+.tw-anim-list > *:nth-child(5) {
+  animation-delay: 0.22s;
+}
+.tw-anim-list > *:nth-child(6) {
+  animation-delay: 0.26s;
+}
+.tw-anim-list > *:nth-child(7) {
+  animation-delay: 0.3s;
+}
+.tw-anim-list > *:nth-child(8) {
+  animation-delay: 0.34s;
+}
+.tw-anim-list > *:nth-child(9) {
+  animation-delay: 0.38s;
+}
+.tw-anim-list > *:nth-child(10) {
+  animation-delay: 0.42s;
+}
+.tw-anim-list > *:nth-child(11) {
+  animation-delay: 0.46s;
+}
+.tw-anim-list > *:nth-child(12) {
+  animation-delay: 0.5s;
+}
+.tw-anim-list > *:nth-child(n + 13) {
+  animation-delay: 0.54s;
+}
+
+/* —— 交互动画（展开 / 弹层 / 菜单） —— */
+.tw-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+  /* 收起时不占位，避免并排 grid 行被撑高后「假展开」 */
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tw-collapse.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tw-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 插件双列：行内卡片顶对齐，避免一张展开时邻卡被 stretch 成等高 */
+.tw-plugins-page .tw-anim-list.grid {
+  align-items: start;
+}
+
+.tw-menu-anim {
+  transform-origin: top;
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+.tw-menu-anim[data-closed] {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.tw-dialog-backdrop-anim {
+  transition: opacity 200ms ease-out;
+}
+
+.tw-dialog-backdrop-anim[data-closed] {
+  opacity: 0;
+}
+
+.tw-dialog-panel-anim {
+  transition:
+    opacity 200ms ease-out,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tw-dialog-panel-anim[data-closed] {
+  opacity: 0;
+  transform: scale(0.96) translateY(6px);
+}
+
+@keyframes tw-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tw-popover-anim {
+  animation: tw-pop-in 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-anim-list > *,
+  .tw-popover-anim,
+  .tw-pane-enter,
+  .tw-route-loading-spin {
+    animation: none !important;
+  }
+
+  .tw-route-loading {
+    transition: none !important;
+  }
+
+  .tw-collapse,
+  .tw-menu-anim,
+  .tw-dialog-backdrop-anim,
+  .tw-dialog-panel-anim {
+    transition: none !important;
+  }
 }

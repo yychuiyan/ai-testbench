@@ -8,7 +8,7 @@
 import type { LLMSettings } from './settings';
 import type { ChatMessage } from './llm';
 
-const API = '/__local_memory';
+const API = '/__tb_memory';
 
 export const MEMORY_KEEP_RECENT = 10;
 export const MEMORY_RECALL_TIMEOUT_MS = 3000;

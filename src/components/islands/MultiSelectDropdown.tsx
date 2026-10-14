@@ -68,7 +68,7 @@ export default function MultiSelectDropdown({
         </svg>
       </button>
       {open ? (
-        <div className="tw-select-menu absolute z-[80] mt-1 max-h-56 w-full overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200">
+        <div className="tw-select-menu tw-popover-anim absolute z-[80] mt-1 max-h-56 w-full overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200">
           {options.length === 0 ? (
             <div className="px-3 py-2 text-sm text-stone-400">暂无可选项</div>
           ) : (

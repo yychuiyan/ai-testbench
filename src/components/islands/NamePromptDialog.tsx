@@ -1,4 +1,4 @@
-import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import { useEffect, useRef, useState } from 'react';
 
 interface Props {
@@ -46,10 +46,17 @@ export default function NamePromptDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} className="relative z-50">
-      <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+    <Dialog open={open} onClose={onClose} transition className="relative z-50">
+      <DialogBackdrop
+        transition
+        className="tw-dialog-backdrop-anim fixed inset-0 bg-black/30"
+        aria-hidden="true"
+      />
       <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel className="tw-confirm-dialog w-full max-w-sm rounded-xl shadow-xl border border-stone-200 p-5">
+        <DialogPanel
+          transition
+          className="tw-confirm-dialog tw-dialog-panel-anim w-full max-w-sm rounded-xl shadow-xl border border-stone-200 p-5 bg-white"
+        >
           <DialogTitle className="tw-confirm-title text-base font-semibold text-stone-900">
             {title}
           </DialogTitle>
@@ -66,14 +73,14 @@ export default function NamePromptDialog({
                 }
               }}
               placeholder={placeholder}
-              className="mt-1.5 w-full h-9 px-3 text-sm rounded-lg border border-stone-200 text-stone-800 outline-none focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6]"
+              className="mt-1.5 w-full h-9 px-3 text-sm rounded-lg border border-stone-200 text-stone-800 outline-none focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] transition-colors"
             />
           </label>
           <div className="mt-5 flex justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg text-stone-600 hover:bg-stone-100"
+              className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg text-stone-600 hover:bg-stone-100 transition-colors"
             >
               {cancelLabel}
             </button>
@@ -81,7 +88,7 @@ export default function NamePromptDialog({
               type="button"
               disabled={!value.trim()}
               onClick={submit}
-              className="h-8 px-4 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
+              className="h-8 px-4 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40 transition-colors"
             >
               {confirmLabel}
             </button>

@@ -55,8 +55,9 @@ export default function SelectDropdown<T extends string>({
           <Chevron />
         </ListboxButton>
         <ListboxOptions
+          transition
           anchor={{ to: 'bottom start', gap: 4 }}
-          className="tw-select-menu z-[80] max-h-56 w-[var(--button-width)] overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+          className="tw-select-menu tw-menu-anim z-[80] max-h-56 w-[var(--button-width)] overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
         >
           {options.map((o) => (
             <ListboxOption

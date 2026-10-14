@@ -95,8 +95,9 @@ function TreeNode({
         />
         <span className="truncate">{node.name}</span>
       </button>
-      {open
-        ? node.children.map((c) => (
+      <div className={`tw-collapse ${open ? 'is-open' : ''}`}>
+        <div className="tw-collapse-inner">
+          {node.children.map((c) => (
             <TreeNode
               key={c.path}
               node={c}
@@ -106,8 +107,9 @@ function TreeNode({
               onToggle={onToggle}
               onSelect={onSelect}
             />
-          ))
-        : null}
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -395,7 +397,7 @@ export default function RequirementsLibrary() {
                 当前文件夹为空，点击「上传文件」添加需求文档（.md / .txt / .docx）
               </p>
             ) : (
-              <ul className="space-y-1">
+              <ul className="tw-anim-list space-y-1">
                 {files.map((f) => (
                   <li
                     key={f.path}

@@ -214,7 +214,7 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
             暂无知识库文件，点击「生成知识库」前往我的工作台。
           </p>
         ) : (
-          <ul className="divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
+          <ul className="tw-anim-list divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
             <li className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-xs text-stone-500">
               <input
                 type="checkbox"

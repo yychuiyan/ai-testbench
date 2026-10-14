@@ -1,4 +1,4 @@
-import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 
 interface Props {
   open: boolean;
@@ -25,14 +25,21 @@ export default function ConfirmDialog({
   const dangerMode = danger === true || danger === 'solid' ? 'solid' : danger === 'outline' ? 'outline' : null;
 
   return (
-    <Dialog open={open} onClose={onClose} className="relative z-[90]">
-      <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+    <Dialog open={open} onClose={onClose} transition className="relative z-[90]">
+      <DialogBackdrop
+        transition
+        className="tw-dialog-backdrop-anim fixed inset-0 bg-black/30"
+        aria-hidden="true"
+      />
       <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel className="tw-confirm-dialog relative w-full max-w-sm rounded-xl shadow-xl border border-stone-200 p-5">
+        <DialogPanel
+          transition
+          className="tw-confirm-dialog tw-dialog-panel-anim relative w-full max-w-sm rounded-xl shadow-xl border border-stone-200 p-5 bg-white"
+        >
           <button
             type="button"
             onClick={onClose}
-            className="tw-confirm-cancel absolute top-3.5 right-3.5 w-7 h-7 flex items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            className="tw-confirm-cancel absolute top-3.5 right-3.5 w-7 h-7 flex items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 transition-colors"
             aria-label="关闭"
           >
             ✕
@@ -47,7 +54,7 @@ export default function ConfirmDialog({
             <button
               type="button"
               onClick={onClose}
-              className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100"
+              className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 transition-colors"
             >
               {cancelLabel}
             </button>
@@ -56,10 +63,10 @@ export default function ConfirmDialog({
               onClick={onConfirm}
               className={
                 dangerMode === 'outline'
-                  ? 'h-8 px-3 text-sm rounded-lg border border-red-300 text-red-600 bg-transparent hover:bg-red-50'
+                  ? 'h-8 px-3 text-sm rounded-lg border border-red-300 text-red-600 bg-transparent hover:bg-red-50 transition-colors'
                   : dangerMode === 'solid'
-                    ? 'h-8 px-3 text-sm rounded-lg text-white bg-red-600 hover:bg-red-700'
-                    : 'h-8 px-3 text-sm rounded-lg text-white bg-[#4176e6] hover:bg-[#3566d0]'
+                    ? 'h-8 px-3 text-sm rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors'
+                    : 'h-8 px-3 text-sm rounded-lg text-white bg-[#4176e6] hover:bg-[#3566d0] transition-colors'
               }
             >
               {confirmLabel}

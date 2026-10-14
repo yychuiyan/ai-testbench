@@ -9,8 +9,8 @@ export type SlashDocMeta = SlashDocItem;
 
 export const KB_SYSTEM_HINT =
   '用户可能通过「@」引用了知识库与模板下的 Markdown / Excel / Word 等文档（消息中会列出路径）。' +
-  '请先调用 kb_read 读取引用内容：Markdown 为全文，Excel/Word 为字段或元数据摘要。' +
-  '必要时用 kb_search 搜索；不要臆造未读到的正文。';
+  '仅当用户引用了文档，或问题明显依赖知识库/模板时，再调用 kb_read / kb_search；一般闲聊或无关问题不要为了凑答去检索。' +
+  '读取时：Markdown 为全文，Excel/Word 为字段或元数据摘要；不要臆造未读到的正文。';
 
 export const KB_TOOLS = [
   {

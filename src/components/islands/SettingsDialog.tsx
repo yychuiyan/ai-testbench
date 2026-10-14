@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
+import {
+  Listbox,
+  ListboxButton,
+  ListboxOption,
+  ListboxOptions,
+  Transition,
+  TransitionChild,
+} from '@headlessui/react';
 import { APP_VERSION } from '../../lib/app-version';
 import { t } from '../../lib/i18n';
 import { fetchModels } from '../../lib/llm';
@@ -179,8 +186,9 @@ function PrefSelect<T extends string>({
         <ChevronDown className="w-3.5 h-3.5 text-stone-400 shrink-0" />
       </ListboxButton>
       <ListboxOptions
+        transition
         anchor={{ to: 'bottom end', gap: 6 }}
-        className="tw-select-menu z-[60] min-w-[10rem] rounded-xl py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+        className="tw-select-menu tw-menu-anim z-[60] min-w-[10rem] rounded-xl py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
       >
         {options.map((o) => (
           <ListboxOption
@@ -462,14 +470,17 @@ export default function SettingsDialog() {
         </button>
       </div>
 
-      {open && (
+      <Transition show={open}>
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-stone-950/45"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          <div className="tw-settings-dialog relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[min(92vh,720px)]">
+          <TransitionChild>
+            <div
+              className="tw-dialog-backdrop-anim absolute inset-0 bg-stone-950/45"
+              onClick={() => setOpen(false)}
+              aria-hidden="true"
+            />
+          </TransitionChild>
+          <TransitionChild>
+          <div className="tw-settings-dialog tw-dialog-panel-anim relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl h-[min(92vh,720px)] overflow-hidden flex flex-col">
             {/* 顶栏：标题 + 关闭，避免压住右侧控件 */}
             <div className="shrink-0 h-12 px-4 flex items-center justify-between border-b border-stone-100 bg-white">
               <h2 className="text-sm font-semibold text-stone-800 truncate pr-3">{headerTitle}</h2>
@@ -759,8 +770,9 @@ export default function SettingsDialog() {
                               <ChevronDown className="w-4 h-4 shrink-0 ml-2 text-stone-400" />
                             </ListboxButton>
                             <ListboxOptions
+                              transition
                               anchor={{ to: 'bottom start', gap: 6 }}
-                              className="tw-select-menu z-[60] w-[var(--button-width)] max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+                              className="tw-select-menu tw-menu-anim z-[60] w-[var(--button-width)] max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
                             >
                               {modelOptions.map((m) => (
                                 <ListboxOption
@@ -874,8 +886,9 @@ export default function SettingsDialog() {
               </div>
             </div>
           </div>
+          </TransitionChild>
         </div>
-      )}
+      </Transition>
       <ConfirmDialog
         open={deleteProviderId != null}
         title={t('settings.delete', undefined, lang)}

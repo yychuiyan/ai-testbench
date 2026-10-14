@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const PREFIX = '/__local_kb';
+const PREFIX = '/__tb_kb';
 const ROOTS = ['knowledge', 'templates'];
 const MAX_RESULTS = 12;
 const SNIPPET_LEN = 180;
@@ -90,9 +90,9 @@ function safeRelPath(rel) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function localKbPlugin() {
+export function tbKbPlugin() {
   return {
-    name: 'local-kb',
+    name: 'tb-kb',
     configureServer(server) {
       // Astro 的 vite root 通常是项目根
       const root = server.config.root;

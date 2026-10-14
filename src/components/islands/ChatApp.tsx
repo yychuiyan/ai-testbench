@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
@@ -41,6 +42,7 @@ import {
 import { renderMarkdown } from '../../lib/markdown-client';
 import {
   archiveSession,
+  bindSessionWorkspace,
   createSession,
   deleteSession,
   hydrateSessionStore,
@@ -48,10 +50,8 @@ import {
   loadRailOpen,
   pinSession,
   renameSession,
-  restoreDeletedSession,
   saveRailOpen,
   saveSessionStore,
-  softDeleteSession,
   sortSessionsInGroup,
   switchSession,
   unbindSessionsFromWorkspace,
@@ -82,23 +82,49 @@ import {
   tryFinishKnowledgeGenFromAssistant,
 } from '../../lib/knowledge-gen-run';
 import {
+  AGENT_INSTRUCTIONS_HINT_PREFIX,
   FS_SYSTEM_HINT,
+  PRESENT_TOOL,
   addWorkspace,
+  fetchAgentInstructions,
   fetchFsHealth,
   fetchWorkspace,
   fsToolsForAccess,
   listWorkspaceFlat,
+  openFsPath,
   pickDirectory,
   removeWorkspace,
   renameWorkspace,
   runFsTool,
+  runPresentTool,
   selectWorkspace,
   shortWorkspaceLabel,
+  workspaceDisplayName,
   type FsHealth,
+  type PresentFile,
   type WorkspaceFlatEntry,
   type WorkspaceInfo,
   type WorkspaceItem,
 } from '../../lib/fs-tools';
+import { formatTimeContext } from '../../lib/session-context';
+import {
+  ASK_USER_QUESTION_TOOL,
+  SESSION_INTERACT_HINT,
+  TODO_WRITE_TOOL,
+  normalizeTodos,
+  parseAskUserArgs,
+  type AskUserAnswer,
+  type AskUserQuestion,
+  type TodoItem,
+} from '../../lib/session-interact';
+import {
+  PLAN_MODE_HINT_APPROVED,
+  PLAN_MODE_HINT_PLANNING,
+  SUBMIT_PLAN_TOOL,
+  parseSubmitPlanArgs,
+  type PlanPhase,
+  type PlanProposal,
+} from '../../lib/session-plan';
 import {
   MEMORY_TOOLS,
   MEMORY_SYSTEM_HINT,
@@ -121,6 +147,28 @@ import { docRootLabel, docRootLabelPath } from '../../lib/doc-roots';
 import { KB_SYSTEM_HINT, KB_TOOLS, runKnowledgeTool } from '../../lib/knowledge-tools';
 import { CHAT_SYSTEM_PROMPT_FILE, DEFAULT_CHAT_SYSTEM_PROMPT } from '../../lib/prompts-meta';
 import { fetchDocsHealth, openDocsFile, readDocsText } from '../../lib/project-docs';
+import {
+  fetchWebHealth,
+  WEB_SYSTEM_HINT,
+  WEB_TOOLS,
+  runWebTool,
+  webToolDetail,
+  type WebHealth,
+} from '../../lib/web-tools';
+import {
+  BASH_SYSTEM_HINT,
+  BASH_TOOL,
+  JOB_TOOLS,
+  PWSH_SYSTEM_HINT,
+  PWSH_TOOL,
+  fetchBashHealth,
+  fetchPwshHealth,
+  runBashTool,
+  runJobTool,
+  runPwshTool,
+  type BashHealth,
+  type PwshHealth,
+} from '../../lib/bash-tools';
 import { formatSlashBadge, matchSlashQuery, type SlashDocItem } from '../../lib/slash-docs-shared';
 import {
   ATTACH_ACCEPT_EXTS,
@@ -131,15 +179,11 @@ import {
 import CaseGenPanel from './CaseGenPanel';
 import PromptGenPanel from './PromptGenPanel';
 import KnowledgeGenPanel from './KnowledgeGenPanel';
-import PluginsPage from './PluginsPage';
 import ConfirmDialog from './ConfirmDialog';
 import MemoryPane from './MemoryPane';
 import NamePromptDialog from './NamePromptDialog';
 
 export type SlashDoc = SlashDocItem;
-
-/** 侧栏「未分组」折叠键 */
-const UNGROUPED_KEY = '__ungrouped__';
 
 /** 「@」选中的文档引用（项目文档 → kb_read；工作区 → fs_read） */
 interface DocRef {
@@ -154,12 +198,27 @@ interface DocRef {
 function buildPluginMessages(
   systemPrompt: string,
   allApiMessages: ChatMessage[],
-  opts: { memory: boolean; knowledge: boolean; fs: boolean },
+  opts: {
+    memory: boolean;
+    knowledge: boolean;
+    fs: boolean;
+    web: boolean;
+    bash: boolean;
+    pwsh: boolean;
+    interact: boolean;
+    planPhase: PlanPhase;
+  },
 ): ChatMessage[] {
   let system = systemPrompt;
   if (opts.knowledge) system = `${system}\n\n${KB_SYSTEM_HINT}`;
   if (opts.fs) system = `${system}\n\n${FS_SYSTEM_HINT}`;
+  if (opts.bash) system = `${system}\n\n${BASH_SYSTEM_HINT}`;
+  if (opts.pwsh) system = `${system}\n\n${PWSH_SYSTEM_HINT}`;
+  if (opts.web) system = `${system}\n\n${WEB_SYSTEM_HINT}`;
   if (opts.memory) system = `${system}\n\n${MEMORY_SYSTEM_HINT}`;
+  if (opts.interact) system = `${system}\n\n${SESSION_INTERACT_HINT}`;
+  if (opts.planPhase === 'planning') system = `${system}\n\n${PLAN_MODE_HINT_PLANNING}`;
+  if (opts.planPhase === 'approved') system = `${system}\n\n${PLAN_MODE_HINT_APPROVED}`;
   const recent = opts.memory ? allApiMessages.slice(-MEMORY_KEEP_RECENT) : allApiMessages;
   return [{ role: 'system', content: system }, ...recent];
 }
@@ -231,6 +290,20 @@ interface LocalMessage extends Omit<ChatMessage, 'content'> {
     /** 副标题补充，如分类 */
     note?: string;
   };
+  /** present 工具声明的工作区交付文件 */
+  presentFiles?: PresentFile[];
+  /** dsh 风格工具步骤时间线 */
+  activitySteps?: ActivityStep[];
+  activityOpen?: boolean;
+}
+
+/** 对齐 dsh 执行轨迹：思考 / 网页 / 本地文件等 */
+interface ActivityStep {
+  id: string;
+  kind: 'thinking' | 'web_search' | 'web_fetch' | 'fs' | 'kb' | 'memory' | 'tool';
+  title: string;
+  detail?: string;
+  status: 'running' | 'done' | 'error';
 }
 
 const REF_MAX_COUNT = 5;
@@ -310,33 +383,12 @@ function composerFileCount(atts: Attachment[], imgs: ImageAtt[]): number {
   return atts.length + imgs.length;
 }
 
-/**
- * 思考中流式摘要：取最近一个「已完成段落」的第一行，随流式推进滚动更新。
- * 逻辑移植自 deepseek-harness ReasoningRow.latestCompletedParagraphFirstLine：
- * 以空行分段，最后完整段落的首行即为当前摘要。
- */
-function latestParagraphFirstLine(text: string): string {
-  let summary = '';
-  let paragraphStart = 0;
-  const separator = /\r?\n(?:[\t ]*\r?\n)+/g;
-  for (;;) {
-    const next = separator.exec(text);
-    const paragraphEnd = next === null ? text.length : next.index + next[0].indexOf('\n');
-    const newline = text.indexOf('\n', paragraphStart);
-    if (newline !== -1 && newline <= paragraphEnd) {
-      const candidate = text.slice(paragraphStart, newline).trim();
-      if (candidate !== '') summary = candidate;
-    }
-    if (next === null) return summary;
-    paragraphStart = next.index + next[0].length;
-  }
-}
-
+/** 空会话快捷话题：贴合工作区探查 / 用例设计 / 缺陷规范 / 方法组合 */
 const SUGGESTIONS = [
-  '帮我为「用户登录」功能梳理测试点',
-  '支付回调接口应该设计哪些异常场景用例？',
-  '给我一份缺陷报告的标准字段模板',
-  '边界值分析法和等价类划分怎么结合使用？',
+  '当前工作区里有哪些关键目录和文件？帮我快速摸清项目结构',
+  '为「用户登录」梳理测试点，按 P0/P1 排优先级并标出风险',
+  '支付回调接口要覆盖哪些异常与幂等场景？给出用例大纲',
+  '给我一份可直接套用的缺陷报告字段模板（含复现步骤）',
 ];
 
 /** 推理等级（DeepSeek reasoning_effort 有效值 low/high/max） */
@@ -354,9 +406,100 @@ const ACCESS_OPTIONS: Array<{ value: AccessLevel; label: string }> = [
 ];
 
 function toolKindLabel(name: string): string {
+  if (name === 'present') return '交付文件';
+  if (name === 'todo_write') return '待办';
+  if (name === 'ask_user_question') return '向用户提问';
+  if (name === 'bash') return 'Bash';
+  if (name === 'pwsh') return 'PowerShell';
+  if (name === 'submit_plan') return '提交计划';
+  if (name === 'job_list') return '任务列表';
+  if (name === 'job_output') return '任务输出';
+  if (name === 'job_kill') return '终止任务';
+  if (name === 'web_search') return t('tool.kind.webSearch');
+  if (name === 'web_fetch') return t('tool.kind.webFetch');
   if (name.startsWith('kb_')) return t('tool.kind.kb');
   if (name.startsWith('fs_')) return t('tool.kind.fs');
-  return t('tool.kind.memory');
+  if (name.startsWith('memory_')) return t('tool.kind.memory');
+  return name;
+}
+
+function activityKindForTool(name: string): ActivityStep['kind'] {
+  if (name === 'present') return 'fs';
+  if (
+    name === 'todo_write' ||
+    name === 'ask_user_question' ||
+    name === 'bash' ||
+    name === 'pwsh' ||
+    name === 'submit_plan' ||
+    name.startsWith('job_')
+  ) {
+    return 'tool';
+  }
+  if (name === 'web_search') return 'web_search';
+  if (name === 'web_fetch') return 'web_fetch';
+  if (name.startsWith('fs_')) return 'fs';
+  if (name.startsWith('kb_')) return 'kb';
+  if (name.startsWith('memory_')) return 'memory';
+  return 'tool';
+}
+
+function toolArgsDetail(name: string, argsJson?: string): string {
+  if (!argsJson) return '';
+  if (name.startsWith('web_')) return webToolDetail(name, argsJson);
+  if (name === 'present') {
+    try {
+      const a = JSON.parse(argsJson) as { files?: Array<{ path?: string }> };
+      const paths = (a.files ?? []).map((f) => f.path).filter(Boolean);
+      return paths.slice(0, 3).join(', ') + (paths.length > 3 ? '…' : '');
+    } catch {
+      return '';
+    }
+  }
+  try {
+    const a = JSON.parse(argsJson) as Record<string, unknown>;
+    if (name === 'submit_plan') {
+      const title = typeof a.title === 'string' ? a.title.trim() : '';
+      return title.length > 60 ? `${title.slice(0, 60)}…` : title;
+    }
+    if (name === 'bash' || name === 'pwsh') {
+      const cmd = typeof a.command === 'string' ? a.command.trim() : '';
+      const bg = a.background === true ? ' [bg]' : '';
+      const base = cmd.length > 80 ? `${cmd.slice(0, 80)}…` : cmd;
+      return `${base}${bg}`;
+    }
+    if (name.startsWith('job_')) {
+      const id = typeof a.jobId === 'string' ? a.jobId.trim() : '';
+      return id;
+    }
+    if (name === 'fs_glob' || name === 'fs_grep') {
+      const pat = typeof a.pattern === 'string' ? a.pattern.trim() : '';
+      const p = typeof a.path === 'string' ? a.path.trim() : '';
+      return [pat, p].filter(Boolean).join(' @ ') || pat;
+    }
+    if (typeof a.path === 'string' && a.path.trim()) return a.path.trim();
+    if (typeof a.query === 'string' && a.query.trim()) return a.query.trim();
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+/** 思考中：取最近一段首行作摘要（仿 dsh ReasoningRow） */
+function latestParagraphFirstLine(text: string): string {
+  let summary = '';
+  let paragraphStart = 0;
+  const separator = /\r?\n(?:[\t ]*\r?\n)+/g;
+  for (;;) {
+    const next = separator.exec(text);
+    const paragraphEnd = next === null ? text.length : next.index + next[0].indexOf('\n');
+    const newline = text.indexOf('\n', paragraphStart);
+    if (newline !== -1 && newline <= paragraphEnd) {
+      const candidate = text.slice(paragraphStart, newline).trim();
+      if (candidate !== '') summary = candidate;
+    }
+    if (next === null) return summary;
+    paragraphStart = next.index + next[0].length;
+  }
 }
 
 /** 按「工作步骤展示」偏好生成工具提示 */
@@ -443,6 +586,13 @@ const FileIcon = ({ className = '' }: { className?: string }) => (
 const PaperclipIcon = ({ className = '' }: { className?: string }) => (
   <Svg className={className}>
     <path d="m16.5 9.4-7.07 7.07a3 3 0 0 1-4.24-4.24l7.07-7.07a2 2 0 1 1 2.83 2.83L8.02 14.1a1 1 0 0 1-1.41-1.41l7.07-7.07" />
+  </Svg>
+);
+/** 发送：向上箭头（圆钮内光学居中） */
+const SendIcon = ({ className = '' }: { className?: string }) => (
+  <Svg className={className}>
+    <path d="m5 12 7-7 7 7" />
+    <path d="M12 19V5" />
   </Svg>
 );
 const FolderIcon = ({ className = '', open = false }: { className?: string; open?: boolean }) => (
@@ -544,6 +694,131 @@ function relTimePreviewLabel(ts: number): string {
 }
 
 /** 会话行：悬停滚动长标题 + 右侧预览（标题/时间/状态） */
+function WorkspaceMoreMenu({
+  open,
+  onToggle,
+  onRename,
+  onDelete,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  onRename: () => void;
+  onDelete?: () => void;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        type="button"
+        title="更多"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        className="w-6 h-6 flex items-center justify-center rounded text-[color:var(--tw-label-tertiary)] hover:text-[color:var(--tw-label-primary)] hover:bg-[color:var(--tw-session-hover-bg)]"
+      >
+        <EllipsisIcon className="w-3.5 h-3.5" />
+      </button>
+      <RailMenuPortal open={open} anchorRef={btnRef} dataAttr="data-ws-menu">
+        <button
+          type="button"
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRename();
+          }}
+        >
+          <Svg className="w-3.5 h-3.5">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </Svg>
+          重命名
+        </button>
+        {onDelete ? (
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Svg className="w-3.5 h-3.5">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14H6L5 6" />
+            </Svg>
+            删除工作区
+          </button>
+        ) : null}
+      </RailMenuPortal>
+    </div>
+  );
+}
+
+/** 侧栏「…」菜单：portal 到 body，避免被 overflow 裁切 */
+function RailMenuPortal({
+  open,
+  anchorRef,
+  dataAttr,
+  children,
+}: {
+  open: boolean;
+  anchorRef: RefObject<HTMLElement | null>;
+  dataAttr: 'data-session-menu' | 'data-ws-menu';
+  children: ReactNode;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const menuW = 160;
+      const openUp = r.bottom + 200 > window.innerHeight - 8;
+      // dsh：菜单锚在按钮左缘下方，向右展开（可跨出侧栏）
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - menuW - 8));
+      setPos({
+        top: openUp ? r.top - 4 : r.bottom + 4,
+        left,
+        openUp,
+      });
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [open, anchorRef]);
+
+  if (!open || !pos || typeof document === 'undefined') return null;
+
+  const attrs = { [dataAttr]: '' } as Record<string, string>;
+  return createPortal(
+    <div
+      {...attrs}
+      className="tw-popover tw-popover-anim z-[80] w-40 rounded-xl border border-stone-200 py-1 shadow-lg"
+      style={{
+        position: 'fixed',
+        top: pos.top,
+        left: pos.left,
+        transform: pos.openUp ? 'translateY(-100%)' : undefined,
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 function SessionRailRow({
   s,
   nested = false,
@@ -572,6 +847,7 @@ function SessionRailRow({
   onRestore?: () => void;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const titleBtnRef = useRef<HTMLButtonElement>(null);
   const titleInnerRef = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(false);
@@ -664,6 +940,7 @@ function SessionRailRow({
       >
         <div className="relative">
           <button
+            ref={menuBtnRef}
             type="button"
             title="更多"
             onClick={onToggleMenu}
@@ -671,58 +948,59 @@ function SessionRailRow({
           >
             <EllipsisIcon className="w-3.5 h-3.5" />
           </button>
-          {menuOpen && (
-            <div className="tw-popover absolute right-0 top-full z-50 mt-1 w-40 rounded-xl border border-stone-200 py-1 shadow-lg">
-              {s.deleted ? (
-                <>
-                  {onRestore ? (
-                    <button
-                      type="button"
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
-                      onClick={onRestore}
-                    >
-                      恢复会话
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50"
-                    onClick={onRemove}
-                  >
-                    永久删除
-                  </button>
-                </>
-              ) : (
-                <>
-                  {!s.archived && (
-                    <button
-                      type="button"
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
-                      onClick={onTogglePin}
-                    >
-                      <PinIcon filled={Boolean(s.pinned)} className="w-3.5 h-3.5" />
-                      {s.pinned ? '取消置顶' : '置顶会话'}
-                    </button>
-                  )}
+          <RailMenuPortal open={menuOpen} anchorRef={menuBtnRef} dataAttr="data-session-menu">
+            {s.deleted ? (
+              <>
+                {onRestore ? (
                   <button
                     type="button"
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
-                    onClick={onRename}
+                    onClick={onRestore}
                   >
-                    <Svg className="w-3.5 h-3.5">
-                      <path d="M12 20h9" />
-                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                    </Svg>
-                    重命名
+                    恢复会话
                   </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50"
+                  onClick={onRemove}
+                >
+                  永久删除
+                </button>
+              </>
+            ) : (
+              <>
+                {!s.archived && (
                   <button
                     type="button"
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
-                    onClick={onToggleArchive}
+                    onClick={onTogglePin}
                   >
-                    <ArchiveBoxIcon className="w-3.5 h-3.5" />
-                    {s.archived ? '取消归档' : '归档会话'}
+                    <PinIcon filled={Boolean(s.pinned)} className="w-3.5 h-3.5" />
+                    {s.pinned ? '取消置顶' : '置顶会话'}
                   </button>
+                )}
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
+                  onClick={onRename}
+                >
+                  <Svg className="w-3.5 h-3.5">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </Svg>
+                  重命名
+                </button>
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
+                  onClick={onToggleArchive}
+                >
+                  <ArchiveBoxIcon className="w-3.5 h-3.5" />
+                  {s.archived ? '取消归档' : '归档会话'}
+                </button>
+                {/* 仅已归档可删，且为永久删除 */}
+                {s.archived ? (
                   <button
                     type="button"
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50"
@@ -733,12 +1011,12 @@ function SessionRailRow({
                       <path d="M8 6V4h8v2" />
                       <path d="M19 6l-1 14H6L5 6" />
                     </Svg>
-                    删除
+                    永久删除
                   </button>
-                </>
-              )}
-            </div>
-          )}
+                ) : null}
+              </>
+            )}
+          </RailMenuPortal>
         </div>
         {!s.deleted && (
           <button
@@ -909,12 +1187,12 @@ function CopyButton({ text }: { text: string }) {
       type="button"
       onClick={onCopy}
       title={copied ? '已复制' : '复制'}
-      className="tw-icon-btn w-7 h-7 flex items-center justify-center rounded-md transition-colors"
+      className="tw-icon-btn tw-msg-action-btn inline-flex items-center justify-center rounded-md transition-colors"
     >
       {copied ? (
-        <CheckIcon className="w-[15px] h-[15px] text-emerald-600" />
+        <CheckIcon className="w-3.5 h-3.5 text-emerald-600" />
       ) : (
-        <CopyIcon className="w-[15px] h-[15px]" />
+        <CopyIcon className="w-3.5 h-3.5" />
       )}
     </button>
   );
@@ -1063,14 +1341,14 @@ function DialogPill({
   const { open, setOpen, rootRef, panelRef, pos } = useStatDialog();
   const btnCls =
     variant === 'ghost'
-      ? `inline-flex items-center gap-1 text-xs tabular-nums transition-colors ${
+      ? `tw-msg-action-meta inline-flex items-center gap-1 tabular-nums transition-colors ${
           open ? 'text-stone-600' : 'text-stone-400 hover:text-stone-600'
         }`
       : `inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
           open ? 'bg-stone-200/70 text-stone-600' : 'hover:bg-stone-200/60 hover:text-stone-600'
         }`;
   return (
-    <span ref={rootRef} className="relative inline-flex">
+    <span ref={rootRef} className="relative inline-flex items-center">
       <button
         type="button"
         aria-haspopup="dialog"
@@ -1080,7 +1358,7 @@ function DialogPill({
         className={btnCls}
       >
         {icon}
-        <span>{label}</span>
+        <span className="leading-none">{label}</span>
       </button>
       {open &&
         createPortal(
@@ -1240,7 +1518,7 @@ function TurnUsageButton({ usage, model }: { usage: UsageInfo; model: string | u
   return (
     <DialogPill
       variant="ghost"
-      icon={<DatabaseIcon className="w-3.5 h-3.5" />}
+      icon={<DatabaseIcon className="w-3.5 h-3.5 shrink-0" />}
       label={<>用量 {fmtTokens(usage.totalTokens)} tok</>}
       ariaLabel="本轮用量"
       title="本轮用量"
@@ -1357,7 +1635,7 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
           setOpen((v) => !v);
           setSub(null);
         }}
-        className={`flex items-center gap-1 h-7 pl-2 pr-1 text-[13px] leading-5 font-medium rounded-md transition-colors ${
+        className={`flex items-center gap-1 h-7 pl-2 pr-1 text-[13px] leading-5 font-medium rounded-md outline-none focus:outline-none focus-visible:outline-none transition-colors ${
           open ? 'bg-stone-100' : 'hover:bg-stone-100'
         }`}
       >
@@ -1369,7 +1647,7 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
       </button>
 
       {open && (
-        <div className="tw-popover absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-stone-200 p-1 shadow-xl z-50">
+        <div className="tw-popover tw-popover-anim absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-stone-200 p-1 shadow-xl z-50">
           <button
             type="button"
             onMouseEnter={() => setSub('model')}
@@ -1392,7 +1670,7 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
           </button>
 
           {sub === 'model' && (
-            <div className="tw-popover absolute right-full bottom-0 mr-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-stone-200 p-1 shadow-xl">
+            <div className="tw-popover tw-popover-anim absolute right-full bottom-0 mr-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-stone-200 p-1 shadow-xl">
               {modelsStatus === 'loading' && models.length <= 1 && (
                 <div className="px-3 py-2 text-xs text-stone-400">正在识别可用模型…</div>
               )}
@@ -1432,7 +1710,7 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
           )}
 
           {sub === 'effort' && (
-            <div className="tw-popover absolute right-full bottom-0 mr-1.5 w-60 rounded-xl border border-stone-200 p-1 shadow-xl">
+            <div className="tw-popover tw-popover-anim absolute right-full bottom-0 mr-1.5 w-60 rounded-xl border border-stone-200 p-1 shadow-xl">
               {EFFORT_OPTIONS.map((o) => (
                 <button
                   key={o.value}
@@ -1487,13 +1765,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [pendingFocusDoc, setPendingFocusDoc] = useState<string | null>(null);
   const [pluginIndex, setPluginIndex] = useState(0);
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
-  const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
-  /** 软删除确认；已删除分类里再删则为永久删除 */
+  /** 永久删除确认（仅已归档） */
   const [purgeSessionId, setPurgeSessionId] = useState<string | null>(null);
   const [wsMenuId, setWsMenuId] = useState<string | null>(null);
   const [wsDeleteTarget, setWsDeleteTarget] = useState<WorkspaceItem | null>(null);
   const [wsRenameId, setWsRenameId] = useState<string | null>(null);
-  const [showDeleted, setShowDeleted] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [access, setAccess] = useState<AccessLevel>('readonly');
@@ -1506,6 +1782,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [memoryHealth, setMemoryHealth] = useState<MemoryHealth | null>(null);
   /** 本地工作区文件 Runner（仅 npm run dev） */
   const [fsHealth, setFsHealth] = useState<FsHealth | null>(null);
+  const [bashHealth, setBashHealth] = useState<BashHealth | null>(null);
+  const [pwshHealth, setPwshHealth] = useState<PwshHealth | null>(null);
+  const [webHealth, setWebHealth] = useState<WebHealth | null>(null);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [wsBusy, setWsBusy] = useState(false);
   /** 工作区树：展开的文件夹 path、搜索、添加输入框 */
@@ -1514,8 +1793,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 会话行「…」菜单当前打开的 session id */
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
-  /** 右侧主区：对话工作台 | 我的插件 */
-  const [mainPane, setMainPane] = useState<'chat' | 'plugins'>('chat');
   /** 对话工作台内 Tab：对话 | 记忆（对齐 MemOS 查看入口） */
   const [chatTab, setChatTab] = useState<'dialog' | 'memory'>('dialog');
   const [generalPrefs, setGeneralPrefs] = useState<GeneralPrefs>(() =>
@@ -1535,16 +1812,47 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   /** 点击别处后暂时隐藏 @ / 插件菜单（输入变化后恢复） */
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pluginMenuDismissed, setPluginMenuDismissed] = useState(false);
-  /** 繁忙时排队发送的条数（展示用） */
-  const [queueLen, setQueueLen] = useState(0);
+  /** 繁忙时排队（dsh QueueDock：展示 + 上一轮结束后自动续发） */
+  const [sendQueue, setSendQueue] = useState<
+    Array<{
+      id: string;
+      content: string;
+      files: Attachment[];
+      refs: DocRef[];
+      imgs: ImageAtt[];
+    }>
+  >([]);
   /** 「@」工作区文件缓存 */
   const [wsAtEntries, setWsAtEntries] = useState<WorkspaceFlatEntry[]>([]);
   const memoryLive = Boolean(pluginOn.memory && memoryHealth?.ok);
   const knowledgeOn = Boolean(pluginOn.knowledge);
+  /** 网页能力已升格为会话内置，不再走扩展插件开关 */
+  const webLive = Boolean(webHealth?.ok);
   const fsLive = Boolean(fsHealth?.ok);
+  const bashLive = Boolean(bashHealth?.ok);
+  const pwshLive = Boolean(pwshHealth?.ok && pwshHealth.available);
   const abortRef = useRef<AbortController | null>(null);
+  /** time-context 上次完整注入时间（节流 10 分钟） */
+  const timeInjectAtRef = useRef<number | null>(null);
   const streamingRef = useRef(false);
+  /** ask_user_question：等待用户作答 */
+  const askUserWaitRef = useRef<{
+    resolve: (s: string) => void;
+    reject: (e: Error) => void;
+  } | null>(null);
+  const planWaitRef = useRef<{
+    resolve: (s: string) => void;
+    reject: (e: Error) => void;
+  } | null>(null);
+  const [sessionTodos, setSessionTodos] = useState<TodoItem[]>([]);
+  const [planPhase, setPlanPhase] = useState<PlanPhase>('off');
+  const [planProposal, setPlanProposal] = useState<PlanProposal | null>(null);
+  const [askUserPrompt, setAskUserPrompt] = useState<AskUserQuestion[] | null>(null);
+  const [askUserDraft, setAskUserDraft] = useState<
+    Record<string, { selected: string[]; text: string }>
+  >({});
   type PendingSend = {
+    id: string;
     content: string;
     files: Attachment[];
     refs: DocRef[];
@@ -1552,6 +1860,18 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   };
   const sendQueueRef = useRef<PendingSend[]>([]);
   const interruptPayloadRef = useRef<PendingSend | null>(null);
+
+  function syncSendQueue(next: PendingSend[]) {
+    sendQueueRef.current = next;
+    setSendQueue(next);
+  }
+
+  function queueTitle(p: PendingSend): string {
+    const t = p.content.trim().replace(/\s+/g, ' ');
+    if (t) return t.length > 28 ? `${t.slice(0, 28)}…` : t;
+    const n = p.files.length + p.imgs.length + p.refs.length;
+    return n > 0 ? `附件 ${n} 项` : '（空消息）';
+  }
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1582,7 +1902,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       collection: 'workspace' as const,
       id: `ws:${e.path}`,
       title: e.name,
-      category: shortWorkspaceLabel(workspaceInfo?.workspace),
+      category: shortWorkspaceLabel(
+        workspaceInfo?.workspace,
+        workspaceInfo?.projectRoot,
+      ),
       description: e.path,
       format: e.type === 'dir' ? 'dir' : 'file',
       path: e.path,
@@ -1615,8 +1938,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const jumpingRef = useRef(false);
   /** 会话库最新快照：写回消息时避免闭包过期 */
   const storeRef = useRef<SessionStore | null>(null);
+  const workspaceInfoRef = useRef<WorkspaceInfo | null>(null);
   const messagesRef = useRef<LocalMessage[]>([]);
   messagesRef.current = messages;
+  workspaceInfoRef.current = workspaceInfo;
 
   function commitStore(next: SessionStore) {
     storeRef.current = next;
@@ -1683,12 +2008,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setCaseGenConfig(active?.caseGen?.active ? active.caseGen : null);
       setPromptGenConfig(active?.promptGen?.active ? active.promptGen : null);
       setKnowledgeGenConfig(active?.knowledgeGen?.active ? active.knowledgeGen : null);
+      setSessionTodos(normalizeTodos(active?.todos));
       if (active?.workspacePath) {
         setWsExpanded((prev) => ({ ...prev, [active.workspacePath!]: true }));
-      } else if (active) {
-        setWsExpanded((prev) => ({ ...prev, __ungrouped__: true }));
       }
-      setMainPane('chat');
       setChatTab('dialog');
       setReady(true);
 
@@ -1697,7 +2020,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         const pluginQ = u.searchParams.get('plugin');
         if (pluginQ === 'promptGen' || pluginQ === 'knowledgeGen' || pluginQ === 'caseGen') {
           const id = pluginQ as PluginId;
-          setMainPane('chat');
           if (loadPluginEnabled()[id]) {
             if (id === 'promptGen') setPromptGenPanelOpen(true);
             else if (id === 'knowledgeGen') setKnowledgeGenPanelOpen(true);
@@ -1724,6 +2046,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       })();
       void fetchMemoryHealth().then((m) => setMemoryHealth(m));
       void fetchFsHealth().then((h) => setFsHealth(h));
+      void fetchBashHealth().then((h) => setBashHealth(h));
+      void fetchPwshHealth().then((h) => setPwshHealth(h));
+      void fetchWebHealth().then((h) => setWebHealth(h));
       void fetchWorkspace().then((w) => {
         setWorkspaceInfo(w);
         if (w?.workspace) {
@@ -1745,6 +2070,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   useEffect(() => {
     if (!pluginOn.memory && chatTab === 'memory') setChatTab('dialog');
   }, [pluginOn.memory, chatTab]);
+
+  /** 当前会话切换时，输入栏 / FS 跟会话归属工作区对齐 */
+  useEffect(() => {
+    if (!ready || !fsLive || !workspaceInfo) return;
+    const s = store?.sessions.find((x) => x.id === store.activeId);
+    void syncFsWorkspaceForSession(s);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅随会话与工作区列表变化同步
+  }, [ready, fsLive, store?.activeId, workspaceInfo?.items]);
 
   /** Shift：取消非输入框聚焦（去掉会话行蓝框等） */
   useEffect(() => {
@@ -1844,6 +2177,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   function refreshPluginRuntime() {
     void fetchMemoryHealth().then((m) => setMemoryHealth(m));
     void fetchFsHealth().then((h) => setFsHealth(h));
+    void fetchBashHealth().then((h) => setBashHealth(h));
+    void fetchPwshHealth().then((h) => setPwshHealth(h));
+    void fetchWebHealth().then((h) => setWebHealth(h));
     void fetchWorkspace().then((w) => setWorkspaceInfo(w));
   }
 
@@ -1864,6 +2200,53 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     } finally {
       setWsBusy(false);
     }
+  }
+
+  /**
+   * 会话在侧栏的「有效工作区」：有合法归属用归属路径，否则用项目根
+   * （与 sessionsForWorkspace 挂靠规则一致）。
+   */
+  function effectiveWorkspacePathForSession(session: ChatSession | undefined): string | null {
+    const info = workspaceInfoRef.current;
+    if (!info) return null;
+    const bound = session?.workspacePath?.trim();
+    if (bound && info.items.some((i) => i.path === bound)) return bound;
+    return info.projectRoot?.trim() || null;
+  }
+
+  /**
+   * 切换会话时：把 FS / 输入栏 picker 对齐到该会话的有效工作区。
+   * 手动改过 picker 后不要在发送时再调这个（发送以 picker 当前值为准）。
+   */
+  async function syncFsWorkspaceForSession(session: ChatSession | undefined) {
+    if (!fsLive || wsBusy) return;
+    const target = effectiveWorkspacePathForSession(session);
+    if (!target) return;
+    const info = workspaceInfoRef.current;
+    if (!info || target === info.workspace) return;
+    setWsBusy(true);
+    try {
+      const next = await selectWorkspace(target);
+      syncWorkspaceInfo(next);
+    } catch {
+      // 静默，不打断对话
+    } finally {
+      setWsBusy(false);
+    }
+  }
+
+  /** dsh 输入栏 picker：切换当前工作区；无归属的空会话顺带归入该工作区 */
+  async function pickComposerWorkspace(item: WorkspaceItem) {
+    if (!fsLive || wsBusy) return;
+    await applyWorkspace(item.path, 'select');
+    const cur = storeRef.current;
+    if (!cur) return;
+    const s = cur.sessions.find((x) => x.id === cur.activeId);
+    if (!s || s.workspacePath) return;
+    const msgs = (s.messages as LocalMessage[] | undefined) ?? [];
+    if (msgs.length > 0) return;
+    commitStore(bindSessionWorkspace(cur, s.id, item.path));
+    setWsExpanded((prev) => ({ ...prev, [item.path]: true }));
   }
 
   /** dsh：原生选文件夹 → create workspace */
@@ -1900,7 +2283,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       }
       const info = await removeWorkspace(item.id);
       syncWorkspaceInfo(info);
-      setWsExpanded((prev) => ({ ...prev, [UNGROUPED_KEY]: true }));
+      if (info.projectRoot) {
+        setWsExpanded((prev) => ({ ...prev, [info.projectRoot]: true }));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1910,6 +2295,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
   function requestDropWorkspace(item: WorkspaceItem) {
     if (!fsLive || wsBusy || item.id === 'ws_project') return;
+    setSessionMenuId(null);
     setWsMenuId(null);
     setWsDeleteTarget(item);
   }
@@ -1982,7 +2368,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       return false;
     }
     setError(null);
-    setMainPane('chat');
     if (id === 'caseGen') {
       setCaseGenPanelOpen(true);
       return true;
@@ -2031,7 +2416,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
   useEffect(() => {
     if (!ready || !storeRef.current) return;
-    const next = updateActiveMessages(storeRef.current, messages);
+    const active = storeRef.current.sessions.find((s) => s.id === storeRef.current!.activeId);
+    const prev = (active?.messages as unknown[]) ?? [];
+    // 切会话只是把已存消息灌进 state：内容未变则不碰 updatedAt，避免侧栏重排
+    const changed = JSON.stringify(prev) !== JSON.stringify(messages);
+    const next = updateActiveMessages(storeRef.current, messages, {
+      touchUpdatedAt: changed,
+    });
     storeRef.current = next;
     setStore(next);
     saveSessionStore(next);
@@ -2122,6 +2513,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
 
     const prepared: PendingSend = {
+      id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       content,
       files: [...files],
       refs: [...refs],
@@ -2132,12 +2524,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
       const action = opts?.forceBusy ?? primary;
       if (action === 'queue') {
-        sendQueueRef.current.push(prepared);
-        setQueueLen(sendQueueRef.current.length);
+        syncSendQueue([...sendQueueRef.current, prepared]);
         if (fromComposer) clearComposer();
         return;
       }
-      // 插话：中断当前轮，结束后立刻发这条
+      // 插话：中断当前轮，结束后立刻发这条，其后仍按队列自主续发
       interruptPayloadRef.current = prepared;
       if (fromComposer) clearComposer();
       abortRef.current?.abort();
@@ -2187,7 +2578,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     const useMemory = memoryLive;
     const useKnowledge = knowledgeOn;
     const useFs = fsLive;
-    const fsHintExtra = workspaceInfo?.workspace ? `\n当前工作区：${workspaceInfo.workspace}` : '';
+    const useWeb = webLive;
+    const planGatesWrites = planPhase === 'planning';
+    const effectiveAccess = planGatesWrites ? 'readonly' : access;
+    const useBash = bashLive && effectiveAccess !== 'readonly';
+    const usePwsh = pwshLive && effectiveAccess !== 'readonly';
+    // 输入以 picker / FS 当前工作区为准（可手动切到会话归属以外的目录）
+    const effectiveFsRoot = workspaceInfoRef.current?.workspace?.trim() || '';
+    const fsHintExtra = effectiveFsRoot ? `\n当前工作区：${effectiveFsRoot}` : '';
     const promptCfg =
       pluginOn.promptGen && promptGenConfigRef.current?.active ? promptGenConfigRef.current : null;
     const knowledgeGenCfg =
@@ -2199,10 +2597,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         ? caseGenConfigRef.current
         : null;
     const structuredPlugin = Boolean(promptCfg || knowledgeGenCfg || caseCfg);
-    const memCwd =
-      storeRef.current?.sessions.find((s) => s.id === storeRef.current?.activeId)?.workspacePath ||
-      workspaceInfo?.workspace ||
-      '';
+    const memCwd = effectiveFsRoot;
     let baseSystem = systemPrompt;
     if (promptCfg) {
       baseSystem = buildPromptGenSystemPrompt(promptCfg);
@@ -2235,10 +2630,41 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         return;
       }
     }
+    // 会话注入：time-context（纯前端）+ agent-instructions（本地 fs）
+    if (!structuredPlugin) {
+      const prevUser = [...next].reverse().find((m) => m.role === 'user' && m !== next[next.length - 1]);
+      const lastUserAt =
+        prevUser?.time ??
+        [...next].reverse().find((m) => m.role === 'user')?.time ??
+        null;
+      const timeCtx = formatTimeContext({
+        lastUserMessageAt: lastUserAt,
+        lastInjectAt: timeInjectAtRef.current,
+      });
+      if (timeCtx.injected) timeInjectAtRef.current = timeCtx.at;
+      baseSystem = `${baseSystem}\n\n${timeCtx.text}`;
+
+      if (useFs) {
+        try {
+          const instr = await fetchAgentInstructions();
+          if (instr?.text) {
+            baseSystem = `${baseSystem}\n\n${AGENT_INSTRUCTIONS_HINT_PREFIX}\n\n${instr.text}`;
+          }
+        } catch {
+          // 静默跳过
+        }
+      }
+    }
+
     let payload = buildPluginMessages(baseSystem, apiMessages, {
       memory: useMemory && !structuredPlugin,
       knowledge: useKnowledge && !structuredPlugin,
       fs: useFs && !structuredPlugin,
+      web: useWeb && !structuredPlugin,
+      bash: useBash && !structuredPlugin,
+      pwsh: usePwsh && !structuredPlugin,
+      interact: !structuredPlugin,
+      planPhase: structuredPlugin ? 'off' : planPhase,
     }).map((m, i) =>
       i === 0 && m.role === 'system' && useFs && fsHintExtra && !structuredPlugin
         ? { ...m, content: `${typeof m.content === 'string' ? m.content : ''}${fsHintExtra}` }
@@ -2246,6 +2672,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     );
 
     // 五轨快照注入：超时/失败则跳过，不阻塞发送（结构化插件模式跳过）
+    // FS 工作区已由会话切换同步或输入栏手动选择决定，发送时不再拉回会话归属
     if (useMemory && !structuredPlugin) {
       setToolHint('记忆注入中…');
       const { context } = await recallMemory(content, { cwd: memCwd });
@@ -2259,8 +2686,20 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     const tools: ToolDef[] = [];
     if (!structuredPlugin) {
       if (useKnowledge) tools.push(...(KB_TOOLS as unknown as ToolDef[]));
-      if (useFs) tools.push(...(fsToolsForAccess(access) as unknown as ToolDef[]));
+      if (useFs) {
+        tools.push(...(fsToolsForAccess(effectiveAccess) as unknown as ToolDef[]));
+        if (!planGatesWrites) tools.push(PRESENT_TOOL as unknown as ToolDef);
+      }
+      if (useBash) tools.push(BASH_TOOL as unknown as ToolDef);
+      if (usePwsh) tools.push(PWSH_TOOL as unknown as ToolDef);
+      if (useBash || usePwsh) tools.push(...(JOB_TOOLS as unknown as ToolDef[]));
+      if (useWeb) tools.push(...(WEB_TOOLS as unknown as ToolDef[]));
       if (useMemory) tools.push(...(MEMORY_TOOLS as unknown as ToolDef[]));
+      tools.push(TODO_WRITE_TOOL as unknown as ToolDef);
+      tools.push(ASK_USER_QUESTION_TOOL as unknown as ToolDef);
+      if (planPhase === 'planning' || planPhase === 'approved') {
+        tools.push(SUBMIT_PLAN_TOOL as unknown as ToolDef);
+      }
     }
 
     const ctrl = new AbortController();
@@ -2306,7 +2745,83 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 if (name.startsWith('kb_')) {
                   return await runKnowledgeTool(name, args, { base, docs: slashDocs });
                 }
-                if (name.startsWith('fs_')) return await runFsTool(name, args, access);
+                if (name.startsWith('fs_')) return await runFsTool(name, args, effectiveAccess);
+                if (name === 'present') {
+                  if (planGatesWrites) {
+                    return JSON.stringify({ error: '计划模式探查中：请先 submit_plan 并等待批准' });
+                  }
+                  const raw = await runPresentTool(args, effectiveAccess);
+                  try {
+                    const parsed = JSON.parse(raw) as {
+                      ok?: boolean;
+                      files?: PresentFile[];
+                    };
+                    if (parsed.ok && parsed.files?.length) {
+                      updateLastAssistant((m) => {
+                        const prev = m.presentFiles ?? [];
+                        const byPath = new Map(prev.map((f) => [f.path, f]));
+                        for (const f of parsed.files!) byPath.set(f.path, f);
+                        return { ...m, presentFiles: [...byPath.values()] };
+                      });
+                    }
+                  } catch {
+                    // ignore parse for UI; tool result still returned to model
+                  }
+                  return raw;
+                }
+                if (name === 'todo_write') {
+                  let rawTodos: unknown;
+                  try {
+                    rawTodos = (JSON.parse(args || '{}') as { todos?: unknown }).todos;
+                  } catch {
+                    return JSON.stringify({ error: 'invalid JSON arguments' });
+                  }
+                  const todos = normalizeTodos(rawTodos);
+                  setSessionTodos(todos);
+                  if (storeRef.current) {
+                    commitStore(updateActiveSessionMeta(storeRef.current, { todos }));
+                  }
+                  return JSON.stringify({ ok: true, count: todos.length, todos });
+                }
+                if (name === 'ask_user_question') {
+                  const questions = parseAskUserArgs(args);
+                  if (!questions.length) {
+                    return JSON.stringify({ error: 'questions is required' });
+                  }
+                  const draft: Record<string, { selected: string[]; text: string }> = {};
+                  for (const q of questions) draft[q.id] = { selected: [], text: '' };
+                  setAskUserDraft(draft);
+                  setAskUserPrompt(questions);
+                  return await new Promise<string>((resolve, reject) => {
+                    askUserWaitRef.current = { resolve, reject };
+                    const ac = abortRef.current;
+                    const onAbort = () => {
+                      ac?.signal.removeEventListener('abort', onAbort);
+                      settleAskUserCanceled();
+                    };
+                    ac?.signal.addEventListener('abort', onAbort);
+                  });
+                }
+                if (name === 'submit_plan') {
+                  const plan = parseSubmitPlanArgs(args);
+                  if (!plan) {
+                    return JSON.stringify({ error: 'title and steps are required' });
+                  }
+                  setPlanProposal(plan);
+                  return await new Promise<string>((resolve, reject) => {
+                    planWaitRef.current = { resolve, reject };
+                    const ac = abortRef.current;
+                    const onAbort = () => {
+                      ac?.signal.removeEventListener('abort', onAbort);
+                      settlePlanCanceled();
+                    };
+                    ac?.signal.addEventListener('abort', onAbort);
+                  });
+                }
+                if (name === 'bash') return await runBashTool(args, effectiveAccess);
+                if (name === 'pwsh') return await runPwshTool(args, effectiveAccess);
+                if (name.startsWith('job_')) return await runJobTool(name, args, effectiveAccess);
+                if (name.startsWith('web_')) return await runWebTool(name, args);
                 if (name.startsWith('memory_')) return await runMemoryTool(name, args, memCwd);
                 return JSON.stringify({ error: `unknown tool: ${name}` });
               } finally {
@@ -2327,6 +2842,24 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               chunk.status === 'running' ? 'running' : 'done',
             ),
           );
+          const detail = toolArgsDetail(chunk.name, chunk.args);
+          const stepId = `tool_${chunk.name}_${chunk.args?.slice(0, 24) ?? ''}`;
+          updateLastAssistant((m) => {
+            const steps = [...(m.activitySteps ?? [])];
+            const idx = steps.findIndex(
+              (s) => s.id === stepId || (s.detail === detail && s.title === kind && s.status === 'running'),
+            );
+            const next: ActivityStep = {
+              id: stepId,
+              kind: activityKindForTool(chunk.name),
+              title: kind,
+              detail: detail || undefined,
+              status: chunk.status === 'running' ? 'running' : 'done',
+            };
+            if (idx >= 0) steps[idx] = { ...steps[idx], ...next };
+            else steps.push(next);
+            return { ...m, activitySteps: steps };
+          });
           continue;
         }
         if (chunk.type === 'usage') {
@@ -2388,26 +2921,53 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           continue;
         }
         updateLastAssistant((last) => {
-          const nextMsg =
+          const nextMsg: LocalMessage =
             chunk.type === 'reasoning'
               ? { ...last, reasoning: (last.reasoning ?? '') + chunk.delta }
               : { ...last, content: last.content + chunk.delta };
+          if (chunk.type === 'reasoning') {
+            const steps = [...(nextMsg.activitySteps ?? [])];
+            const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
+            const thinkStep: ActivityStep = {
+              id: 'thinking',
+              kind: 'thinking',
+              title: '思考',
+              status: 'running',
+            };
+            if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], ...thinkStep };
+            else steps.unshift(thinkStep);
+            nextMsg.activitySteps = steps;
+          }
           if (settle) {
             nextMsg.reasoningDuration = Math.max(
               1,
               Math.round((Date.now() - reasoningStartTs) / 1000),
             );
+            const steps = [...(nextMsg.activitySteps ?? [])];
+            const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
+            if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], status: 'done' };
+            nextMsg.activitySteps = steps;
           }
           return nextMsg;
         });
       }
       turnOk = true;
-      // 流正常结束但正文为空（罕见边界）：也结算思考耗时
-      if (reasoningStartTs > 0 && !reasoningSettled) {
-        const duration = Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000));
-        updateLastAssistant((m) =>
-          m.reasoning && m.reasoningDuration == null ? { ...m, reasoningDuration: duration } : m,
-        );
+      // 流结束：结算思考耗时，并把 thinking 步骤标为 done
+      {
+        const duration =
+          reasoningStartTs > 0 && !reasoningSettled
+            ? Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000))
+            : null;
+        updateLastAssistant((m) => {
+          const steps = (m.activitySteps ?? []).map((s) =>
+            s.kind === 'thinking' && s.status === 'running' ? { ...s, status: 'done' as const } : s,
+          );
+          const next: LocalMessage = { ...m, activitySteps: steps };
+          if (duration != null && m.reasoning && m.reasoningDuration == null) {
+            next.reasoningDuration = duration;
+          }
+          return next;
+        });
       }
       if (progressTimer != null) {
         window.clearInterval(progressTimer);
@@ -2533,21 +3093,67 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         });
       }
 
-      // 插话优先，否则取排队队首
-      const followUp = interruptPayloadRef.current ?? sendQueueRef.current.shift() ?? null;
+      // dsh：当前轮结束后自主取下一条（插话优先，否则队列头）
+      let followUp = interruptPayloadRef.current;
       interruptPayloadRef.current = null;
-      setQueueLen(sendQueueRef.current.length);
+      if (!followUp && sendQueueRef.current.length) {
+        followUp = sendQueueRef.current[0];
+        syncSendQueue(sendQueueRef.current.slice(1));
+      }
       if (followUp) {
         window.setTimeout(() => {
-          void executeSend(followUp);
+          void executeSend(followUp!);
         }, 0);
       }
     }
   }
 
   function stop() {
-    // 手动停止不触发插话/排队续发
+    // 手动停止：清空插话与排队，不自动续发
     interruptPayloadRef.current = null;
+    syncSendQueue([]);
+    abortRef.current?.abort();
+  }
+
+  function removeQueued(id: string) {
+    syncSendQueue(sendQueueRef.current.filter((q) => q.id !== id));
+  }
+
+  function editQueued(id: string) {
+    const item = sendQueueRef.current.find((q) => q.id === id);
+    if (!item) return;
+    removeQueued(id);
+    setInput(item.content);
+    setAttachments(item.files);
+    setImages(item.imgs);
+    setDocRefs(item.refs);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  /** 插话：打断当前轮，优先发送该条，其余排队仍会在结束后自主续发 */
+  function promoteQueued(id: string) {
+    const item = sendQueueRef.current.find((q) => q.id === id);
+    if (!item) return;
+    syncSendQueue(sendQueueRef.current.filter((q) => q.id !== id));
+    if (!streamingRef.current) {
+      void executeSend(item);
+      return;
+    }
+    interruptPayloadRef.current = item;
+    abortRef.current?.abort();
+  }
+
+  /** Cmd/Ctrl+Enter：插话发送；其余排队在本轮结束后自主续发 */
+  function flushQueueAsInterrupt(extra?: PendingSend) {
+    const rest = [...sendQueueRef.current];
+    const head = extra ?? rest.shift() ?? null;
+    if (!head) return;
+    syncSendQueue(rest);
+    if (!streamingRef.current) {
+      void executeSend(head);
+      return;
+    }
+    interruptPayloadRef.current = head;
     abortRef.current?.abort();
   }
 
@@ -2557,7 +3163,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       prev.map((m, i) => (i === index ? { ...m, reasoningOpen: !m.reasoningOpen } : m)),
     );
     if (willOpen) {
-      // 展开后内容若落到视口外，平滑下滚刚好露全（block:nearest 已在视口内则不动）
       const btn = e.currentTarget;
       requestAnimationFrame(() => {
         const body = btn.nextElementSibling;
@@ -2620,14 +3225,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     cfg: CaseGenPluginConfig | PromptGenPluginConfig | KnowledgeGenPluginConfig,
   ) {
     if (!storeRef.current) return;
-    setMainPane('chat');
     setChatTab('dialog');
     const leavingId = storeRef.current.activeId;
     saveComposerDraft(leavingId);
     resetComposer({ clearDraft: true });
     const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
-    // 插件开新会话默认进未分组；仅工作区旁「+」才指定归属
-    let next = createSession(base);
+    // dsh：插件新会话也归入当前 picker 工作区
+    const ws = workspaceInfo?.workspace?.trim() || undefined;
+    let next = createSession(base, ws ? { workspacePath: ws } : undefined);
     const title = pluginSessionTitle(kind);
     const activeId = next.activeId;
     next = {
@@ -2654,7 +3259,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setKnowledgeGenConfig(kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : null);
     knowledgeGenConfigRef.current =
       kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : null;
-    setWsExpanded((prev) => ({ ...prev, [UNGROUPED_KEY]: true }));
+    const expandPath = ws || workspaceInfo?.projectRoot;
+    if (expandPath) setWsExpanded((prev) => ({ ...prev, [expandPath]: true }));
+    void syncFsWorkspaceForSession(next.sessions.find((x) => x.id === next.activeId));
   }
 
   function applyCaseGenConfig(cfg: CaseGenPluginConfig | null) {
@@ -2692,37 +3299,113 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
   function newSession(workspacePath?: string) {
     if (!storeRef.current) return;
-    setMainPane('chat');
     setChatTab('dialog');
     const leavingId = storeRef.current.activeId;
     saveComposerDraft(leavingId);
     resetComposer({ clearDraft: true });
     let base = pruneEphemeralSession(leavingId) ?? storeRef.current;
-    // 仅显式传入 path（工作区右侧 +）才归入该工作区；顶部「新会话」进未分组
-    const ws = workspacePath?.trim() || undefined;
+    // dsh：新会话归入「当前工作区」（显式传入 path 优先，否则用 picker 选中项）
+    const ws =
+      workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
     const next = createSession(base, ws ? { workspacePath: ws } : undefined);
     commitStore(next);
     setMessages([]);
     setCaseGenConfig(null);
     setPromptGenConfig(null);
     setKnowledgeGenConfig(null);
-    if (ws) {
-      setWsExpanded((prev) => ({ ...prev, [ws]: true }));
-      if (fsLive && ws !== workspaceInfo?.workspace) void applyWorkspace(ws, 'select');
-    } else {
-      setWsExpanded((prev) => ({ ...prev, [UNGROUPED_KEY]: true }));
+    setSessionTodos([]);
+    setPlanPhase('off');
+    settleAskUserCanceled();
+    settlePlanCanceled();
+    const expandPath = ws || workspaceInfo?.projectRoot;
+    if (expandPath) setWsExpanded((prev) => ({ ...prev, [expandPath]: true }));
+    void syncFsWorkspaceForSession(next.sessions.find((x) => x.id === next.activeId));
+  }
+
+  function settleAskUserCanceled() {
+    const wait = askUserWaitRef.current;
+    if (!wait) return;
+    askUserWaitRef.current = null;
+    setAskUserPrompt(null);
+    setAskUserDraft({});
+    wait.resolve(JSON.stringify({ canceled: true, error: 'user aborted' }));
+  }
+
+  function settlePlanCanceled() {
+    const wait = planWaitRef.current;
+    if (!wait) return;
+    planWaitRef.current = null;
+    setPlanProposal(null);
+    wait.resolve(JSON.stringify({ approved: false, canceled: true }));
+  }
+
+  function approvePlan() {
+    const wait = planWaitRef.current;
+    if (!wait) return;
+    planWaitRef.current = null;
+    setPlanProposal(null);
+    setPlanPhase('approved');
+    wait.resolve(JSON.stringify({ approved: true, message: '用户已批准计划，可以开始实施' }));
+  }
+
+  function rejectPlan() {
+    const wait = planWaitRef.current;
+    if (!wait) return;
+    planWaitRef.current = null;
+    setPlanProposal(null);
+    setPlanPhase('planning');
+    wait.resolve(JSON.stringify({ approved: false, message: '用户驳回了计划，请修订后再次 submit_plan' }));
+  }
+
+  function togglePlanMode() {
+    setPlanPhase((cur) => {
+      if (cur === 'off') return 'planning';
+      settlePlanCanceled();
+      return 'off';
+    });
+  }
+
+  function submitAskUserAnswers() {
+    const wait = askUserWaitRef.current;
+    const questions = askUserPrompt;
+    if (!wait || !questions?.length) return;
+    const answers: AskUserAnswer[] = questions.map((q) => {
+      const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
+      if (q.options?.length) {
+        return { id: q.id, selected: draft.selected };
+      }
+      return { id: q.id, text: draft.text.trim() };
+    });
+    for (const q of questions) {
+      const a = answers.find((x) => x.id === q.id);
+      if (q.options?.length) {
+        if (!a?.selected?.length) {
+          setError('请先选择选项后再提交');
+          return;
+        }
+      } else if (!a?.text?.trim()) {
+        setError('请先填写回答后再提交');
+        return;
+      }
     }
+    askUserWaitRef.current = null;
+    setAskUserPrompt(null);
+    setAskUserDraft({});
+    setError(null);
+    wait.resolve(JSON.stringify({ answers }));
   }
 
   function openSession(id: string) {
     if (!storeRef.current) return;
-    setMainPane('chat');
     setChatTab('dialog');
     setSessionMenuId(null);
     if (id === storeRef.current.activeId) return;
     const leavingId = storeRef.current.activeId;
     saveComposerDraft(leavingId);
     abortRef.current?.abort();
+    settleAskUserCanceled();
+    settlePlanCanceled();
+    setPlanPhase('off');
     setStreaming(false);
     setError(null);
     setShowJump(false);
@@ -2736,26 +3419,23 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setCaseGenConfig(s?.caseGen?.active ? s.caseGen : null);
     setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
     setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
+    setSessionTodos(normalizeTodos(s?.todos));
     restoreComposerDraft(id);
     commitStore(next);
-    if (s?.workspacePath && fsLive && s.workspacePath !== workspaceInfo?.workspace) {
-      void applyWorkspace(s.workspacePath, 'select');
-    }
+    void syncFsWorkspaceForSession(s);
   }
 
-  function removeSession(id: string, permanent = false) {
+  /** 永久删除会话（仅已归档） */
+  function purgeSession(id: string) {
     if (!storeRef.current) return;
     setSessionMenuId(null);
-    const cur = storeRef.current.sessions.find((x) => x.id === id);
+    setWsMenuId(null);
     const wasActive = storeRef.current.activeId === id;
     if (wasActive) resetComposer({ clearDraft: true });
     delete composerDraftsRef.current[id];
-    const next =
-      permanent || cur?.deleted
-        ? deleteSession(storeRef.current, id)
-        : softDeleteSession(storeRef.current, id);
+    const next = deleteSession(storeRef.current, id);
     commitStore(next);
-    if (permanent || cur?.deleted) void deleteSessionMemory(id);
+    void deleteSessionMemory(id);
     if (wasActive) {
       const s = next.sessions.find((x) => x.id === next.activeId);
       setMessages((s?.messages as LocalMessage[]) ?? []);
@@ -2763,12 +3443,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
       setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
     }
-  }
-
-  function restoreSession(id: string) {
-    if (!storeRef.current) return;
-    setSessionMenuId(null);
-    commitStore(restoreDeletedSession(storeRef.current, id));
   }
 
   function toggleArchive(id: string, archived: boolean) {
@@ -2796,6 +3470,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!storeRef.current) return;
     if (!storeRef.current.sessions.some((x) => x.id === id)) return;
     setSessionMenuId(null);
+    setWsMenuId(null);
     setRenameSessionId(id);
   }
 
@@ -2873,25 +3548,35 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const accessOpt = ACCESS_OPTIONS.find((o) => o.value === access) ?? ACCESS_OPTIONS[0];
   const activeSessions = (store?.sessions ?? []).filter((s) => !s.archived && !s.deleted);
   const archivedSessions = (store?.sessions ?? []).filter((s) => s.archived && !s.deleted);
-  const deletedSessions = (store?.sessions ?? []).filter((s) => Boolean(s.deleted));
   const wsItems = workspaceInfo?.items ?? [];
   const wsPaths = new Set(wsItems.map((it) => it.path));
   const wsActivePath = workspaceInfo?.workspace ?? '';
+  const projectRootPath = workspaceInfo?.projectRoot ?? '';
+  const activeSess = store?.sessions.find((s) => s.id === store.activeId);
+  const activeSessWs = activeSess?.workspacePath;
+  const activeSessInProjectRoot = !activeSessWs || !wsPaths.has(activeSessWs);
+  /** 输入栏 picker：显示 FS 当前工作区（进会话时已对齐归属；手动切换后跟手动值） */
+  const composerWsPath = workspaceInfo?.workspace?.trim() || '';
+  const composerWsItem = wsItems.find((it) => it.path === composerWsPath);
+  const composerWsLabel = composerWsItem
+    ? workspaceDisplayName(composerWsItem, projectRootPath)
+    : composerWsPath
+      ? shortWorkspaceLabel(composerWsPath, projectRootPath)
+      : '工作区';
   const qNorm = wsQuery.trim().toLowerCase();
+  /** 无归属或路径已不在列表中 → 归入项目根工作区（不再有「未分组」） */
   function sessionsForWorkspace(item: WorkspaceItem): ChatSession[] {
+    const isProjectRoot = item.id === 'ws_project' || item.path === projectRootPath;
     return sortSessionsInGroup(
       activeSessions
-        .filter((s) => s.workspacePath === item.path)
+        .filter((s) => {
+          if (s.workspacePath === item.path) return true;
+          if (isProjectRoot && (!s.workspacePath || !wsPaths.has(s.workspacePath))) return true;
+          return false;
+        })
         .filter((s) => !qNorm || s.title.toLowerCase().includes(qNorm)),
     );
   }
-
-  /** 无 workspacePath，或路径不在工作区列表中 → 未分组（对齐 dsh Ungrouped） */
-  const ungroupedSessions = sortSessionsInGroup(
-    activeSessions
-      .filter((s) => !s.workspacePath || !wsPaths.has(s.workspacePath))
-      .filter((s) => !qNorm || s.title.toLowerCase().includes(qNorm)),
-  );
 
   const visibleWsItems = wsItems.filter((it) => {
     if (!qNorm) return true;
@@ -2900,7 +3585,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
     return sessionsForWorkspace(it).length > 0;
   });
-  const showUngrouped = ungroupedSessions.length > 0;
 
   function SessionRow({ s, nested = false }: { s: ChatSession; nested?: boolean }) {
     const active = s.id === store?.activeId;
@@ -2922,10 +3606,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         onTogglePin={() => togglePin(s.id)}
         onToggleArchive={() => toggleArchive(s.id, !s.archived)}
         onRemove={() => {
-          if (s.deleted) setPurgeSessionId(s.id);
-          else setDeleteSessionId(s.id);
+          // 先关菜单，避免确认框底下仍挂着「…」弹层
+          setSessionMenuId(null);
+          setWsMenuId(null);
+          setPurgeSessionId(s.id);
         }}
-        onRestore={s.deleted ? () => restoreSession(s.id) : undefined}
       />
     );
   }
@@ -2983,27 +3668,21 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               </Svg>
               {t('chat.newSession', undefined, generalPrefs.language)}
             </button>
-            <button
-              type="button"
+            <a
+              href={`${base}plugins/`}
               title="我的插件"
               onClick={() => {
                 const leaving = storeRef.current?.activeId;
                 const pruned = pruneEphemeralSession(leaving);
                 if (pruned && pruned !== storeRef.current) {
                   commitStore(pruned);
-                  const s = pruned.sessions.find((x) => x.id === pruned.activeId);
-                  setMessages((s?.messages as LocalMessage[]) ?? []);
-                  resetComposer({ clearDraft: true });
                 }
-                setMainPane('plugins');
               }}
-              className={`tw-rail-plugin-btn w-full h-9 flex items-center justify-center gap-1.5 text-[13px] font-medium rounded-full transition-colors ${
-                mainPane === 'plugins' ? 'is-active' : ''
-              }`}
+              className="tw-rail-plugin-btn w-full h-9 flex items-center justify-center gap-1.5 text-[13px] font-medium rounded-full transition-colors"
             >
               <PluginIcon className="w-3.5 h-3.5" />
               插件
-            </button>
+            </a>
           </div>
         ) : (
           <div className="px-1 pt-1 flex flex-col gap-1">
@@ -3018,26 +3697,20 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 <path d="M12 5v14" />
               </Svg>
             </button>
-            <button
-              type="button"
+            <a
+              href={`${base}plugins/`}
               title="我的插件"
               onClick={() => {
                 const leaving = storeRef.current?.activeId;
                 const pruned = pruneEphemeralSession(leaving);
                 if (pruned && pruned !== storeRef.current) {
                   commitStore(pruned);
-                  const s = pruned.sessions.find((x) => x.id === pruned.activeId);
-                  setMessages((s?.messages as LocalMessage[]) ?? []);
-                  resetComposer({ clearDraft: true });
                 }
-                setMainPane('plugins');
               }}
-              className={`tw-rail-plugin-btn tw-rail-plugin-btn--icon w-8 h-8 flex items-center justify-center rounded-lg ${
-                mainPane === 'plugins' ? 'is-active' : ''
-              }`}
+              className="tw-rail-plugin-btn tw-rail-plugin-btn--icon w-8 h-8 flex items-center justify-center rounded-lg"
             >
               <PluginIcon className="w-4 h-4" />
-            </button>
+            </a>
           </div>
         )}
 
@@ -3088,7 +3761,12 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               {visibleWsItems.map((item) => {
                 const kids = sessionsForWorkspace(item);
                 const expanded = Boolean(wsExpanded[item.path] ?? kids.length > 0);
-                const isActiveWs = item.path === wsActivePath;
+                // 仅当「当前聚焦会话」归属本工作区时才显示文件夹聚焦色（非 FS cwd）
+                const isProjectRoot = item.id === 'ws_project' || item.path === projectRootPath;
+                const isActiveWs = Boolean(
+                  activeSess &&
+                    (activeSessInProjectRoot ? isProjectRoot : activeSessWs === item.path),
+                );
                 const menuOpen = wsMenuId === item.id;
                 return (
                   <div key={item.id}>
@@ -3112,64 +3790,33 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         className="flex-1 min-w-0 h-full flex items-center gap-1.5 text-left outline-none focus:outline-none"
                       >
                         <span className="tw-slot tw-folder">
-                          <FolderIcon className="w-3.5 h-3.5" />
+                          <FolderIcon open={expanded} className="w-3.5 h-3.5" />
                         </span>
                         <span className="tw-slot tw-chevron">
                           <TriangleChevron open={expanded} className="w-3 h-3" />
                         </span>
-                        <span className="tw-project-title">{item.name}</span>
+                        <span className="tw-project-title">
+                          {workspaceDisplayName(item, projectRootPath)}
+                        </span>
                       </button>
                       <div className="tw-ws-actions relative shrink-0" data-ws-menu="">
-                        <div className="relative">
-                          <button
-                            type="button"
-                            title="更多"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSessionMenuId(null);
-                              setWsMenuId(menuOpen ? null : item.id);
-                            }}
-                            className="w-6 h-6 flex items-center justify-center rounded text-[color:var(--tw-label-tertiary)] hover:text-[color:var(--tw-label-primary)] hover:bg-[color:var(--tw-session-hover-bg)]"
-                          >
-                            <EllipsisIcon className="w-3.5 h-3.5" />
-                          </button>
-                          {menuOpen && (
-                            <div className="tw-popover absolute right-0 top-full z-50 mt-1 w-40 rounded-xl border border-stone-200 py-1 shadow-lg">
-                              <button
-                                type="button"
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setWsMenuId(null);
-                                  setWsRenameId(item.id);
-                                }}
-                              >
-                                <Svg className="w-3.5 h-3.5">
-                                  <path d="M12 20h9" />
-                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                                </Svg>
-                                重命名
-                              </button>
-                              {item.id !== 'ws_project' && (
-                                <button
-                                  type="button"
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    requestDropWorkspace(item);
-                                  }}
-                                >
-                                  <Svg className="w-3.5 h-3.5">
-                                    <path d="M3 6h18" />
-                                    <path d="M8 6V4h8v2" />
-                                    <path d="M19 6l-1 14H6L5 6" />
-                                  </Svg>
-                                  删除工作区
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
+                        <WorkspaceMoreMenu
+                          open={menuOpen}
+                          onToggle={() => {
+                            setSessionMenuId(null);
+                            setWsMenuId(menuOpen ? null : item.id);
+                          }}
+                          onRename={() => {
+                            setSessionMenuId(null);
+                            setWsMenuId(null);
+                            setWsRenameId(item.id);
+                          }}
+                          onDelete={
+                            item.id !== 'ws_project'
+                              ? () => requestDropWorkspace(item)
+                              : undefined
+                          }
+                        />
                         <button
                           type="button"
                           title="在此工作区新建会话"
@@ -3186,46 +3833,17 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         </button>
                       </div>
                     </div>
-                    {expanded && kids.map((s) => <SessionRow key={s.id} s={s} nested />)}
+                    <div className={`tw-collapse ${expanded ? 'is-open' : ''}`}>
+                      <div className="tw-collapse-inner">
+                        {kids.map((s) => (
+                          <SessionRow key={s.id} s={s} nested />
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 );
               })}
-              {/* 未分组固定靠后 */}
-              {showUngrouped &&
-                (() => {
-                  const expanded = Boolean(wsExpanded[UNGROUPED_KEY] ?? true);
-                  return (
-                    <div>
-                      <button
-                        type="button"
-                        title={expanded ? '收起' : '展开'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setWsExpanded((prev) => ({
-                            ...prev,
-                            [UNGROUPED_KEY]: !expanded,
-                          }));
-                        }}
-                        className={`tw-project-row group w-full text-left outline-none focus:outline-none ${
-                          expanded ? 'is-expanded' : ''
-                        }`}
-                      >
-                        <span className="tw-slot tw-folder">
-                          <FolderIcon className="w-3.5 h-3.5" />
-                        </span>
-                        <span className="tw-slot tw-chevron">
-                          <TriangleChevron open={expanded} className="w-3 h-3" />
-                        </span>
-                        <span className="tw-project-title text-[color:var(--tw-label-tertiary)]">
-                          未分组
-                        </span>
-                      </button>
-                      {expanded &&
-                        ungroupedSessions.map((s) => <SessionRow key={s.id} s={s} nested />)}
-                    </div>
-                  );
-                })()}
-              {!visibleWsItems.length && !showUngrouped && fsLive && (
+              {!visibleWsItems.length && fsLive && (
                 <div className="px-2 py-3 text-xs text-stone-400">暂无工作区</div>
               )}
             </div>
@@ -3240,36 +3858,15 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   <ChevronIcon
                     className={`w-3 h-3 transition-transform ${showArchived ? 'rotate-180' : ''}`}
                   />
-                  归档 ({archivedSessions.length})
+                  已归档 ({archivedSessions.length})
                 </button>
-                {showArchived && (
-                  <div className="space-y-0.5">
+                <div className={`tw-collapse ${showArchived ? 'is-open' : ''}`}>
+                  <div className="tw-collapse-inner space-y-0.5">
                     {archivedSessions.map((s) => (
                       <SessionRow key={s.id} s={s} />
                     ))}
                   </div>
-                )}
-              </div>
-            )}
-            {deletedSessions.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-stone-200/60">
-                <button
-                  type="button"
-                  onClick={() => setShowDeleted((v) => !v)}
-                  className="w-full flex items-center gap-1 px-1.5 pb-1 text-[11px] text-stone-400 hover:text-stone-600"
-                >
-                  <ChevronIcon
-                    className={`w-3 h-3 transition-transform ${showDeleted ? 'rotate-180' : ''}`}
-                  />
-                  已删除 ({deletedSessions.length})
-                </button>
-                {showDeleted && (
-                  <div className="space-y-0.5">
-                    {deletedSessions.map((s) => (
-                      <SessionRow key={s.id} s={s} />
-                    ))}
-                  </div>
-                )}
+                </div>
               </div>
             )}
           </div>
@@ -3283,7 +3880,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   工作区
                 </span>
                 <span className="tw-rail-workspace-name">
-                  {shortWorkspaceLabel(wsActivePath)}
+                  {shortWorkspaceLabel(wsActivePath, projectRootPath)}
                 </span>
               </div>
             )}
@@ -3297,12 +3894,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col">
-        {mainPane === 'plugins' ? (
-          <div className="flex-1 min-h-0 overflow-hidden bg-[color:var(--tw-surface-page)]">
-            <PluginsPage tab="mine" embedded />
-          </div>
-        ) : (
-          <>
             {/* dsh 风格：会话标题 + Tab（对话 | 会话记忆） */}
             <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
               <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
@@ -3350,22 +3941,66 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   </button>
                 )}
               </div>
+              {sessionTodos.length > 0 && chatTab !== 'memory' ? (
+                <div className="px-6 pb-3">
+                  <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5">
+                    <div className="text-[11px] font-medium text-stone-500 mb-1.5">
+                      待办 · {sessionTodos.filter((x) => x.status === 'completed').length}/
+                      {sessionTodos.length}
+                    </div>
+                    <ul className="space-y-1 max-h-28 overflow-y-auto">
+                      {sessionTodos.map((item, idx) => (
+                        <li
+                          key={`${idx}-${item.content}`}
+                          className="flex items-start gap-2 text-[12px] text-stone-700"
+                        >
+                          <span
+                            className={`mt-0.5 w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center text-[9px] ${
+                              item.status === 'completed'
+                                ? 'bg-emerald-500 border-emerald-500 text-white'
+                                : item.status === 'in_progress'
+                                  ? 'border-[#4176e6] text-[#4176e6]'
+                                  : 'border-stone-300 text-transparent'
+                            }`}
+                            aria-hidden
+                          >
+                            {item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '…' : ''}
+                          </span>
+                          <span
+                            className={
+                              item.status === 'completed' ? 'line-through text-stone-400' : ''
+                            }
+                          >
+                            {item.content}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {chatTab === 'memory' && pluginOn.memory ? (
-              <div className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)]">
+              <div
+                key={`memory-${store?.activeId ?? ''}`}
+                className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter"
+              >
                 <MemoryPane
                   live={memoryLive}
                   pluginOn={Boolean(pluginOn.memory)}
                   workspacePath={
                     store?.sessions.find((s) => s.id === store.activeId)?.workspacePath ||
-                    workspaceInfo?.workspace ||
+                    workspaceInfo?.projectRoot ||
                     ''
                   }
                 />
               </div>
             ) : (
-              <>
+              <div
+                key={`dialog-${store?.activeId ?? ''}`}
+                className="flex-1 min-h-0 flex flex-col tw-pane-enter"
+              >
                 {/* 消息区（字号跟通用设置） */}
                 <div className="relative flex-1 min-h-0">
                   <div
@@ -3378,28 +4013,31 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   >
                     {empty ? (
                       <div className="h-full flex flex-col items-center justify-center text-center">
-                        <div className="w-10 h-10 rounded-xl bg-[#4176e6]/10 flex items-center justify-center">
-                          <span className="w-3 h-3 rounded-sm bg-[#4176e6]" />
-                        </div>
+                        <img
+                          src={`${base}brand-mark.png`}
+                          alt=""
+                          width={52}
+                          height={52}
+                          className="w-[52px] h-[52px] rounded-[12px] object-contain"
+                        />
                         <h2 className="mt-4 text-base font-medium text-stone-800">
                           {t('chat.emptyTitle', undefined, generalPrefs.language)}
                         </h2>
-                        <p className="mt-1 text-sm text-stone-500 max-w-md">
-                          {settings
-                            ? t(
-                                'chat.emptyWithModel',
-                                { model: settings.model },
-                                generalPrefs.language,
-                              )
-                            : t('chat.emptyNoModel', undefined, generalPrefs.language)}
+                        <p className="mt-2 text-sm text-stone-600 max-w-lg leading-relaxed">
+                          {t('chat.emptyBenefits', undefined, generalPrefs.language)}
                         </p>
                         {!settings && (
-                          <button
-                            onClick={() => openSettings('model')}
-                            className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
-                          >
-                            {t('chat.configureModel', undefined, generalPrefs.language)}
-                          </button>
+                          <>
+                            <p className="mt-2 text-sm text-stone-500 max-w-md">
+                              {t('chat.emptyNoModel', undefined, generalPrefs.language)}
+                            </p>
+                            <button
+                              onClick={() => openSettings('model')}
+                              className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
+                            >
+                              {t('chat.configureModel', undefined, generalPrefs.language)}
+                            </button>
+                          </>
                         )}
                         {settings && (
                           <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-xl w-full">
@@ -3472,11 +4110,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   {m.content}
                                 </div>
                               )}
-                              <div className={`flex items-center gap-1 h-7 ${revealCls(i)}`}>
+                              <div className={`tw-msg-actions ${revealCls(i)}`}>
                                 {m.time != null && (
-                                  <span className="pr-1.5 text-[13px] text-stone-400 tabular-nums">
-                                    {fmtClock(m.time)}
-                                  </span>
+                                  <span className="tw-msg-action-time pr-0.5">{fmtClock(m.time)}</span>
                                 )}
                                 <CopyButton text={m.content} />
                               </div>
@@ -3496,6 +4132,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   waiting && !open && m.reasoning
                                     ? latestParagraphFirstLine(m.reasoning).replaceAll('**', '')
                                     : '';
+                                const toolSteps = (m.activitySteps ?? []).filter(
+                                  (s) => s.kind !== 'thinking',
+                                );
                                 return (
                                   <div className="mb-2">
                                     <button
@@ -3519,7 +4158,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                       </span>
                                       {!waiting && m.reasoningDuration != null && (
                                         <span className="text-xs text-stone-400 shrink-0">
-                                          {m.reasoningDuration}s
+                                          用时 {m.reasoningDuration}s
                                         </span>
                                       )}
                                       <ChevronIcon
@@ -3535,6 +4174,26 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                       <div className="mt-1.5 mb-2 pl-[22px] text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
                                         {m.reasoning}
                                       </div>
+                                    ) : null}
+                                    {open && toolSteps.length > 0 ? (
+                                      <ul className="mt-1 mb-1 pl-[22px] space-y-1">
+                                        {toolSteps.map((s) => (
+                                          <li
+                                            key={s.id}
+                                            className="text-[12px] text-stone-500 flex items-baseline gap-2 min-w-0"
+                                          >
+                                            <span className="shrink-0 text-stone-400">·</span>
+                                            <span className="font-medium text-stone-600 shrink-0">
+                                              {s.title}
+                                            </span>
+                                            {s.detail ? (
+                                              <span className="truncate" title={s.detail}>
+                                                {s.detail}
+                                              </span>
+                                            ) : null}
+                                          </li>
+                                        ))}
+                                      </ul>
                                     ) : null}
                                   </div>
                                 );
@@ -3609,23 +4268,46 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   </span>
                                 </button>
                               ) : null}
+                              {m.presentFiles?.length
+                                ? m.presentFiles.map((pf) => (
+                                    <button
+                                      key={pf.path}
+                                      type="button"
+                                      title="点击本地打开"
+                                      onClick={() => {
+                                        void openFsPath(pf.path, access).catch((e) =>
+                                          setError(e instanceof Error ? e.message : String(e)),
+                                        );
+                                      }}
+                                      className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
+                                    >
+                                      <span className="w-10 h-10 rounded-lg bg-violet-50 text-violet-700 flex items-center justify-center text-[10px] font-semibold shrink-0">
+                                        {pf.name.split('.').pop()?.toUpperCase() || 'FILE'}
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block text-sm text-stone-800 truncate">
+                                          {pf.name}
+                                        </span>
+                                        <span className="block text-[11px] text-stone-400 truncate">
+                                          {pf.path}
+                                          {pf.description ? ` · ${pf.description}` : ''}
+                                          {' · 点击打开'}
+                                        </span>
+                                      </span>
+                                    </button>
+                                  ))
+                                : null}
                               {m.content && !(i === messages.length - 1 && streaming) ? (
-                                <div
-                                  className={`mt-1 flex items-center gap-1 h-7 text-stone-400 ${revealCls(i)}`}
-                                >
+                                <div className={`tw-msg-actions mt-1 ${revealCls(i)}`}>
                                   <CopyButton text={m.content} />
                                   {m.usage && (
-                                    <span className="ml-1.5">
-                                      <TurnUsageButton
-                                        usage={m.usage}
-                                        model={m.model ?? settings?.model}
-                                      />
-                                    </span>
+                                    <TurnUsageButton
+                                      usage={m.usage}
+                                      model={m.model ?? settings?.model}
+                                    />
                                   )}
                                   {m.time != null && (
-                                    <span className="ml-1.5 text-xs tabular-nums">
-                                      {fmtClock(m.time)}
-                                    </span>
+                                    <span className="tw-msg-action-time">{fmtClock(m.time)}</span>
                                   )}
                                 </div>
                               ) : null}
@@ -3739,9 +4421,197 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         </button>
                       </div>
                     ) : null}
-                    {queueLen > 0 ? (
-                      <div className="mb-1.5 px-1 text-[11px] text-stone-500">
-                        已排队 {queueLen} 条，当前轮结束后按序发送
+                    {/* dsh QueueDock：排队条目可见，当前轮结束后自动续发下一条 */}
+                    {sendQueue.length > 0 ? (
+                      <div className="mb-2 rounded-xl border border-stone-200/80 bg-stone-100/80 overflow-hidden">
+                        {sendQueue.map((q) => (
+                          <div
+                            key={q.id}
+                            className="flex items-center gap-2 px-3 py-2 border-b border-stone-200/60 last:border-b-0"
+                          >
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-stone-400 shrink-0"
+                              aria-hidden
+                            />
+                            <span className="flex-1 min-w-0 truncate text-[13px] text-stone-700">
+                              {queueTitle(q)}
+                            </span>
+                            <button
+                              type="button"
+                              title="编辑回输入框"
+                              onClick={() => editQueued(q.id)}
+                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
+                            >
+                              <Svg className="w-3.5 h-3.5">
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                              </Svg>
+                            </button>
+                            <button
+                              type="button"
+                              title="从队列移除"
+                              onClick={() => removeQueued(q.id)}
+                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
+                            >
+                              <Svg className="w-3.5 h-3.5">
+                                <path d="M3 6h18" />
+                                <path d="M8 6V4h8v2" />
+                                <path d="M19 6l-1 14H6L5 6" />
+                              </Svg>
+                            </button>
+                            <button
+                              type="button"
+                              title="插话立即发送（其后队列仍会续发）"
+                              onClick={() => promoteQueued(q.id)}
+                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none text-[#4176e6]"
+                            >
+                              <SendIcon className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {planProposal ? (
+                      <div className="mb-2 rounded-xl border border-amber-300/60 bg-amber-50/90 px-4 py-3 shadow-sm">
+                        <div className="text-[13px] font-medium text-stone-800 mb-1">
+                          待批准计划
+                        </div>
+                        <div className="text-[14px] font-medium text-stone-900">{planProposal.title}</div>
+                        {planProposal.summary ? (
+                          <p className="mt-1 text-[13px] text-stone-600 leading-5">
+                            {planProposal.summary}
+                          </p>
+                        ) : null}
+                        <ol className="mt-2 list-decimal pl-5 space-y-1 text-[13px] text-stone-700">
+                          {planProposal.steps.map((s, i) => (
+                            <li key={`${i}-${s.slice(0, 24)}`}>{s}</li>
+                          ))}
+                        </ol>
+                        <div className="mt-3 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className="h-8 px-3 rounded-lg border border-stone-200 bg-white text-[12px] text-stone-600 hover:bg-stone-50"
+                            onClick={() => rejectPlan()}
+                          >
+                            驳回
+                          </button>
+                          <button
+                            type="button"
+                            className="h-8 px-3 rounded-lg bg-[#4176e6] text-[12px] text-white hover:bg-[#3467d4]"
+                            onClick={() => approvePlan()}
+                          >
+                            批准实施
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {askUserPrompt?.length ? (
+                      <div className="mb-2 rounded-xl border border-[#4176e6]/30 bg-[#f5f8ff] px-4 py-3 shadow-sm">
+                        <div className="text-[13px] font-medium text-stone-800 mb-2">
+                          模型需要你的确认
+                        </div>
+                        <div className="space-y-3">
+                          {askUserPrompt.map((q) => {
+                            const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
+                            return (
+                              <div key={q.id} className="rounded-lg border border-stone-200 bg-white p-3">
+                                {q.header ? (
+                                  <div className="text-[11px] font-medium text-[#4176e6] mb-1">
+                                    {q.header}
+                                  </div>
+                                ) : null}
+                                <div className="text-[13px] text-stone-800 mb-2">{q.question}</div>
+                                {q.options?.length ? (
+                                  <div className="space-y-1.5">
+                                    {q.options.map((opt) => {
+                                      const checked = draft.selected.includes(opt.label);
+                                      return (
+                                        <label
+                                          key={opt.label}
+                                          className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 cursor-pointer text-[12px] ${
+                                            checked
+                                              ? 'border-[#4176e6] bg-[#edf3fe]'
+                                              : 'border-stone-200 hover:border-stone-300'
+                                          }`}
+                                        >
+                                          <input
+                                            type={q.multi_select ? 'checkbox' : 'radio'}
+                                            name={`ask-${q.id}`}
+                                            className="mt-0.5"
+                                            checked={checked}
+                                            onChange={() => {
+                                              setAskUserDraft((prev) => {
+                                                const cur = prev[q.id] ?? {
+                                                  selected: [],
+                                                  text: '',
+                                                };
+                                                let selected: string[];
+                                                if (q.multi_select) {
+                                                  selected = checked
+                                                    ? cur.selected.filter((x) => x !== opt.label)
+                                                    : [...cur.selected, opt.label];
+                                                } else {
+                                                  selected = [opt.label];
+                                                }
+                                                return {
+                                                  ...prev,
+                                                  [q.id]: { ...cur, selected },
+                                                };
+                                              });
+                                            }}
+                                          />
+                                          <span className="min-w-0">
+                                            <span className="block text-stone-800">{opt.label}</span>
+                                            {opt.description ? (
+                                              <span className="block text-stone-400 mt-0.5">
+                                                {opt.description}
+                                              </span>
+                                            ) : null}
+                                          </span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <textarea
+                                    value={draft.text}
+                                    onChange={(e) =>
+                                      setAskUserDraft((prev) => ({
+                                        ...prev,
+                                        [q.id]: {
+                                          selected: [],
+                                          text: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    rows={2}
+                                    className="w-full rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] outline-none focus:border-[#4176e6]"
+                                    placeholder="输入你的回答…"
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              abortRef.current?.abort();
+                              settleAskUserCanceled();
+                            }}
+                            className="h-8 px-3 rounded-lg text-[12px] text-stone-600 hover:bg-stone-100"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => submitAskUserAnswers()}
+                            className="h-8 px-3 rounded-lg text-[12px] font-medium text-white bg-[#4176e6] hover:bg-[#3566d4]"
+                          >
+                            提交回答
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                     <div
@@ -3837,7 +4707,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         {pluginMenuOpen && (
                           <div
                             ref={pluginMenuRef}
-                            className="tw-composer-menu absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
+                            className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
                           >
                             <div className="px-3 py-1.5 text-[11px] text-stone-400">插件</div>
                             {pluginMenuItems.map((p, i) => {
@@ -3875,7 +4745,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         {atOpen && (
                           <div
                             ref={mentionListRef}
-                            className="tw-composer-menu absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
+                            className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
                           >
                             {atFlatItems.length === 0 ? (
                               <div className="px-3 py-2 text-xs text-stone-400 space-y-1">
@@ -4035,12 +4905,33 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             }
                             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                               e.preventDefault();
+                              const alt = e.metaKey || e.ctrlKey;
                               if (streamingRef.current) {
+                                // Cmd/Ctrl+Enter：插话；有队列时带着队列后续自主续发
+                                if (alt) {
+                                  const draft = input.trim();
+                                  const hasDraft =
+                                    Boolean(draft) ||
+                                    attachments.length > 0 ||
+                                    images.length > 0 ||
+                                    docRefs.length > 0;
+                                  if (hasDraft) {
+                                    const extra: PendingSend = {
+                                      id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                      content: draft,
+                                      files: [...attachments],
+                                      refs: [...docRefs],
+                                      imgs: [...images],
+                                    };
+                                    clearComposer();
+                                    flushQueueAsInterrupt(extra);
+                                  } else if (sendQueueRef.current.length) {
+                                    flushQueueAsInterrupt();
+                                  }
+                                  return;
+                                }
                                 const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
-                                const other: BusySendBehavior =
-                                  primary === 'queue' ? 'interrupt' : 'queue';
-                                const alt = e.metaKey || e.ctrlKey;
-                                void send(undefined, { forceBusy: alt ? other : primary });
+                                void send(undefined, { forceBusy: primary });
                               } else {
                                 void send();
                               }
@@ -4048,9 +4939,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           }}
                           rows={1}
                           placeholder={
-                            settings
-                              ? '请输入你的内容，使用 /  引用插件，使用 @ 引用文档'
-                              : '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
+                            !settings
+                              ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
+                              : sendQueue.length > 0 && streaming
+                                ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
+                                : '请输入你的内容，使用 /  引用插件，使用 @ 引用文档'
                           }
                           className="tw-chat-input block w-full min-h-[36px] pl-[14px] pr-2 pt-1 pb-0 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
                         />
@@ -4060,8 +4953,20 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         {/* 「+」：dsh 风格「添加 → 文件」 */}
                         <Menu>
                           <MenuButton
-                            title="添加"
-                            className="tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center data-[open]:bg-[color:var(--tw-session-hover-bg)] transition-colors"
+                            title={
+                              planPhase === 'off'
+                                ? '添加'
+                                : planPhase === 'planning'
+                                  ? '添加（计划模式·探查中）'
+                                  : '添加（计划模式·已批准）'
+                            }
+                            className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none data-[open]:bg-[color:var(--tw-session-hover-bg)] transition-colors ${
+                              planPhase === 'planning'
+                                ? 'text-amber-700 bg-amber-50'
+                                : planPhase === 'approved'
+                                  ? 'text-emerald-700 bg-emerald-50'
+                                  : ''
+                            }`}
                           >
                             <Svg className="w-4 h-4">
                               <path d="M5 12h14" />
@@ -4069,8 +4974,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             </Svg>
                           </MenuButton>
                           <MenuItems
+                            transition
                             anchor={{ to: 'top start', gap: 8 }}
-                            className="tw-select-menu z-50 w-[min(100vw-2rem,20rem)] rounded-xl border border-stone-200 py-1.5 shadow-xl focus:outline-none"
+                            className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,20rem)] rounded-xl border border-stone-200 py-1.5 shadow-xl focus:outline-none"
                           >
                             <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
                               添加
@@ -4088,14 +4994,113 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                 </span>
                               </button>
                             </MenuItem>
+                            <div className="my-1 border-t border-stone-100" />
+                            <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
+                              模式
+                            </div>
+                            <MenuItem>
+                              <button
+                                type="button"
+                                onClick={() => togglePlanMode()}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
+                              >
+                                <span
+                                  className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
+                                    planPhase === 'off'
+                                      ? 'border-stone-300 text-transparent'
+                                      : planPhase === 'planning'
+                                        ? 'border-amber-500 bg-amber-50 text-amber-700'
+                                        : 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                                  }`}
+                                  aria-hidden
+                                >
+                                  {planPhase !== 'off' ? '✓' : ''}
+                                </span>
+                                <span className="min-w-0 text-[13px] text-stone-800">
+                                  计划模式
+                                  <span className="ml-1.5 text-stone-400 font-normal">
+                                    {planPhase === 'off'
+                                      ? '关闭'
+                                      : planPhase === 'planning'
+                                        ? '探查中'
+                                        : '已批准'}
+                                  </span>
+                                </span>
+                              </button>
+                            </MenuItem>
                           </MenuItems>
                         </Menu>
+
+                        {/* dsh：输入栏工作区 picker（显式当前目录，可切换 / 添加） */}
+                        {fsLive && (
+                          <Menu>
+                            <MenuButton
+                              title={composerWsPath ? `工作区：${composerWsPath}` : '选择工作区'}
+                              disabled={wsBusy}
+                              className="group flex items-center gap-1 h-7 max-w-[min(40vw,11rem)] pl-1.5 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors disabled:opacity-50"
+                            >
+                              <FolderIcon className="w-3.5 h-3.5 shrink-0 text-stone-500" />
+                              <span className="truncate">{composerWsLabel}</span>
+                              <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
+                            </MenuButton>
+                            <MenuItems
+                              transition
+                              anchor={{ to: 'top start', gap: 8 }}
+                              className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,16rem)] rounded-xl border border-stone-200 py-1 shadow-xl focus:outline-none"
+                            >
+                              {(workspaceInfo?.items ?? []).map((item) => {
+                                const active = item.path === composerWsPath;
+                                return (
+                                  <MenuItem key={item.id}>
+                                    <button
+                                      type="button"
+                                      disabled={wsBusy}
+                                      onClick={() => void pickComposerWorkspace(item)}
+                                      className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100 disabled:opacity-50"
+                                    >
+                                      <FolderIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                                      <span
+                                        className={`flex-1 min-w-0 truncate text-[13px] ${
+                                          active
+                                            ? 'text-stone-900 font-medium'
+                                            : 'text-stone-700'
+                                        }`}
+                                        title={item.path}
+                                      >
+                                        {workspaceDisplayName(item, projectRootPath)}
+                                      </span>
+                                      {active && (
+                                        <CheckIcon className="w-3.5 h-3.5 shrink-0 text-[#4176e6]" />
+                                      )}
+                                    </button>
+                                  </MenuItem>
+                                );
+                              })}
+                              {(workspaceInfo?.items?.length ?? 0) > 0 && (
+                                <div className="my-1 border-t border-stone-100" />
+                              )}
+                              <MenuItem>
+                                <button
+                                  type="button"
+                                  disabled={wsBusy}
+                                  onClick={() => void addWorkspaceByPicker()}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] text-stone-700 data-[focus]:bg-stone-100 disabled:opacity-50"
+                                >
+                                  <span className="w-4 h-4 shrink-0 flex items-center justify-center text-stone-500 text-base leading-none">
+                                    +
+                                  </span>
+                                  添加工作区...
+                                </button>
+                              </MenuItem>
+                            </MenuItems>
+                          </Menu>
+                        )}
 
                         {/* 访问权限（dsh 左侧权限菜单） */}
                         <Menu>
                           <MenuButton
                             title="访问权限"
-                            className="group flex items-center gap-1 h-7 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
+                            className="group flex items-center gap-1 h-7 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
                           >
                             <ShieldIcon
                               level={access}
@@ -4111,8 +5116,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             <ChevronIcon className="w-3.5 h-3.5 text-stone-400 transition-transform group-data-[open]:rotate-180" />
                           </MenuButton>
                           <MenuItems
+                            transition
                             anchor={{ to: 'top start', gap: 8 }}
-                            className="tw-select-menu z-50 w-56 rounded-xl border border-stone-200 p-1 shadow-xl focus:outline-none"
+                            className="tw-select-menu tw-menu-anim z-50 w-56 rounded-xl border border-stone-200 p-1 shadow-xl focus:outline-none"
                           >
                             <div className="px-3 py-1.5 text-[11px] text-stone-400">
                               {fsLive ? '本地文件服务已连接' : '本地文件服务未就绪'}
@@ -4149,39 +5155,29 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
                         <ModelEffortMenu settings={settings} />
 
-                        {streaming ? (
-                          <button
-                            onClick={stop}
-                            title="停止生成"
-                            className="w-8 h-8 shrink-0 rounded-full bg-stone-200 text-stone-600 flex items-center justify-center hover:bg-stone-300 transition-colors"
-                          >
-                            <span className="w-2.5 h-2.5 bg-stone-600 rounded-[2px]" />
-                          </button>
-                        ) : null}
+                        {/* 发送 / 停止同一座位：生成中点按停止；空闲点按发送（繁忙续发仍可用 Enter） */}
                         <button
+                          type="button"
                           onClick={() => {
                             if (streamingRef.current) {
-                              void send(undefined, {
-                                forceBusy: loadGeneralPrefs().busySendBehavior ?? 'queue',
-                              });
-                            } else {
-                              void send();
+                              stop();
+                              return;
                             }
+                            void send();
                           }}
-                          disabled={!canSend}
-                          title={
+                          disabled={!streaming && !canSend}
+                          title={streaming ? '停止生成' : '发送'}
+                          className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
                             streaming
-                              ? generalPrefs.busySendBehavior === 'interrupt'
-                                ? '插话发送'
-                                : '排队发送'
-                              : '发送'
-                          }
-                          className="w-8 h-8 shrink-0 rounded-full bg-[#4176e6] text-white flex items-center justify-center hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed transition-colors"
+                              ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'
+                              : 'bg-[#4176e6] text-white hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed'
+                          }`}
                         >
-                          <Svg className="w-4 h-4">
-                            <path d="m5 12 7-7 7 7" />
-                            <path d="M12 19V5" />
-                          </Svg>
+                          {streaming ? (
+                            <span className="w-2.5 h-2.5 bg-current rounded-[2px]" />
+                          ) : (
+                            <SendIcon className="w-4 h-4" />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -4210,10 +5206,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     onChange={(e) => void onPickFiles(e)}
                   />
                 </div>
-              </>
+              </div>
             )}
-          </>
-        )}
       </div>
       <CaseGenPanel
         open={caseGenPanelOpen}
@@ -4264,41 +5258,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         onConfirm={(name) => void confirmRenameWorkspace(name)}
       />
       <ConfirmDialog
-        open={Boolean(deleteSessionId)}
+        open={Boolean(purgeSessionId)}
         title="删除会话"
         message={
-          deleteSessionId
-            ? `确定删除「${store?.sessions.find((x) => x.id === deleteSessionId)?.title ?? '该会话'}」？会话将移至「已删除」。`
+          purgeSessionId
+            ? `确定永久删除「${store?.sessions.find((x) => x.id === purgeSessionId)?.title ?? '该会话'}」？此操作不可恢复。`
             : ''
         }
         confirmLabel="删除"
         cancelLabel="取消"
         danger="outline"
-        onClose={() => setDeleteSessionId(null)}
-        onConfirm={() => {
-          if (!deleteSessionId) return;
-          const id = deleteSessionId;
-          setDeleteSessionId(null);
-          removeSession(id, false);
-        }}
-      />
-      <ConfirmDialog
-        open={Boolean(purgeSessionId)}
-        title="永久删除"
-        message={
-          purgeSessionId
-            ? `永久删除「${store?.sessions.find((x) => x.id === purgeSessionId)?.title ?? '该会话'}」？此操作不可恢复。`
-            : ''
-        }
-        confirmLabel="永久删除"
-        cancelLabel="取消"
-        danger
         onClose={() => setPurgeSessionId(null)}
         onConfirm={() => {
           if (!purgeSessionId) return;
           const id = purgeSessionId;
           setPurgeSessionId(null);
-          removeSession(id, true);
+          purgeSession(id);
         }}
       />
       <ConfirmDialog
@@ -4306,7 +5281,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         title="删除工作区"
         message={
           wsDeleteTarget
-            ? `将把「${wsDeleteTarget.name}」从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在「未分组」下。`
+            ? `将把「${wsDeleteTarget.name}」从工作区列表中移除。文件夹与会话记录会保留，其会话将归入项目根工作区。`
             : ''
         }
         confirmLabel="删除工作区"

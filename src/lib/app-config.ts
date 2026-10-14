@@ -44,7 +44,7 @@ export interface AppFileConfig {
   knowledgeCategories: KnowledgeCategory[];
 }
 
-const CONFIG_API = '/__local_config';
+const CONFIG_API = '/__tb_config';
 const LS_CONFIG = 'tw.app.config.v1';
 const LS_API_KEY = 'tw.app.apikey.v1';
 

@@ -14,8 +14,66 @@ const introMatch = bodyMd.match(/^([\s\S]*?)(?=\n##\s|$)/);
 const introMd = (introMatch?.[1] ?? '').trim();
 const versionsMd = bodyMd.slice(introMatch?.[0]?.length ?? 0).trim();
 
-const introHtml = introMd ? (marked.parse(introMd, { async: false }) as string) : '';
-const versionsHtml = versionsMd ? (marked.parse(versionsMd, { async: false }) as string) : '';
+/** 外链在新窗口打开（留言板、操作手册等） */
+function withBlankExternalLinks(html: string): string {
+  return html.replace(
+    /<a\s+([^>]*?)href="(https?:\/\/[^"]+)"([^>]*)>/gi,
+    (_m, pre: string, href: string, post: string) => {
+      const attrs = `${pre} ${post}`;
+      const hasTarget = /\btarget=/i.test(attrs);
+      const hasRel = /\brel=/i.test(attrs);
+      return `<a ${pre}href="${href}"${post}${hasTarget ? '' : ' target="_blank"'}${
+        hasRel ? '' : ' rel="noopener noreferrer"'
+      }>`;
+    },
+  );
+}
+
+const introHtml = introMd
+  ? withBlankExternalLinks(marked.parse(introMd, { async: false }) as string)
+  : '';
+
+type VersionBlock = {
+  titleHtml: string;
+  summaryHtml: string;
+  detailHtml: string;
+  hasDetail: boolean;
+};
+
+/** 按 ## 版本块拆分：标题 + 首段摘要默认展示，其余折叠 */
+function splitVersionBlocks(src: string): VersionBlock[] {
+  if (!src.trim()) return [];
+  const chunks = src.split(/(?=^##\s)/m).filter((c) => c.trim());
+  return chunks.map((chunk) => {
+    const lines = chunk.replace(/\r\n/g, '\n').split('\n');
+    const titleLine = lines[0] ?? '';
+    const rest = lines.slice(1);
+    let i = 0;
+    while (i < rest.length && !rest[i]!.trim()) i++;
+    const summaryLines: string[] = [];
+    if (i < rest.length && !rest[i]!.startsWith('#')) {
+      while (i < rest.length && rest[i]!.trim() && !rest[i]!.startsWith('#')) {
+        summaryLines.push(rest[i]!);
+        i++;
+      }
+    }
+    while (i < rest.length && !rest[i]!.trim()) i++;
+    const detailMd = rest.slice(i).join('\n').trim();
+    const titleHtml = marked.parse(titleLine, { async: false }) as string;
+    const summaryHtml = summaryLines.length
+      ? (marked.parse(summaryLines.join('\n'), { async: false }) as string)
+      : '';
+    const detailHtml = detailMd ? (marked.parse(detailMd, { async: false }) as string) : '';
+    return {
+      titleHtml,
+      summaryHtml,
+      detailHtml,
+      hasDetail: Boolean(detailHtml),
+    };
+  });
+}
+
+const versions = splitVersionBlocks(versionsMd);
 ---
 
 <Base title="变更日志 · TestBench">
@@ -32,10 +90,64 @@ const versionsHtml = versionsMd ? (marked.parse(versionsMd, { async: false }) as
       }
     </header>
 
-    <div class="tw-changelog-panel">
-      <article class="tw-changelog-body" set:html={versionsHtml} />
+    <div class="tw-changelog-list tw-anim-list">
+      {
+        versions.map((v) => (
+          <section class="tw-changelog-card" data-open="false">
+            <div class="tw-changelog-card-head" set:html={v.titleHtml} />
+            {v.summaryHtml ? (
+              <div class="tw-changelog-card-summary" set:html={v.summaryHtml} />
+            ) : null}
+            {v.hasDetail ? (
+              <>
+                <div class="tw-changelog-card-detail-wrap">
+                  <div class="tw-changelog-card-detail" set:html={v.detailHtml} />
+                </div>
+                <div class="tw-changelog-toggle-row">
+                  <button
+                    type="button"
+                    class="tw-changelog-toggle"
+                    aria-expanded="false"
+                  >
+                    <span class="tw-changelog-toggle-label">查看更多</span>
+                    <svg
+                      class="tw-changelog-toggle-arrow"
+                      viewBox="0 0 16 16"
+                      width="14"
+                      height="14"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M6 3.5 L10.5 8 L6 12.5"></path>
+                    </svg>
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </section>
+        ))
+      }
     </div>
   </div>
+
+  <script>
+    document.querySelectorAll('.tw-changelog-card').forEach((card) => {
+      const btn = card.querySelector('.tw-changelog-toggle');
+      const label = card.querySelector('.tw-changelog-toggle-label');
+      if (!(btn instanceof HTMLButtonElement) || !(label instanceof HTMLElement)) return;
+
+      btn.addEventListener('click', () => {
+        const next = card.getAttribute('data-open') !== 'true';
+        card.setAttribute('data-open', next ? 'true' : 'false');
+        btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+        label.textContent = next ? '收起' : '查看更多';
+      });
+    });
+  </script>
 </Base>
 
 <style>
@@ -130,44 +242,67 @@ const versionsHtml = versionsMd ? (marked.parse(versionsMd, { async: false }) as
     color: var(--tw-accent);
   }
 
-  .tw-changelog-panel {
+  .tw-changelog-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .tw-changelog-card {
     background: var(--tw-surface-panel);
     border: 1px solid var(--tw-border);
     border-radius: 14px;
-    padding: 1.5rem 1.75rem 1.25rem;
+    padding: 1.25rem 1.5rem 1rem;
     box-shadow: 0 1px 0 rgba(16, 24, 40, 0.02);
   }
 
-  .tw-changelog-body :global(h2) {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem 0.75rem;
-    margin: 1.75rem 0 0.85rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid var(--tw-border);
+  .tw-changelog-card-head :global(h2) {
+    margin: 0;
     font-size: 1.125rem;
     font-weight: 650;
     letter-spacing: -0.01em;
     color: var(--tw-label-primary);
   }
 
-  .tw-changelog-body :global(h2:first-child) {
-    margin-top: 0;
-    padding-top: 0;
-    border-top: none;
-  }
-
-  .tw-changelog-body :global(h2 a) {
+  .tw-changelog-card-head :global(h2 a) {
     color: inherit;
     text-decoration: none;
   }
 
-  .tw-changelog-body :global(h2 a:hover) {
+  .tw-changelog-card-head :global(h2 a:hover) {
     color: var(--tw-accent);
   }
 
-  .tw-changelog-body :global(h3) {
+  .tw-changelog-card-summary :global(p) {
+    margin: 0.65rem 0 0;
+    color: var(--tw-label-secondary);
+    line-height: 1.65;
+    font-size: 0.9375rem;
+  }
+
+  .tw-changelog-card-detail-wrap {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-top: 0;
+    transition:
+      grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.24s ease,
+      margin-top 0.32s ease;
+  }
+
+  .tw-changelog-card[data-open='true'] .tw-changelog-card-detail-wrap {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    margin-top: 0.35rem;
+  }
+
+  .tw-changelog-card-detail {
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .tw-changelog-card-detail :global(h3) {
     margin: 1rem 0 0.4rem;
     font-size: 0.8125rem;
     font-weight: 650;
@@ -176,41 +311,86 @@ const versionsHtml = versionsMd ? (marked.parse(versionsMd, { async: false }) as
     color: var(--tw-accent);
   }
 
-  .tw-changelog-body :global(ul) {
+  .tw-changelog-card-detail :global(h4) {
+    margin: 0.85rem 0 0.35rem;
+    font-size: 0.875rem;
+    font-weight: 650;
+    color: var(--tw-label-primary);
+  }
+
+  .tw-changelog-card-detail :global(ul) {
     margin: 0.35rem 0 0.75rem;
     padding-left: 1.15rem;
     color: var(--tw-label-secondary);
   }
 
-  .tw-changelog-body :global(li) {
+  .tw-changelog-card-detail :global(li) {
     margin: 0.35rem 0;
     line-height: 1.6;
   }
 
-  .tw-changelog-body :global(li::marker) {
+  .tw-changelog-card-detail :global(li::marker) {
     color: color-mix(in srgb, var(--tw-accent) 70%, var(--tw-label-tertiary));
   }
 
-  .tw-changelog-body :global(p) {
+  .tw-changelog-card-detail :global(p) {
     margin: 0.5rem 0;
     color: var(--tw-label-secondary);
     line-height: 1.65;
   }
 
-  .tw-changelog-body :global(a) {
+  .tw-changelog-card-detail :global(a) {
     color: var(--tw-accent);
     text-decoration: none;
   }
 
-  .tw-changelog-body :global(a:hover) {
+  .tw-changelog-card-detail :global(a:hover) {
     text-decoration: underline;
   }
 
-  .tw-changelog-body :global(code) {
+  .tw-changelog-card-detail :global(code) {
     font-size: 0.85em;
     padding: 0.1em 0.35em;
     border-radius: 4px;
     background: var(--tw-accent-soft);
     color: var(--tw-accent);
+  }
+
+  .tw-changelog-toggle-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.65rem;
+  }
+
+  .tw-changelog-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--tw-accent);
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+
+  .tw-changelog-toggle:hover {
+    opacity: 0.88;
+  }
+
+  .tw-changelog-toggle:hover .tw-changelog-toggle-label {
+    text-decoration: underline;
+  }
+
+  .tw-changelog-toggle-arrow {
+    display: block;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .tw-changelog-card[data-open='true'] .tw-changelog-toggle-arrow {
+    transform: rotate(90deg);
   }
 </style>

@@ -211,7 +211,7 @@ export default function CasesLibrary() {
             暂无用例文件。请在「我的工作台」通过「生成测试用例」插件生成并自动入库。
           </p>
         ) : (
-          <ul className="divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
+          <ul className="tw-anim-list divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
             <li className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-xs text-stone-500">
               <input
                 type="checkbox"

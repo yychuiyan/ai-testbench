@@ -24,11 +24,11 @@ export interface DocsTreeNode {
 }
 
 function prefixOf(root: DocsRoot): string {
-  if (root === 'requirements') return '/__local_requirements';
-  if (root === 'cases') return '/__local_cases';
-  if (root === 'prompts') return '/__local_prompts';
-  if (root === 'knowledge') return '/__local_knowledge';
-  return '/__local_templates';
+  if (root === 'requirements') return '/__tb_requirements';
+  if (root === 'cases') return '/__tb_cases';
+  if (root === 'prompts') return '/__tb_prompts';
+  if (root === 'knowledge') return '/__tb_knowledge';
+  return '/__tb_templates';
 }
 
 async function postJson<T>(

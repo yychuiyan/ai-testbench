@@ -13,7 +13,7 @@ export default tseslint.config(
       'node_modules/**',
       '.astro/**',
       '.local/**',
-      'dev-plugins/**',
+      'tb-plugins/**',
       'eslint.config.js',
       'src/env.d.ts',
     ],

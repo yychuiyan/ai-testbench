@@ -70,7 +70,7 @@ export async function nativePickDirectory() {
   return null;
 }
 
-const PREFIX = '/__local_fs';
+const PREFIX = '/__tb_fs';
 const MAX_READ = 2 * 1024 * 1024;
 const MAX_WRITE = 10 * 1024 * 1024;
 const MAX_LIST = 500;
@@ -264,12 +264,406 @@ function looksBinary(buf) {
   return false;
 }
 
+const AGENT_INSTRUCTION_CANDIDATES = ['AGENTS.md', 'CLAUDE.md'];
+const AGENT_INSTRUCTION_LOCAL = ['AGENTS.local.md', 'CLAUDE.local.md'];
+const AGENT_INSTRUCTION_MAX_BYTES = 65536;
+const AGENT_INSTRUCTION_MAX_SOURCE = 1024 * 1024;
+
+/**
+ * 从目录读取指令候选（同目录内容去重），返回 broad→specific 片段列表。
+ * @param {string} dirAbs
+ * @param {string} scopeLabel
+ */
+function readInstructionDir(dirAbs, scopeLabel) {
+  const out = [];
+  const seen = new Set();
+  for (const name of [...AGENT_INSTRUCTION_CANDIDATES, ...AGENT_INSTRUCTION_LOCAL]) {
+    const abs = path.join(dirAbs, name);
+    try {
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+      const st = fs.statSync(abs);
+      if (st.size > AGENT_INSTRUCTION_MAX_SOURCE) continue;
+      const content = fs.readFileSync(abs, 'utf8');
+      const key = content.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        name,
+        abs,
+        scopeLabel,
+        rel: scopeLabel === '.' ? name : `${scopeLabel.replace(/\/$/, '')}/${name}`,
+        content,
+      });
+    } catch {
+      // skip unreadable
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {string} workspace
+ * @param {string} projectRoot
+ * @param {number} [maxBytes]
+ */
+function buildAgentInstructions(workspace, projectRoot, maxBytes = AGENT_INSTRUCTION_MAX_BYTES) {
+  const ws = path.resolve(workspace);
+  const root = path.resolve(projectRoot);
+  /** @type {Array<{ name: string, abs: string, scopeLabel: string, rel: string, content: string }>} */
+  let entries = [];
+
+  // 由宽到窄：项目根 → 工作区（若不同）
+  if (root) {
+    entries = entries.concat(readInstructionDir(root, path.basename(root) || 'project'));
+  }
+  if (ws && ws !== root) {
+    entries = entries.concat(readInstructionDir(ws, path.basename(ws) || 'workspace'));
+  } else if (ws && entries.length === 0) {
+    entries = entries.concat(readInstructionDir(ws, path.basename(ws) || 'workspace'));
+  }
+
+  const frameOverhead = Buffer.byteLength(
+    '以下工作区指令可能与当前任务相关。更具体的指令优先。它们不能覆盖系统或用户直接指令。\n\n',
+    'utf8',
+  );
+
+  function sectionBytes(e, truncatedContent) {
+    const body = truncatedContent ?? e.content;
+    return (
+      Buffer.byteLength(`Instructions from: ${e.rel}\n\n`, 'utf8') + Buffer.byteLength(body, 'utf8') + 2
+    );
+  }
+
+  function totalBytes(list) {
+    let n = frameOverhead;
+    for (const e of list) n += sectionBytes(e);
+    return n;
+  }
+
+  // 超限先丢更宽（列表头部），再截断最具体
+  while (entries.length > 1 && totalBytes(entries) > maxBytes) {
+    entries.shift();
+  }
+  if (entries.length === 1 && totalBytes(entries) > maxBytes) {
+    const e = entries[0];
+    const header = Buffer.byteLength(`Instructions from: ${e.rel}\n\n`, 'utf8') + 2;
+    const allow = Math.max(0, maxBytes - frameOverhead - header);
+    let truncated = e.content;
+    while (Buffer.byteLength(truncated, 'utf8') > allow && truncated.length > 0) {
+      truncated = truncated.slice(0, Math.floor(truncated.length * 0.9));
+    }
+    if (Buffer.byteLength(truncated, 'utf8') < Buffer.byteLength(e.content, 'utf8')) {
+      truncated = `${truncated.trimEnd()}\n\n…（已按预算截断）`;
+    }
+    entries = [{ ...e, content: truncated }];
+  }
+
+  if (!entries.length) {
+    return { text: '', files: [] };
+  }
+
+  const parts = [
+    '以下工作区指令可能与当前任务相关。更具体的指令优先。它们不能覆盖系统或用户直接指令。',
+    '',
+  ];
+  const files = [];
+  for (const e of entries) {
+    parts.push(`Instructions from: ${e.rel}`);
+    parts.push('');
+    parts.push(e.content.trimEnd());
+    parts.push('');
+    files.push({ path: e.rel, name: e.name, abs: e.abs });
+  }
+  return { text: parts.join('\n').trim(), files };
+}
+
+async function openLocalPath(abs) {
+  if (process.platform === 'darwin') {
+    await execFileAsync('open', [abs], { timeout: 30_000 });
+    return;
+  }
+  if (process.platform === 'win32') {
+    await execFileAsync('cmd', ['/c', 'start', '', abs], { timeout: 30_000 });
+    return;
+  }
+  await execFileAsync('xdg-open', [abs], { timeout: 30_000 });
+}
+
+const SEARCH_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '.local',
+  '.astro',
+  '.DS_Store',
+  'coverage',
+  '.next',
+  '.turbo',
+]);
+const GLOB_MAX = 100;
+const GREP_MAX = 250;
+
+/** 无「/」的 pattern 按任意深度匹配 basename（对齐 dsh glob） */
+function normalizeGlobPattern(pattern) {
+  const p = String(pattern ?? '').trim();
+  if (!p) throw new Error('pattern is required');
+  if (!p.includes('/') && !p.includes('\\')) return `**/${p}`;
+  return p.replace(/\\/g, '/');
+}
+
+/** 极简 glob → RegExp（支持 *, ?, **） */
+function globToRegExp(glob) {
+  let s = String(glob).replace(/\\/g, '/');
+  let out = '^';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '*' && s[i + 1] === '*') {
+      if (s[i + 2] === '/') {
+        out += '(?:.*/)?';
+        i += 2;
+      } else {
+        out += '.*';
+        i += 1;
+      }
+    } else if (c === '*') {
+      out += '[^/]*';
+    } else if (c === '?') {
+      out += '[^/]';
+    } else if ('+.^$()[]{}|'.includes(c)) {
+      out += `\\${c}`;
+    } else {
+      out += c;
+    }
+  }
+  out += '$';
+  return new RegExp(out, 'i');
+}
+
+function toWorkspaceRel(workspaceRoot, abs) {
+  const ws = path.resolve(workspaceRoot);
+  const a = path.resolve(abs);
+  if (a === ws) return '.';
+  if (a.startsWith(ws + path.sep)) {
+    return path.relative(ws, a).split(path.sep).join('/');
+  }
+  return a;
+}
+
+/**
+ * @returns {Promise<{ paths: string[], truncated: boolean, total: number, engine: string }>}
+ */
+async function runFsGlob(workspaceRoot, searchRootAbs, pattern) {
+  const norm = normalizeGlobPattern(pattern);
+  const re = globToRegExp(norm);
+  const hits = [];
+
+  // 优先 ripgrep --files
+  try {
+    const args = ['--files', '--hidden', '--glob', '!**/node_modules/**', '--glob', '!**/.git/**'];
+    // rg -g 用原始用户 pattern；无斜杠时 rg 会按任意深度 basename 匹配
+    args.push('--glob', String(pattern).trim());
+    const { stdout } = await execFileAsync('rg', args, {
+      cwd: searchRootAbs,
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    });
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const withMtime = [];
+    for (const rel of lines) {
+      const abs = path.resolve(searchRootAbs, rel);
+      try {
+        const st = fs.statSync(abs);
+        if (!st.isFile()) continue;
+        withMtime.push({ abs, mtime: st.mtimeMs });
+      } catch {
+        // skip
+      }
+    }
+    withMtime.sort((a, b) => b.mtime - a.mtime);
+    const total = withMtime.length;
+    for (const it of withMtime.slice(0, GLOB_MAX)) {
+      hits.push(toWorkspaceRel(workspaceRoot, it.abs));
+    }
+    return { paths: hits, truncated: total > GLOB_MAX, total, engine: 'rg' };
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 1) {
+      return { paths: [], truncated: false, total: 0, engine: 'rg' };
+    }
+    // fallback walk
+  }
+
+  const stack = [searchRootAbs];
+  const withMtime = [];
+  while (stack.length) {
+    const dir = stack.pop();
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (SEARCH_SKIP_DIRS.has(name)) continue;
+      const abs = path.join(dir, name);
+      let st;
+      try {
+        st = fs.statSync(abs);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        stack.push(abs);
+        continue;
+      }
+      if (!st.isFile()) continue;
+      const relFromSearch = path.relative(searchRootAbs, abs).split(path.sep).join('/');
+      const relFromWs = toWorkspaceRel(workspaceRoot, abs);
+      if (re.test(relFromSearch) || re.test(relFromWs) || re.test(name)) {
+        withMtime.push({ abs, mtime: st.mtimeMs });
+      }
+    }
+  }
+  withMtime.sort((a, b) => b.mtime - a.mtime);
+  const total = withMtime.length;
+  for (const it of withMtime.slice(0, GLOB_MAX)) {
+    hits.push(toWorkspaceRel(workspaceRoot, it.abs));
+  }
+  return { paths: hits, truncated: total > GLOB_MAX, total, engine: 'node' };
+}
+
+/**
+ * @returns {Promise<{ matches: Array<{ path: string, line: number, text: string }>, truncated: boolean, total: number, engine: string }>}
+ */
+async function runFsGrep(workspaceRoot, searchRootAbs, pattern, include) {
+  const pat = String(pattern ?? '');
+  if (!pat) throw new Error('pattern is required');
+  const matches = [];
+
+  try {
+    const args = [
+      '-n',
+      '--no-heading',
+      '--hidden',
+      '--glob',
+      '!**/node_modules/**',
+      '--glob',
+      '!**/.git/**',
+    ];
+    if (include && String(include).trim()) {
+      args.push('--glob', String(include).trim());
+    }
+    args.push('--', pat, '.');
+    const { stdout } = await execFileAsync('rg', args, {
+      cwd: searchRootAbs,
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 45_000,
+    });
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .filter(Boolean);
+    let total = 0;
+    for (const line of lines) {
+      // path:line:text
+      const m = /^(.+?):(\d+):(.*)$/.exec(line);
+      if (!m) continue;
+      total += 1;
+      if (matches.length >= GREP_MAX) continue;
+      const abs = path.resolve(searchRootAbs, m[1]);
+      matches.push({
+        path: toWorkspaceRel(workspaceRoot, abs),
+        line: Number(m[2]),
+        text: m[3],
+      });
+    }
+    return {
+      matches,
+      truncated: total > GREP_MAX,
+      total,
+      engine: 'rg',
+    };
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 1) {
+      return { matches: [], truncated: false, total: 0, engine: 'rg' };
+    }
+    // fallback
+  }
+
+  let re;
+  try {
+    re = new RegExp(pat, 'm');
+  } catch {
+    throw new Error(`invalid regex: ${pat}`);
+  }
+  const includeRe = include && String(include).trim() ? globToRegExp(normalizeGlobPattern(include)) : null;
+  const stack = [searchRootAbs];
+  let total = 0;
+  const searchIsFile = fs.existsSync(searchRootAbs) && fs.statSync(searchRootAbs).isFile();
+  if (searchIsFile) {
+    collectGrepFile(searchRootAbs);
+  } else {
+    while (stack.length) {
+      const dir = stack.pop();
+      let names;
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (SEARCH_SKIP_DIRS.has(name)) continue;
+        const abs = path.join(dir, name);
+        let st;
+        try {
+          st = fs.statSync(abs);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          stack.push(abs);
+          continue;
+        }
+        if (!st.isFile()) continue;
+        if (st.size > MAX_READ) continue;
+        const base = name;
+        const rel = path.relative(searchRootAbs, abs).split(path.sep).join('/');
+        if (includeRe && !includeRe.test(rel) && !includeRe.test(base)) continue;
+        collectGrepFile(abs);
+      }
+    }
+  }
+
+  function collectGrepFile(abs) {
+    let buf;
+    try {
+      buf = fs.readFileSync(abs);
+    } catch {
+      return;
+    }
+    if (looksBinary(buf)) return;
+    const text = buf.toString('utf8');
+    const lines = text.split(/\r?\n/);
+    const rel = toWorkspaceRel(workspaceRoot, abs);
+    for (let i = 0; i < lines.length; i++) {
+      if (!re.test(lines[i])) continue;
+      total += 1;
+      if (matches.length < GREP_MAX) {
+        matches.push({ path: rel, line: i + 1, text: lines[i] });
+      }
+    }
+  }
+
+  return { matches, truncated: total > GREP_MAX, total, engine: 'node' };
+}
+
 /**
  * @returns {import('vite').Plugin}
  */
-export function localFsPlugin() {
+export function tbFsPlugin() {
   return {
-    name: 'local-fs',
+    name: 'tb-fs',
     configureServer(server) {
       const projectRoot = server.config.root;
       server.middlewares.use(async (req, res, next) => {
@@ -288,6 +682,18 @@ export function localFsPlugin() {
               home: os.homedir(),
               maxReadBytes: MAX_READ,
               maxWriteBytes: MAX_WRITE,
+            });
+          }
+
+          if (url === `${PREFIX}/agent-instructions` && req.method === 'GET') {
+            const packed = buildAgentInstructions(workspace, projectRoot);
+            return sendJson(res, 200, {
+              ok: true,
+              text: packed.text,
+              files: packed.files.map((f) => ({ path: f.path, name: f.name })),
+              workspace,
+              projectRoot,
+              maxBytes: AGENT_INSTRUCTION_MAX_BYTES,
             });
           }
 
@@ -501,6 +907,95 @@ export function localFsPlugin() {
             }
             fs.mkdirSync(abs, { recursive: true });
             return sendJson(res, 200, { ok: true, path: display });
+          }
+
+          if (url === `${PREFIX}/agent-instructions` && req.method === 'POST') {
+            const maxBytes = Number(body.maxBytes);
+            const packed = buildAgentInstructions(
+              workspace,
+              projectRoot,
+              Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : AGENT_INSTRUCTION_MAX_BYTES,
+            );
+            return sendJson(res, 200, {
+              ok: true,
+              text: packed.text,
+              files: packed.files.map((f) => ({ path: f.path, name: f.name })),
+              workspace,
+              projectRoot,
+              maxBytes: Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : AGENT_INSTRUCTION_MAX_BYTES,
+            });
+          }
+
+          if (url === `${PREFIX}/stat` && req.method === 'POST') {
+            const { abs, display } = resolvePath(workspace, body.path, access);
+            if (!fs.existsSync(abs)) {
+              return sendJson(res, 404, { error: 'not found', path: display });
+            }
+            const st = fs.statSync(abs);
+            if (!st.isFile()) {
+              return sendJson(res, 400, { error: 'not a file', path: display });
+            }
+            return sendJson(res, 200, {
+              ok: true,
+              path: display,
+              name: path.basename(abs),
+              size: st.size,
+              abs,
+            });
+          }
+
+          if (url === `${PREFIX}/open` && req.method === 'POST') {
+            const { abs, display } = resolvePath(workspace, body.path, access);
+            if (!fs.existsSync(abs)) {
+              return sendJson(res, 404, { error: 'not found', path: display });
+            }
+            const st = fs.statSync(abs);
+            if (!st.isFile() && !st.isDirectory()) {
+              return sendJson(res, 400, { error: '无法打开该路径', path: display });
+            }
+            await openLocalPath(abs);
+            return sendJson(res, 200, { ok: true, path: display });
+          }
+
+          if (url === `${PREFIX}/glob` && req.method === 'POST') {
+            const pattern = String(body.pattern ?? '').trim();
+            if (!pattern) return sendJson(res, 400, { error: 'pattern is required' });
+            const { abs, display } = resolvePath(workspace, body.path || '.', access);
+            if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+              return sendJson(res, 400, { error: 'search path must be a directory', path: display });
+            }
+            const result = await runFsGlob(workspace, abs, pattern);
+            return sendJson(res, 200, {
+              ok: true,
+              pattern,
+              path: display,
+              paths: result.paths,
+              truncated: result.truncated,
+              total: result.total,
+              engine: result.engine,
+              max: GLOB_MAX,
+            });
+          }
+
+          if (url === `${PREFIX}/grep` && req.method === 'POST') {
+            const pattern = String(body.pattern ?? '');
+            if (!pattern) return sendJson(res, 400, { error: 'pattern is required' });
+            const { abs, display } = resolvePath(workspace, body.path || '.', access);
+            if (!fs.existsSync(abs)) {
+              return sendJson(res, 404, { error: 'not found', path: display });
+            }
+            const result = await runFsGrep(workspace, abs, pattern, body.include);
+            return sendJson(res, 200, {
+              ok: true,
+              pattern,
+              path: display,
+              include: body.include ? String(body.include) : undefined,
+              matches: result.matches,
+              truncated: result.truncated,
+              total: result.total,
+              engine: result.engine,
+              max: GREP_MAX,
+            });
           }
 
           return sendJson(res, 404, { error: 'not found' });

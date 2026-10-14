@@ -7,8 +7,9 @@
 import type { CaseGenPluginConfig } from './case-gen-config';
 import type { KnowledgeGenPluginConfig } from './knowledge-gen-config';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
+import type { TodoItem } from './session-interact';
 
-const SESS_API = '/__local_sessions';
+const SESS_API = '/__tb_sessions';
 const STORE_KEY = 'tw-chat-sessions';
 const ACTIVE_KEY = 'tw-chat-active-id';
 const LEGACY_HISTORY_KEY = 'tw-chat-history';
@@ -27,7 +28,7 @@ export interface ChatSession {
   deleted?: boolean;
   /** 置顶（dsh pinSession） */
   pinned?: boolean;
-  /** 所属工作区绝对路径；缺省 / 无效 → 未分组 */
+  /** 所属工作区绝对路径；缺省 / 无效 → 归入项目根工作区展示 */
   workspacePath?: string;
   /** 消息结构由 ChatApp 的 LocalMessage 序列化而来 */
   messages: unknown[];
@@ -37,6 +38,8 @@ export interface ChatSession {
   promptGen?: PromptGenPluginConfig;
   /** AI 工作台「生成知识库」插件：确认后挂到当前会话 */
   knowledgeGen?: KnowledgeGenPluginConfig;
+  /** 会话待办（todo_write） */
+  todos?: TodoItem[];
 }
 
 export interface SessionStore {
@@ -83,7 +86,10 @@ function readLegacyMessages(): unknown[] {
 
 function normalizeStore(parsed: Partial<SessionStore> | null | undefined): SessionStore | null {
   if (!parsed) return null;
-  const sessions = Array.isArray(parsed.sessions) ? (parsed.sessions as ChatSession[]) : [];
+  // 已取消「已删除」回收站：加载时清掉历史软删除，仅保留真实会话
+  const sessions = (Array.isArray(parsed.sessions) ? (parsed.sessions as ChatSession[]) : []).filter(
+    (s) => !s.deleted,
+  );
   if (!sessions.length) return null;
   const activeId =
     typeof parsed.activeId === 'string' && sessions.some((s) => s.id === parsed.activeId)
@@ -199,7 +205,7 @@ export function createSession(
   };
 }
 
-/** 会话归属工作区；path 为空则回到未分组 */
+/** 会话归属工作区；path 为空则解除归属（侧栏归入项目根） */
 export function bindSessionWorkspace(
   store: SessionStore,
   sessionId: string,
@@ -304,7 +310,7 @@ export function archiveSession(store: SessionStore, id: string, archived = true)
   return { sessions, activeId };
 }
 
-/** 工作区从列表移除时，其下会话回到未分组 */
+/** 工作区从列表移除时，解除其下会话归属（侧栏归入项目根） */
 export function unbindSessionsFromWorkspace(
   store: SessionStore,
   workspacePath: string,
@@ -331,8 +337,9 @@ export function isEphemeralEmptySession(s: ChatSession): boolean {
 export function updateActiveMessages(
   store: SessionStore,
   messages: unknown[],
-  opts?: { touchTitle?: boolean },
+  opts?: { touchTitle?: boolean; /** 默认 true；切会话仅回写时传 false，避免侧栏重排 */ touchUpdatedAt?: boolean },
 ): SessionStore {
+  const touchUpdatedAt = opts?.touchUpdatedAt !== false;
   return {
     ...store,
     sessions: store.sessions.map((s) => {
@@ -347,7 +354,7 @@ export function updateActiveMessages(
         ...s,
         messages: messages.slice(-80),
         title,
-        updatedAt: Date.now(),
+        updatedAt: touchUpdatedAt ? Date.now() : s.updatedAt,
       };
     }),
   };
@@ -356,7 +363,10 @@ export function updateActiveMessages(
 export function updateActiveSessionMeta(
   store: SessionStore,
   patch: Partial<
-    Pick<ChatSession, 'caseGen' | 'promptGen' | 'knowledgeGen' | 'title' | 'workspacePath'>
+    Pick<
+      ChatSession,
+      'caseGen' | 'promptGen' | 'knowledgeGen' | 'title' | 'workspacePath' | 'todos'
+    >
   >,
 ): SessionStore {
   return {

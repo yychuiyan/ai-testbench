@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import { nativePickDirectory } from '../dev-plugins/local-fs.mjs';
+import { nativePickDirectory } from '../builtin/session/tb-fs.mjs';
 import { startLocalServer } from './server.mjs';
 
 function printHelp() {
