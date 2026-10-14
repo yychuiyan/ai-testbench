@@ -13,6 +13,8 @@ __pycache__/
 # 本地会话记忆（不提交）
 .local/
 .cursor/
+# 临时工作区（决策清单等，不提交）
+temp/
 # 本地文档库内容（磁盘英文目录；界面中文 label）
 requirements/*
 !requirements/.gitkeep
