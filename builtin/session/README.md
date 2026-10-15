@@ -5,7 +5,9 @@
 | 文件 | 会话能力 | HTTP 前缀 |
 | --- | --- | --- |
 | `tb-fs.mjs` | `tool-fs` / `tool-fs-search` / `agent-instructions` / `present`（open）等 | `/__tb_fs` |
-| `tb-bash.mjs` | `tool-bash` / `tool-pwsh` / `tool-jobs` | `/__tb_bash` · `/__tb_pwsh` |
+| `tb-bash.mjs` | `tool-bash` / `tool-pwsh` / `tool-jobs` / 持久会话 | `/__tb_bash` · `/__tb_pwsh` · `/session/*` |
+| `sandbox-policy.mjs` | 软沙箱策略（黑名单 + 精简 env） | （被 tb-bash 调用） |
+| `bash-session.mjs` | 持久 bash（node-pty 优先 / 管道回退） | （被 tb-bash 调用） |
 | `tb-web.mjs` | `tool-web` | `/__tb_web` |
 
 产品扩展与文档库中间件仍在仓库根目录 `tb-plugins/`（如 `tb-memory`、`tb-kb`、`tb-config`、`tb-project-docs`）。

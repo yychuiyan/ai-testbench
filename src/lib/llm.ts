@@ -1,4 +1,5 @@
 import type { LLMSettings } from './settings';
+import { pruneToolResult } from './tool-result-pruner';
 
 /** OpenAI 兼容多模态 content 片段（文本 / 图片） */
 export type ContentPart =
@@ -370,7 +371,10 @@ export function parseDsmlToolCalls(content: string): { calls: ToolCall[]; cleane
   }
   // 未闭合或未知变体：从首个 DSML 痕迹起整段丢掉，禁止标签进 UI
   cleaned = scrubDsmlArtifacts(cleaned);
-  cleaned = cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  cleaned = cleaned
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return { calls, cleaned };
 }
 
@@ -433,6 +437,28 @@ function resolveToolCalls(result: CompletionResult): {
     return { calls: [], content: sanitizeAssistantContent(rawContent) || null };
   }
   return { calls: [], content: rawContent };
+}
+
+/**
+ * 非流式纯文本补全（关闭思考），供会话压缩等内部管线使用。
+ */
+export async function completePlain(
+  settings: LLMSettings,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+): Promise<string> {
+  const apiMessages: ApiMessage[] = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  const result = await completeOnce(settings, apiMessages, signal, { thinking: false });
+  const text =
+    typeof result.content === 'string'
+      ? result.content
+      : result.content == null
+        ? ''
+        : String(result.content);
+  return sanitizeAssistantContent(text);
 }
 
 /** 非流式 chat/completions，可选 tools */
@@ -567,17 +593,18 @@ export async function* streamChatWithTools(
         const args = call.function.arguments ?? '{}';
         yield { type: 'tool', name, status: 'running', args };
         const out = await runTool(name, args);
+        const pruned = pruneToolResult(out);
         yield {
           type: 'tool',
           name,
           status: 'done',
           args,
-          result: out.length > 800 ? `${out.slice(0, 800)}…` : out,
+          result: pruned.length > 800 ? `${pruned.slice(0, 800)}…` : pruned,
         };
         apiMessages.push({
           role: 'tool',
           tool_call_id: call.id,
-          content: out,
+          content: pruned,
         });
       }
       continue;

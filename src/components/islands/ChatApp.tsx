@@ -55,6 +55,7 @@ import {
   sortSessionsInGroup,
   switchSession,
   unbindSessionsFromWorkspace,
+  appendSessionMessage,
   updateActiveMessages,
   updateActiveSessionMeta,
   type ChatSession,
@@ -126,6 +127,30 @@ import {
   type PlanProposal,
 } from '../../lib/session-plan';
 import {
+  compactMessageList,
+  isCompactCommand,
+  needsAutoCompact,
+  type CompactableMessage,
+} from '../../lib/session-compact';
+import {
+  GOAL_SYSTEM_HINT,
+  GOAL_TOOLS,
+  activeGoalText,
+  formatGoalForModel,
+  isGoalCommand,
+  normalizeGoal,
+  parseGoalCommand,
+  type SessionGoal,
+} from '../../lib/session-goal';
+import {
+  SCHEDULE_SYSTEM_HINT,
+  SCHEDULE_TOOLS,
+  claimDueSchedules,
+  runScheduleTool,
+} from '../../lib/session-schedule';
+import { SUBAGENT_SYSTEM_HINT, SUBAGENT_TOOLS, runSubagentTool } from '../../lib/session-subagent';
+import { WORKFLOW_SYSTEM_HINT, WORKFLOW_TOOLS, runWorkflowTool } from '../../lib/session-workflow';
+import {
   MEMORY_TOOLS,
   MEMORY_SYSTEM_HINT,
   MEMORY_KEEP_RECENT,
@@ -156,6 +181,7 @@ import {
   type WebHealth,
 } from '../../lib/web-tools';
 import {
+  BASH_SESSION_TOOLS,
   BASH_SYSTEM_HINT,
   BASH_TOOL,
   JOB_TOOLS,
@@ -163,6 +189,7 @@ import {
   PWSH_TOOL,
   fetchBashHealth,
   fetchPwshHealth,
+  runBashSessionTool,
   runBashTool,
   runJobTool,
   runPwshTool,
@@ -207,6 +234,11 @@ function buildPluginMessages(
     pwsh: boolean;
     interact: boolean;
     planPhase: PlanPhase;
+    goalEnabled: boolean;
+    goal: SessionGoal | null;
+    scheduleEnabled: boolean;
+    subagentEnabled: boolean;
+    workflowEnabled: boolean;
   },
 ): ChatMessage[] {
   let system = systemPrompt;
@@ -219,6 +251,14 @@ function buildPluginMessages(
   if (opts.interact) system = `${system}\n\n${SESSION_INTERACT_HINT}`;
   if (opts.planPhase === 'planning') system = `${system}\n\n${PLAN_MODE_HINT_PLANNING}`;
   if (opts.planPhase === 'approved') system = `${system}\n\n${PLAN_MODE_HINT_APPROVED}`;
+  if (opts.goalEnabled) {
+    system = `${system}\n\n${GOAL_SYSTEM_HINT}`;
+    const g = activeGoalText(opts.goal);
+    if (g) system = `${system}\n\n【当前会话目标】${g}`;
+  }
+  if (opts.scheduleEnabled) system = `${system}\n\n${SCHEDULE_SYSTEM_HINT}`;
+  if (opts.subagentEnabled) system = `${system}\n\n${SUBAGENT_SYSTEM_HINT}`;
+  if (opts.workflowEnabled) system = `${system}\n\n${WORKFLOW_SYSTEM_HINT}`;
   const recent = opts.memory ? allApiMessages.slice(-MEMORY_KEEP_RECENT) : allApiMessages;
   return [{ role: 'system', content: system }, ...recent];
 }
@@ -411,7 +451,19 @@ function toolKindLabel(name: string): string {
   if (name === 'ask_user_question') return '向用户提问';
   if (name === 'bash') return 'Bash';
   if (name === 'pwsh') return 'PowerShell';
+  if (name.startsWith('bash_session_')) return '持久终端';
   if (name === 'submit_plan') return '提交计划';
+  if (name.startsWith('goal_')) return '会话目标';
+  if (name.startsWith('schedule_')) return '定时提醒';
+  if (
+    name === 'list_agents' ||
+    name === 'spawn_subagent' ||
+    name === 'fork_subagent' ||
+    name.startsWith('subagent_')
+  ) {
+    return '子代理';
+  }
+  if (name === 'workflow') return '工作流';
   if (name === 'job_list') return '任务列表';
   if (name === 'job_output') return '任务输出';
   if (name === 'job_kill') return '终止任务';
@@ -430,7 +482,15 @@ function activityKindForTool(name: string): ActivityStep['kind'] {
     name === 'ask_user_question' ||
     name === 'bash' ||
     name === 'pwsh' ||
+    name.startsWith('bash_session_') ||
     name === 'submit_plan' ||
+    name.startsWith('goal_') ||
+    name.startsWith('schedule_') ||
+    name === 'list_agents' ||
+    name === 'spawn_subagent' ||
+    name === 'fork_subagent' ||
+    name.startsWith('subagent_') ||
+    name === 'workflow' ||
     name.startsWith('job_')
   ) {
     return 'tool';
@@ -467,9 +527,42 @@ function toolArgsDetail(name: string, argsJson?: string): string {
       const base = cmd.length > 80 ? `${cmd.slice(0, 80)}…` : cmd;
       return `${base}${bg}`;
     }
+    if (name.startsWith('bash_session_')) {
+      const sid = typeof a.sessionId === 'string' ? a.sessionId.trim() : '';
+      const cmd = typeof a.command === 'string' ? a.command.trim() : '';
+      const short = cmd.length > 48 ? `${cmd.slice(0, 48)}…` : cmd;
+      return [sid, short].filter(Boolean).join(' · ');
+    }
     if (name.startsWith('job_')) {
       const id = typeof a.jobId === 'string' ? a.jobId.trim() : '';
       return id;
+    }
+    if (name.startsWith('schedule_')) {
+      const text = typeof a.text === 'string' ? a.text.trim() : '';
+      const id = typeof a.id === 'string' ? a.id.trim() : '';
+      const due = typeof a.dueAt === 'string' ? a.dueAt.trim() : '';
+      const delay =
+        typeof a.delayMinutes === 'number' && Number.isFinite(a.delayMinutes)
+          ? `+${a.delayMinutes}m`
+          : '';
+      return [text, id, due || delay].filter(Boolean).join(' · ');
+    }
+    if (
+      name === 'list_agents' ||
+      name === 'spawn_subagent' ||
+      name === 'fork_subagent' ||
+      name.startsWith('subagent_')
+    ) {
+      const agent = typeof a.agent === 'string' ? a.agent.trim() : '';
+      const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : '';
+      const id = typeof a.id === 'string' ? a.id.trim() : '';
+      const short = prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt;
+      return [name === 'fork_subagent' ? 'fork' : '', agent, id, short].filter(Boolean).join(' · ');
+    }
+    if (name === 'workflow') {
+      const meta = a.meta as { name?: unknown } | undefined;
+      const wn = typeof meta?.name === 'string' ? meta.name.trim() : '';
+      return wn || 'workflow';
     }
     if (name === 'fs_glob' || name === 'fs_grep') {
       const pat = typeof a.pattern === 'string' ? a.pattern.trim() : '';
@@ -1845,6 +1938,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     reject: (e: Error) => void;
   } | null>(null);
   const [sessionTodos, setSessionTodos] = useState<TodoItem[]>([]);
+  const [sessionGoal, setSessionGoal] = useState<SessionGoal | null>(null);
   const [planPhase, setPlanPhase] = useState<PlanPhase>('off');
   const [planProposal, setPlanProposal] = useState<PlanProposal | null>(null);
   const [askUserPrompt, setAskUserPrompt] = useState<AskUserQuestion[] | null>(null);
@@ -1902,10 +1996,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       collection: 'workspace' as const,
       id: `ws:${e.path}`,
       title: e.name,
-      category: shortWorkspaceLabel(
-        workspaceInfo?.workspace,
-        workspaceInfo?.projectRoot,
-      ),
+      category: shortWorkspaceLabel(workspaceInfo?.workspace, workspaceInfo?.projectRoot),
       description: e.path,
       format: e.type === 'dir' ? 'dir' : 'file',
       path: e.path,
@@ -2009,6 +2100,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setPromptGenConfig(active?.promptGen?.active ? active.promptGen : null);
       setKnowledgeGenConfig(active?.knowledgeGen?.active ? active.knowledgeGen : null);
       setSessionTodos(normalizeTodos(active?.todos));
+      setSessionGoal(normalizeGoal(active?.goal));
       if (active?.workspacePath) {
         setWsExpanded((prev) => ({ ...prev, [active.workspacePath!]: true }));
       }
@@ -2070,6 +2162,41 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   useEffect(() => {
     if (!pluginOn.memory && chatTab === 'memory') setChatTab('dialog');
   }, [pluginOn.memory, chatTab]);
+
+  /** tool-schedule：页面打开时轮询到期提醒并投递回原会话 */
+  useEffect(() => {
+    if (!ready) return;
+    const deliver = () => {
+      const due = claimDueSchedules();
+      if (!due.length || !storeRef.current) return;
+      let next = storeRef.current;
+      let activeTouched = false;
+      for (const r of due) {
+        const msg: LocalMessage = {
+          role: 'assistant',
+          content: `⏰ 定时提醒：${r.text}`,
+          time: Date.now(),
+        };
+        next = appendSessionMessage(next, r.sessionId, msg);
+        if (r.sessionId === next.activeId) activeTouched = true;
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('TestBench 定时提醒', { body: r.text });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      commitStore(next);
+      if (activeTouched) {
+        const active = next.sessions.find((s) => s.id === next.activeId);
+        setMessages((active?.messages as LocalMessage[]) ?? []);
+      }
+    };
+    deliver();
+    const timer = window.setInterval(deliver, 10_000);
+    return () => window.clearInterval(timer);
+  }, [ready]);
 
   /** 当前会话切换时，输入栏 / FS 跟会话归属工作区对齐 */
   useEffect(() => {
@@ -2500,6 +2627,59 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setPluginMenuDismissed(false);
   }
 
+  function toCompactable(list: LocalMessage[]): CompactableMessage[] {
+    return list
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: typeof m.content === 'string' ? m.content : '',
+        reasoning: m.reasoning,
+      }));
+  }
+
+  async function runSessionCompact(opts: { force: boolean; signal?: AbortSignal }) {
+    if (!settings) {
+      openSettings('model');
+      return false;
+    }
+    const src = toCompactable(messagesRef.current);
+    if (src.length < 4) {
+      setError('对话轮次较少，无需压缩');
+      return false;
+    }
+    setToolHint('正在压缩上下文…');
+    try {
+      const { messages: compacted, compacted: did } = await compactMessageList(settings, src, {
+        force: opts.force,
+        signal: opts.signal,
+      });
+      if (!did) {
+        setToolHint(null);
+        setError('当前上下文未超过阈值，未压缩');
+        return false;
+      }
+      const now = Date.now();
+      const nextLocal: LocalMessage[] = compacted.map((m, i) => ({
+        role: m.role,
+        content: m.content,
+        reasoning: m.reasoning,
+        time: now + i,
+      }));
+      messagesRef.current = nextLocal;
+      setMessages(nextLocal);
+      if (storeRef.current) {
+        commitStore(updateActiveMessages(storeRef.current, nextLocal, { touchUpdatedAt: true }));
+      }
+      setToolHint(null);
+      return true;
+    } catch (e) {
+      setToolHint(null);
+      if (e instanceof DOMException && e.name === 'AbortError') return false;
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  }
+
   async function send(text?: string, opts?: { forceBusy?: BusySendBehavior }) {
     const fromComposer = text === undefined;
     const content = (text ?? input).trim();
@@ -2509,6 +2689,73 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!content && !files.length && !refs.length && !imgs.length) return;
     if (!settings) {
       openSettings('model');
+      return;
+    }
+
+    // command-compact：/compact 手动压缩（与 compaction-basic 同管线）
+    if (isCompactCommand(content) && !files.length && !refs.length && !imgs.length) {
+      if (streamingRef.current) {
+        setError('请等待当前回复结束后再压缩');
+        return;
+      }
+      if (fromComposer) clearComposer();
+      const ok = await runSessionCompact({ force: true });
+      if (ok) setError(null);
+      return;
+    }
+
+    // command-goal：/goal [set …|clear|done]
+    if (isGoalCommand(content) && !files.length && !refs.length && !imgs.length) {
+      const cmd = parseGoalCommand(content);
+      if (fromComposer) clearComposer();
+      if (!cmd) return;
+      if (cmd.kind === 'show') {
+        const g = sessionGoal;
+        setError(
+          g && g.status !== 'cleared'
+            ? `当前目标（${g.status}）：${g.text}`
+            : '当前无会话目标。可用 /goal set <内容> 设定',
+        );
+        return;
+      }
+      if (cmd.kind === 'clear') {
+        setSessionGoal(null);
+        if (storeRef.current) {
+          commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
+        }
+        setError('已清除会话目标');
+        return;
+      }
+      if (cmd.kind === 'done') {
+        if (!sessionGoal?.text) {
+          setError('当前无目标可标记完成');
+          return;
+        }
+        const nextGoal: SessionGoal = {
+          ...sessionGoal,
+          status: 'done',
+          updatedAt: Date.now(),
+        };
+        setSessionGoal(nextGoal);
+        if (storeRef.current) {
+          commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+        }
+        setError(`已标记目标完成：${nextGoal.text}`);
+        return;
+      }
+      if (cmd.kind === 'set' && cmd.text) {
+        const nextGoal: SessionGoal = {
+          text: cmd.text.slice(0, 500),
+          status: 'active',
+          updatedAt: Date.now(),
+        };
+        setSessionGoal(nextGoal);
+        if (storeRef.current) {
+          commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+        }
+        setError(`已设定目标：${nextGoal.text}`);
+        return;
+      }
       return;
     }
 
@@ -2554,7 +2801,38 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (last?.role === 'assistant' && !last.content && !last.reasoning) {
       hist = hist.slice(0, -1);
     }
-    const next: LocalMessage[] = [...hist, userMsg];
+    let next: LocalMessage[] = [...hist, userMsg];
+
+    // compaction-basic：上下文过大时自动压缩（保留最近轮次 + 摘要）
+    if (needsAutoCompact(toCompactable(next), settings.model)) {
+      setToolHint('上下文较长，正在压缩…');
+      try {
+        const { messages: compacted, compacted: did } = await compactMessageList(
+          settings,
+          toCompactable(next),
+          { force: false, signal: undefined },
+        );
+        if (did) {
+          const t0 = Date.now();
+          next = compacted.map((m, i) => ({
+            role: m.role,
+            content: m.content,
+            reasoning: m.reasoning,
+            time: t0 + i,
+          }));
+          // 确保最新用户消息仍在末尾（compact 已含 recent+user）
+          messagesRef.current = next;
+          setMessages(next);
+          if (storeRef.current) {
+            commitStore(updateActiveMessages(storeRef.current, next, { touchUpdatedAt: true }));
+          }
+        }
+      } catch {
+        // 压缩失败不阻断发送
+      }
+      setToolHint(null);
+    }
+
     const withAssistant: LocalMessage[] = [...next, { role: 'assistant', content: '', time: now }];
     messagesRef.current = withAssistant;
     setMessages(withAssistant);
@@ -2632,11 +2910,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
     // 会话注入：time-context（纯前端）+ agent-instructions（本地 fs）
     if (!structuredPlugin) {
-      const prevUser = [...next].reverse().find((m) => m.role === 'user' && m !== next[next.length - 1]);
+      const prevUser = [...next]
+        .reverse()
+        .find((m) => m.role === 'user' && m !== next[next.length - 1]);
       const lastUserAt =
-        prevUser?.time ??
-        [...next].reverse().find((m) => m.role === 'user')?.time ??
-        null;
+        prevUser?.time ?? [...next].reverse().find((m) => m.role === 'user')?.time ?? null;
       const timeCtx = formatTimeContext({
         lastUserMessageAt: lastUserAt,
         lastInjectAt: timeInjectAtRef.current,
@@ -2665,6 +2943,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       pwsh: usePwsh && !structuredPlugin,
       interact: !structuredPlugin,
       planPhase: structuredPlugin ? 'off' : planPhase,
+      goalEnabled: !structuredPlugin,
+      goal: sessionGoal,
+      scheduleEnabled: !structuredPlugin,
+      subagentEnabled: !structuredPlugin,
+      workflowEnabled: !structuredPlugin,
     }).map((m, i) =>
       i === 0 && m.role === 'system' && useFs && fsHintExtra && !structuredPlugin
         ? { ...m, content: `${typeof m.content === 'string' ? m.content : ''}${fsHintExtra}` }
@@ -2690,13 +2973,20 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         tools.push(...(fsToolsForAccess(effectiveAccess) as unknown as ToolDef[]));
         if (!planGatesWrites) tools.push(PRESENT_TOOL as unknown as ToolDef);
       }
-      if (useBash) tools.push(BASH_TOOL as unknown as ToolDef);
+      if (useBash) {
+        tools.push(BASH_TOOL as unknown as ToolDef);
+        tools.push(...(BASH_SESSION_TOOLS as unknown as ToolDef[]));
+      }
       if (usePwsh) tools.push(PWSH_TOOL as unknown as ToolDef);
       if (useBash || usePwsh) tools.push(...(JOB_TOOLS as unknown as ToolDef[]));
       if (useWeb) tools.push(...(WEB_TOOLS as unknown as ToolDef[]));
       if (useMemory) tools.push(...(MEMORY_TOOLS as unknown as ToolDef[]));
       tools.push(TODO_WRITE_TOOL as unknown as ToolDef);
       tools.push(ASK_USER_QUESTION_TOOL as unknown as ToolDef);
+      tools.push(...(GOAL_TOOLS as unknown as ToolDef[]));
+      tools.push(...(SCHEDULE_TOOLS as unknown as ToolDef[]));
+      tools.push(...(SUBAGENT_TOOLS as unknown as ToolDef[]));
+      tools.push(...(WORKFLOW_TOOLS as unknown as ToolDef[]));
       if (planPhase === 'planning' || planPhase === 'approved') {
         tools.push(SUBMIT_PLAN_TOOL as unknown as ToolDef);
       }
@@ -2783,6 +3073,90 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   }
                   return JSON.stringify({ ok: true, count: todos.length, todos });
                 }
+                if (name.startsWith('goal_')) {
+                  if (name === 'goal_get') {
+                    return formatGoalForModel(sessionGoal);
+                  }
+                  if (name === 'goal_set') {
+                    let text = '';
+                    try {
+                      text = String(
+                        (JSON.parse(args || '{}') as { text?: unknown }).text ?? '',
+                      ).trim();
+                    } catch {
+                      return JSON.stringify({ error: 'invalid JSON arguments' });
+                    }
+                    if (!text) return JSON.stringify({ error: 'text is required' });
+                    const nextGoal: SessionGoal = {
+                      text: text.slice(0, 500),
+                      status: 'active',
+                      updatedAt: Date.now(),
+                    };
+                    setSessionGoal(nextGoal);
+                    if (storeRef.current) {
+                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+                    }
+                    return formatGoalForModel(nextGoal);
+                  }
+                  if (name === 'goal_done') {
+                    if (!sessionGoal?.text) {
+                      return JSON.stringify({ ok: false, error: 'no goal to complete' });
+                    }
+                    const nextGoal: SessionGoal = {
+                      ...sessionGoal,
+                      status: 'done',
+                      updatedAt: Date.now(),
+                    };
+                    setSessionGoal(nextGoal);
+                    if (storeRef.current) {
+                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+                    }
+                    return formatGoalForModel(nextGoal);
+                  }
+                  if (name === 'goal_clear') {
+                    setSessionGoal(null);
+                    if (storeRef.current) {
+                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
+                    }
+                    return JSON.stringify({ ok: true, goal: null });
+                  }
+                  return JSON.stringify({ error: `unknown tool: ${name}` });
+                }
+                if (name.startsWith('schedule_')) {
+                  const sid = storeRef.current?.activeId ?? '';
+                  return await runScheduleTool(name, args, sid);
+                }
+                if (
+                  name === 'list_agents' ||
+                  name === 'spawn_subagent' ||
+                  name === 'fork_subagent' ||
+                  name.startsWith('subagent_')
+                ) {
+                  return await runSubagentTool(name, args, {
+                    settings,
+                    parentSignal: ctrl.signal,
+                    access: effectiveAccess,
+                    fsEnabled: useFs,
+                    webEnabled: useWeb,
+                    parentMessages: apiMessages,
+                    onHint: (text) => setToolHint(text),
+                    runFs: (n, a, acc) => runFsTool(n, a, acc),
+                    runWeb: (n, a) => runWebTool(n, a),
+                  });
+                }
+                if (name === 'workflow') {
+                  return await runWorkflowTool(name, args, {
+                    settings,
+                    parentSignal: ctrl.signal,
+                    access: effectiveAccess,
+                    fsEnabled: useFs,
+                    webEnabled: useWeb,
+                    parentMessages: apiMessages,
+                    onHint: (text) => setToolHint(text),
+                    runFs: (n, a, acc) => runFsTool(n, a, acc),
+                    runWeb: (n, a) => runWebTool(n, a),
+                  });
+                }
                 if (name === 'ask_user_question') {
                   const questions = parseAskUserArgs(args);
                   if (!questions.length) {
@@ -2820,6 +3194,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 }
                 if (name === 'bash') return await runBashTool(args, effectiveAccess);
                 if (name === 'pwsh') return await runPwshTool(args, effectiveAccess);
+                if (name.startsWith('bash_session_')) {
+                  return await runBashSessionTool(name, args, effectiveAccess);
+                }
                 if (name.startsWith('job_')) return await runJobTool(name, args, effectiveAccess);
                 if (name.startsWith('web_')) return await runWebTool(name, args);
                 if (name.startsWith('memory_')) return await runMemoryTool(name, args, memCwd);
@@ -2847,7 +3224,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           updateLastAssistant((m) => {
             const steps = [...(m.activitySteps ?? [])];
             const idx = steps.findIndex(
-              (s) => s.id === stepId || (s.detail === detail && s.title === kind && s.status === 'running'),
+              (s) =>
+                s.id === stepId ||
+                (s.detail === detail && s.title === kind && s.status === 'running'),
             );
             const next: ActivityStep = {
               id: stepId,
@@ -3305,8 +3684,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     resetComposer({ clearDraft: true });
     let base = pruneEphemeralSession(leavingId) ?? storeRef.current;
     // dsh：新会话归入「当前工作区」（显式传入 path 优先，否则用 picker 选中项）
-    const ws =
-      workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
+    const ws = workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
     const next = createSession(base, ws ? { workspacePath: ws } : undefined);
     commitStore(next);
     setMessages([]);
@@ -3314,6 +3692,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setPromptGenConfig(null);
     setKnowledgeGenConfig(null);
     setSessionTodos([]);
+    setSessionGoal(null);
     setPlanPhase('off');
     settleAskUserCanceled();
     settlePlanCanceled();
@@ -3354,7 +3733,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     planWaitRef.current = null;
     setPlanProposal(null);
     setPlanPhase('planning');
-    wait.resolve(JSON.stringify({ approved: false, message: '用户驳回了计划，请修订后再次 submit_plan' }));
+    wait.resolve(
+      JSON.stringify({ approved: false, message: '用户驳回了计划，请修订后再次 submit_plan' }),
+    );
   }
 
   function togglePlanMode() {
@@ -3420,6 +3801,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
     setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
     setSessionTodos(normalizeTodos(s?.todos));
+    setSessionGoal(normalizeGoal(s?.goal));
     restoreComposerDraft(id);
     commitStore(next);
     void syncFsWorkspaceForSession(s);
@@ -3765,7 +4147,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 const isProjectRoot = item.id === 'ws_project' || item.path === projectRootPath;
                 const isActiveWs = Boolean(
                   activeSess &&
-                    (activeSessInProjectRoot ? isProjectRoot : activeSessWs === item.path),
+                  (activeSessInProjectRoot ? isProjectRoot : activeSessWs === item.path),
                 );
                 const menuOpen = wsMenuId === item.id;
                 return (
@@ -3812,9 +4194,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             setWsRenameId(item.id);
                           }}
                           onDelete={
-                            item.id !== 'ws_project'
-                              ? () => requestDropWorkspace(item)
-                              : undefined
+                            item.id !== 'ws_project' ? () => requestDropWorkspace(item) : undefined
                           }
                         />
                         <button
@@ -3894,1320 +4274,1347 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col">
-            {/* dsh 风格：会话标题 + Tab（对话 | 会话记忆） */}
-            <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
-              <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
-                <button
-                  type="button"
-                  title="点击重命名"
-                  onClick={() => {
-                    const id = store?.activeId;
-                    if (id) renameSessionTitle(id);
-                  }}
-                  className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-[color:var(--tw-label-primary)] truncate hover:text-[#4176e6] transition-colors"
-                >
-                  {store?.sessions.find((x) => x.id === store.activeId)?.title || '新对话'}
-                </button>
-              </div>
-              <div className="flex items-center gap-6 px-6">
-                <button
-                  type="button"
-                  onClick={() => setChatTab('dialog')}
-                  className={`relative h-10 text-sm transition-colors ${
-                    chatTab !== 'memory' || !pluginOn.memory
-                      ? 'text-[#4176e6] font-medium'
-                      : 'text-stone-500 hover:text-stone-700'
+        {/* dsh 风格：会话标题 + Tab（对话 | 会话记忆） */}
+        <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
+          <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
+            <button
+              type="button"
+              title="点击重命名"
+              onClick={() => {
+                const id = store?.activeId;
+                if (id) renameSessionTitle(id);
+              }}
+              className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-[color:var(--tw-label-primary)] truncate hover:text-[#4176e6] transition-colors"
+            >
+              {store?.sessions.find((x) => x.id === store.activeId)?.title || '新对话'}
+            </button>
+          </div>
+          <div className="flex items-center gap-6 px-6">
+            <button
+              type="button"
+              onClick={() => setChatTab('dialog')}
+              className={`relative h-10 text-sm transition-colors ${
+                chatTab !== 'memory' || !pluginOn.memory
+                  ? 'text-[#4176e6] font-medium'
+                  : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              对话
+              {(chatTab !== 'memory' || !pluginOn.memory) && (
+                <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
+              )}
+            </button>
+            {pluginOn.memory && (
+              <button
+                type="button"
+                onClick={() => setChatTab('memory')}
+                className={`relative h-10 text-sm transition-colors ${
+                  chatTab === 'memory'
+                    ? 'text-[#4176e6] font-medium'
+                    : 'text-stone-500 hover:text-stone-700'
+                }`}
+              >
+                记忆
+                {chatTab === 'memory' && (
+                  <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
+                )}
+              </button>
+            )}
+          </div>
+          {sessionGoal && sessionGoal.status !== 'cleared' && chatTab !== 'memory' ? (
+            <div className="px-6 pb-2">
+              <div className="rounded-xl border border-[#4176e6]/25 bg-[#f5f8ff] px-3 py-2 flex items-start gap-2">
+                <span className="text-[11px] font-medium text-[#4176e6] shrink-0 pt-0.5">
+                  目标{sessionGoal.status === 'done' ? '·完成' : ''}
+                </span>
+                <span
+                  className={`flex-1 min-w-0 text-[12px] leading-5 ${
+                    sessionGoal.status === 'done' ? 'text-stone-400 line-through' : 'text-stone-800'
                   }`}
                 >
-                  对话
-                  {(chatTab !== 'memory' || !pluginOn.memory) && (
-                    <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
-                  )}
+                  {sessionGoal.text}
+                </span>
+                <button
+                  type="button"
+                  title="清除目标"
+                  className="text-[11px] text-stone-400 hover:text-stone-600 shrink-0"
+                  onClick={() => {
+                    setSessionGoal(null);
+                    if (storeRef.current) {
+                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
+                    }
+                  }}
+                >
+                  清除
                 </button>
-                {pluginOn.memory && (
-                  <button
-                    type="button"
-                    onClick={() => setChatTab('memory')}
-                    className={`relative h-10 text-sm transition-colors ${
-                      chatTab === 'memory'
-                        ? 'text-[#4176e6] font-medium'
-                        : 'text-stone-500 hover:text-stone-700'
-                    }`}
-                  >
-                    记忆
-                    {chatTab === 'memory' && (
-                      <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
-                    )}
-                  </button>
-                )}
               </div>
-              {sessionTodos.length > 0 && chatTab !== 'memory' ? (
-                <div className="px-6 pb-3">
-                  <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5">
-                    <div className="text-[11px] font-medium text-stone-500 mb-1.5">
-                      待办 · {sessionTodos.filter((x) => x.status === 'completed').length}/
-                      {sessionTodos.length}
-                    </div>
-                    <ul className="space-y-1 max-h-28 overflow-y-auto">
-                      {sessionTodos.map((item, idx) => (
-                        <li
-                          key={`${idx}-${item.content}`}
-                          className="flex items-start gap-2 text-[12px] text-stone-700"
-                        >
-                          <span
-                            className={`mt-0.5 w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center text-[9px] ${
-                              item.status === 'completed'
-                                ? 'bg-emerald-500 border-emerald-500 text-white'
-                                : item.status === 'in_progress'
-                                  ? 'border-[#4176e6] text-[#4176e6]'
-                                  : 'border-stone-300 text-transparent'
-                            }`}
-                            aria-hidden
-                          >
-                            {item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '…' : ''}
-                          </span>
-                          <span
-                            className={
-                              item.status === 'completed' ? 'line-through text-stone-400' : ''
-                            }
-                          >
-                            {item.content}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              ) : null}
             </div>
-
-            {chatTab === 'memory' && pluginOn.memory ? (
-              <div
-                key={`memory-${store?.activeId ?? ''}`}
-                className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter"
-              >
-                <MemoryPane
-                  live={memoryLive}
-                  pluginOn={Boolean(pluginOn.memory)}
-                  workspacePath={
-                    store?.sessions.find((s) => s.id === store.activeId)?.workspacePath ||
-                    workspaceInfo?.projectRoot ||
-                    ''
-                  }
-                />
-              </div>
-            ) : (
-              <div
-                key={`dialog-${store?.activeId ?? ''}`}
-                className="flex-1 min-h-0 flex flex-col tw-pane-enter"
-              >
-                {/* 消息区（字号跟通用设置） */}
-                <div className="relative flex-1 min-h-0">
-                  <div
-                    ref={scrollRef}
-                    onScroll={handleScroll}
-                    className="h-full overflow-y-auto px-6 py-6"
-                    style={{
-                      fontSize: `var(--tw-session-font-size, ${generalPrefs.sessionFontSize}px)`,
-                    }}
-                  >
-                    {empty ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center">
-                        <img
-                          src={`${base}brand-mark.png`}
-                          alt=""
-                          width={52}
-                          height={52}
-                          className="w-[52px] h-[52px] rounded-[12px] object-contain"
-                        />
-                        <h2 className="mt-4 text-base font-medium text-stone-800">
-                          {t('chat.emptyTitle', undefined, generalPrefs.language)}
-                        </h2>
-                        <p className="mt-2 text-sm text-stone-600 max-w-lg leading-relaxed">
-                          {t('chat.emptyBenefits', undefined, generalPrefs.language)}
-                        </p>
-                        {!settings && (
-                          <>
-                            <p className="mt-2 text-sm text-stone-500 max-w-md">
-                              {t('chat.emptyNoModel', undefined, generalPrefs.language)}
-                            </p>
-                            <button
-                              onClick={() => openSettings('model')}
-                              className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
-                            >
-                              {t('chat.configureModel', undefined, generalPrefs.language)}
-                            </button>
-                          </>
-                        )}
-                        {settings && (
-                          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-xl w-full">
-                            {SUGGESTIONS.map((s) => (
-                              <button
-                                key={s}
-                                onClick={() => send(s)}
-                                className="px-4 py-3 text-left text-sm text-stone-600 bg-white border border-stone-200 rounded-xl hover:border-[#4176e6] hover:text-[#4176e6] transition-colors"
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div
-                        className="max-w-[748px] mx-auto flex flex-col gap-4"
-                        onClick={onTranscriptClick}
+          ) : null}
+          {sessionTodos.length > 0 && chatTab !== 'memory' ? (
+            <div className="px-6 pb-3">
+              <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5">
+                <div className="text-[11px] font-medium text-stone-500 mb-1.5">
+                  待办 · {sessionTodos.filter((x) => x.status === 'completed').length}/
+                  {sessionTodos.length}
+                </div>
+                <ul className="space-y-1 max-h-28 overflow-y-auto">
+                  {sessionTodos.map((item, idx) => (
+                    <li
+                      key={`${idx}-${item.content}`}
+                      className="flex items-start gap-2 text-[12px] text-stone-700"
+                    >
+                      <span
+                        className={`mt-0.5 w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center text-[9px] ${
+                          item.status === 'completed'
+                            ? 'bg-emerald-500 border-emerald-500 text-white'
+                            : item.status === 'in_progress'
+                              ? 'border-[#4176e6] text-[#4176e6]'
+                              : 'border-stone-300 text-transparent'
+                        }`}
+                        aria-hidden
                       >
-                        {messages.map((m, i) =>
-                          m.role === 'user' ? (
-                            // dsh MessageItem：浅品牌蓝气泡居右，下方「时间 + 复制」
-                            <div key={i} className="group flex flex-col items-end gap-1">
-                              {m.refs?.length || m.attachments?.length || m.images?.length ? (
-                                <div className="flex flex-wrap justify-end gap-1.5 max-w-[82%]">
-                                  {m.refs?.map((r) => (
-                                    <span
-                                      key={r.path}
-                                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-[#4176e6] bg-white border border-[#4176e6]/30 rounded-lg"
-                                      title={r.path}
-                                    >
-                                      <FileIcon className="w-3.5 h-3.5" />
-                                      <span className="text-[10px] text-stone-400 shrink-0">
-                                        {formatSlashBadge(r.format)}
-                                      </span>
-                                      <span className="max-w-40 truncate">{r.title}</span>
-                                    </span>
-                                  ))}
-                                  {m.attachments?.map((a) => (
-                                    <span
-                                      key={a.name}
-                                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-600 bg-white border border-stone-200 rounded-lg"
-                                    >
-                                      <FileIcon className="w-3.5 h-3.5 text-[#4176e6]" />
-                                      <span className="max-w-48 truncate">{a.name}</span>
-                                      <span className="text-stone-400">{fmtSize(a.size)}</span>
-                                    </span>
-                                  ))}
-                                  {m.images?.map((img) => (
-                                    <a
-                                      key={img.id}
-                                      href={img.dataUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="block overflow-hidden rounded-lg border border-stone-200 bg-white"
-                                      title={img.name}
-                                    >
-                                      <img
-                                        src={img.dataUrl}
-                                        alt={img.name}
-                                        className="max-h-40 max-w-[12rem] object-contain"
-                                      />
-                                    </a>
-                                  ))}
-                                </div>
-                              ) : null}
-                              {m.content && (
-                                <div className="tw-chat-text max-w-[82%] px-4 py-2.5 bg-[#edf3fe] rounded-2xl whitespace-pre-wrap break-words">
-                                  {m.content}
-                                </div>
-                              )}
-                              <div className={`tw-msg-actions ${revealCls(i)}`}>
-                                {m.time != null && (
-                                  <span className="tw-msg-action-time pr-0.5">{fmtClock(m.time)}</span>
-                                )}
-                                <CopyButton text={m.content} />
-                              </div>
+                        {item.status === 'completed'
+                          ? '✓'
+                          : item.status === 'in_progress'
+                            ? '…'
+                            : ''}
+                      </span>
+                      <span
+                        className={item.status === 'completed' ? 'line-through text-stone-400' : ''}
+                      >
+                        {item.content}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {chatTab === 'memory' && pluginOn.memory ? (
+          <div
+            key={`memory-${store?.activeId ?? ''}`}
+            className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter"
+          >
+            <MemoryPane
+              live={memoryLive}
+              pluginOn={Boolean(pluginOn.memory)}
+              workspacePath={
+                store?.sessions.find((s) => s.id === store.activeId)?.workspacePath ||
+                workspaceInfo?.projectRoot ||
+                ''
+              }
+            />
+          </div>
+        ) : (
+          <div
+            key={`dialog-${store?.activeId ?? ''}`}
+            className="flex-1 min-h-0 flex flex-col tw-pane-enter"
+          >
+            {/* 消息区（字号跟通用设置） */}
+            <div className="relative flex-1 min-h-0">
+              <div
+                ref={scrollRef}
+                onScroll={handleScroll}
+                className="h-full overflow-y-auto px-6 py-6"
+                style={{
+                  fontSize: `var(--tw-session-font-size, ${generalPrefs.sessionFontSize}px)`,
+                }}
+              >
+                {empty ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center">
+                    <img
+                      src={`${base}brand-mark.png`}
+                      alt=""
+                      width={52}
+                      height={52}
+                      className="w-[52px] h-[52px] rounded-[12px] object-contain"
+                    />
+                    <h2 className="mt-4 text-base font-medium text-stone-800">
+                      {t('chat.emptyTitle', undefined, generalPrefs.language)}
+                    </h2>
+                    <p className="mt-2 text-sm text-stone-600 max-w-lg leading-relaxed">
+                      {t('chat.emptyBenefits', undefined, generalPrefs.language)}
+                    </p>
+                    {!settings && (
+                      <>
+                        <p className="mt-2 text-sm text-stone-500 max-w-md">
+                          {t('chat.emptyNoModel', undefined, generalPrefs.language)}
+                        </p>
+                        <button
+                          onClick={() => openSettings('model')}
+                          className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
+                        >
+                          {t('chat.configureModel', undefined, generalPrefs.language)}
+                        </button>
+                      </>
+                    )}
+                    {settings && (
+                      <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-xl w-full">
+                        {SUGGESTIONS.map((s) => (
+                          <button
+                            key={s}
+                            onClick={() => send(s)}
+                            className="px-4 py-3 text-left text-sm text-stone-600 bg-white border border-stone-200 rounded-xl hover:border-[#4176e6] hover:text-[#4176e6] transition-colors"
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className="max-w-[748px] mx-auto flex flex-col gap-4"
+                    onClick={onTranscriptClick}
+                  >
+                    {messages.map((m, i) =>
+                      m.role === 'user' ? (
+                        // dsh MessageItem：浅品牌蓝气泡居右，下方「时间 + 复制」
+                        <div key={i} className="group flex flex-col items-end gap-1">
+                          {m.refs?.length || m.attachments?.length || m.images?.length ? (
+                            <div className="flex flex-wrap justify-end gap-1.5 max-w-[82%]">
+                              {m.refs?.map((r) => (
+                                <span
+                                  key={r.path}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-[#4176e6] bg-white border border-[#4176e6]/30 rounded-lg"
+                                  title={r.path}
+                                >
+                                  <FileIcon className="w-3.5 h-3.5" />
+                                  <span className="text-[10px] text-stone-400 shrink-0">
+                                    {formatSlashBadge(r.format)}
+                                  </span>
+                                  <span className="max-w-40 truncate">{r.title}</span>
+                                </span>
+                              ))}
+                              {m.attachments?.map((a) => (
+                                <span
+                                  key={a.name}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-600 bg-white border border-stone-200 rounded-lg"
+                                >
+                                  <FileIcon className="w-3.5 h-3.5 text-[#4176e6]" />
+                                  <span className="max-w-48 truncate">{a.name}</span>
+                                  <span className="text-stone-400">{fmtSize(a.size)}</span>
+                                </span>
+                              ))}
+                              {m.images?.map((img) => (
+                                <a
+                                  key={img.id}
+                                  href={img.dataUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block overflow-hidden rounded-lg border border-stone-200 bg-white"
+                                  title={img.name}
+                                >
+                                  <img
+                                    src={img.dataUrl}
+                                    alt={img.name}
+                                    className="max-h-40 max-w-[12rem] object-contain"
+                                  />
+                                </a>
+                              ))}
                             </div>
-                          ) : (
-                            // dsh AssistantMarkdown：助手无气泡、全宽排版，下方「复制 · 用量 · 时间」
-                            <div key={i} className="group">
-                              {(() => {
-                                // 思考块：仿 DeepSeek Harness ReasoningRow——默认收起、整行点击展开、
-                                // 思考中 shimmer 标题 + 流式摘要，完成后显示耗时
-                                const waiting =
-                                  i === messages.length - 1 && streaming && m.content === '';
-                                const showThink = waiting || !!m.reasoning;
-                                if (!showThink) return null;
-                                const open = m.reasoningOpen ?? false;
-                                const summary =
-                                  waiting && !open && m.reasoning
-                                    ? latestParagraphFirstLine(m.reasoning).replaceAll('**', '')
-                                    : '';
-                                const toolSteps = (m.activitySteps ?? []).filter(
-                                  (s) => s.kind !== 'thinking',
-                                );
-                                return (
-                                  <div className="mb-2">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => toggleReasoning(i, e)}
-                                      className="flex w-full items-center gap-2 py-1 text-left select-none"
-                                    >
-                                      {waiting ? (
-                                        <span className="w-3.5 h-3.5 shrink-0 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
-                                      ) : (
-                                        <Svg className="w-3.5 h-3.5 shrink-0 text-stone-400">
-                                          <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" />
-                                          <path d="M9 18h6" />
-                                          <path d="M10 22h4" />
-                                        </Svg>
-                                      )}
-                                      <span
-                                        className={`text-[13px] font-medium shrink-0 ${waiting ? 'text-shimmer' : 'text-shimmer-static'}`}
-                                      >
-                                        {waiting ? '思考中…' : '思考完成'}
-                                      </span>
-                                      {!waiting && m.reasoningDuration != null && (
-                                        <span className="text-xs text-stone-400 shrink-0">
-                                          用时 {m.reasoningDuration}s
-                                        </span>
-                                      )}
-                                      <ChevronIcon
-                                        className={`w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform ${open ? 'rotate-180' : ''}`}
-                                      />
-                                      {summary ? (
-                                        <span className="flex-1 min-w-0 truncate text-xs text-shimmer-muted think-mask">
-                                          {summary}
-                                        </span>
-                                      ) : null}
-                                    </button>
-                                    {open && m.reasoning ? (
-                                      <div className="mt-1.5 mb-2 pl-[22px] text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
-                                        {m.reasoning}
-                                      </div>
-                                    ) : null}
-                                    {open && toolSteps.length > 0 ? (
-                                      <ul className="mt-1 mb-1 pl-[22px] space-y-1">
-                                        {toolSteps.map((s) => (
-                                          <li
-                                            key={s.id}
-                                            className="text-[12px] text-stone-500 flex items-baseline gap-2 min-w-0"
-                                          >
-                                            <span className="shrink-0 text-stone-400">·</span>
-                                            <span className="font-medium text-stone-600 shrink-0">
-                                              {s.title}
-                                            </span>
-                                            {s.detail ? (
-                                              <span className="truncate" title={s.detail}>
-                                                {s.detail}
-                                              </span>
-                                            ) : null}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    ) : null}
-                                  </div>
-                                );
-                              })()}
-                              {m.content ? (
-                                <div
-                                  className="chat-md prose prose-sm prose-stone max-w-none tw-chat-text"
-                                  dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
-                                />
-                              ) : i === messages.length - 1 && streaming ? null : (
-                                <span className="inline-block w-2 h-4 bg-[#4176e6] animate-pulse" />
-                              )}
-                              {m.caseFile ? (
+                          ) : null}
+                          {m.content && (
+                            <div className="tw-chat-text max-w-[82%] px-4 py-2.5 bg-[#edf3fe] rounded-2xl whitespace-pre-wrap break-words">
+                              {m.content}
+                            </div>
+                          )}
+                          <div className={`tw-msg-actions ${revealCls(i)}`}>
+                            {m.time != null && (
+                              <span className="tw-msg-action-time pr-0.5">{fmtClock(m.time)}</span>
+                            )}
+                            <CopyButton text={m.content} />
+                          </div>
+                        </div>
+                      ) : (
+                        // dsh AssistantMarkdown：助手无气泡、全宽排版，下方「复制 · 用量 · 时间」
+                        <div key={i} className="group">
+                          {(() => {
+                            // 思考块：仿 DeepSeek Harness ReasoningRow——默认收起、整行点击展开、
+                            // 思考中 shimmer 标题 + 流式摘要，完成后显示耗时
+                            const waiting =
+                              i === messages.length - 1 && streaming && m.content === '';
+                            const showThink = waiting || !!m.reasoning;
+                            if (!showThink) return null;
+                            const open = m.reasoningOpen ?? false;
+                            const summary =
+                              waiting && !open && m.reasoning
+                                ? latestParagraphFirstLine(m.reasoning).replaceAll('**', '')
+                                : '';
+                            const toolSteps = (m.activitySteps ?? []).filter(
+                              (s) => s.kind !== 'thinking',
+                            );
+                            return (
+                              <div className="mb-2">
                                 <button
                                   type="button"
-                                  data-focus-doc={`cases:${m.caseFile.path.replace(/\\/g, '/')}`}
-                                  title="双击本地打开"
-                                  onDoubleClick={() => {
-                                    void openDocsFile('cases', m.caseFile!.path).catch((e) =>
+                                  onClick={(e) => toggleReasoning(i, e)}
+                                  className="flex w-full items-center gap-2 py-1 text-left select-none"
+                                >
+                                  {waiting ? (
+                                    <span className="w-3.5 h-3.5 shrink-0 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
+                                  ) : (
+                                    <Svg className="w-3.5 h-3.5 shrink-0 text-stone-400">
+                                      <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" />
+                                      <path d="M9 18h6" />
+                                      <path d="M10 22h4" />
+                                    </Svg>
+                                  )}
+                                  <span
+                                    className={`text-[13px] font-medium shrink-0 ${waiting ? 'text-shimmer' : 'text-shimmer-static'}`}
+                                  >
+                                    {waiting ? '思考中…' : '思考完成'}
+                                  </span>
+                                  {!waiting && m.reasoningDuration != null && (
+                                    <span className="text-xs text-stone-400 shrink-0">
+                                      用时 {m.reasoningDuration}s
+                                    </span>
+                                  )}
+                                  <ChevronIcon
+                                    className={`w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                                  />
+                                  {summary ? (
+                                    <span className="flex-1 min-w-0 truncate text-xs text-shimmer-muted think-mask">
+                                      {summary}
+                                    </span>
+                                  ) : null}
+                                </button>
+                                {open && m.reasoning ? (
+                                  <div className="mt-1.5 mb-2 pl-[22px] text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
+                                    {m.reasoning}
+                                  </div>
+                                ) : null}
+                                {open && toolSteps.length > 0 ? (
+                                  <ul className="mt-1 mb-1 pl-[22px] space-y-1">
+                                    {toolSteps.map((s) => (
+                                      <li
+                                        key={s.id}
+                                        className="text-[12px] text-stone-500 flex items-baseline gap-2 min-w-0"
+                                      >
+                                        <span className="shrink-0 text-stone-400">·</span>
+                                        <span className="font-medium text-stone-600 shrink-0">
+                                          {s.title}
+                                        </span>
+                                        {s.detail ? (
+                                          <span className="truncate" title={s.detail}>
+                                            {s.detail}
+                                          </span>
+                                        ) : null}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
+                          {m.content ? (
+                            <div
+                              className="chat-md prose prose-sm prose-stone max-w-none tw-chat-text"
+                              dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
+                            />
+                          ) : i === messages.length - 1 && streaming ? null : (
+                            <span className="inline-block w-2 h-4 bg-[#4176e6] animate-pulse" />
+                          )}
+                          {m.caseFile ? (
+                            <button
+                              type="button"
+                              data-focus-doc={`cases:${m.caseFile.path.replace(/\\/g, '/')}`}
+                              title="双击本地打开"
+                              onDoubleClick={() => {
+                                void openDocsFile('cases', m.caseFile!.path).catch((e) =>
+                                  setError(e instanceof Error ? e.message : String(e)),
+                                );
+                              }}
+                              className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
+                            >
+                              <span className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center text-[10px] font-semibold shrink-0">
+                                {m.caseFile.name.split('.').pop()?.toUpperCase() || 'FILE'}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm text-stone-800 truncate">
+                                  {m.caseFile.name}
+                                </span>
+                                <span className="block text-[11px] text-stone-400 truncate">
+                                  {docRootLabelPath('cases')}
+                                  {m.caseFile.path}
+                                  {m.caseFile.count > 0 ? ` · ${m.caseFile.count} 条` : ''}
+                                  {' · 双击本地打开'}
+                                </span>
+                              </span>
+                            </button>
+                          ) : null}
+                          {m.docsFile ? (
+                            <button
+                              type="button"
+                              data-focus-doc={`${m.docsFile.root}:${m.docsFile.path.replace(/\\/g, '/')}`}
+                              title="点击本地打开"
+                              onClick={() => {
+                                void openDocsFile(m.docsFile!.root, m.docsFile!.path).catch((e) =>
+                                  setError(e instanceof Error ? e.message : String(e)),
+                                );
+                              }}
+                              className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
+                            >
+                              <span
+                                className={`w-10 h-10 rounded-lg flex items-center justify-center text-[10px] font-semibold shrink-0 ${
+                                  m.docsFile.root === 'knowledge'
+                                    ? 'bg-amber-50 text-amber-800'
+                                    : 'bg-sky-50 text-sky-700'
+                                }`}
+                              >
+                                {m.docsFile.name.split('.').pop()?.toUpperCase() || 'MD'}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm text-stone-800 truncate">
+                                  {m.docsFile.name}
+                                </span>
+                                <span className="block text-[11px] text-stone-400 truncate">
+                                  {docRootLabelPath(m.docsFile.root)}
+                                  {m.docsFile.path}
+                                  {m.docsFile.note ? ` · ${m.docsFile.note}` : ''}
+                                  {' · 点击打开'}
+                                </span>
+                              </span>
+                            </button>
+                          ) : null}
+                          {m.presentFiles?.length
+                            ? m.presentFiles.map((pf) => (
+                                <button
+                                  key={pf.path}
+                                  type="button"
+                                  title="点击本地打开"
+                                  onClick={() => {
+                                    void openFsPath(pf.path, access).catch((e) =>
                                       setError(e instanceof Error ? e.message : String(e)),
                                     );
                                   }}
                                   className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
                                 >
-                                  <span className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center text-[10px] font-semibold shrink-0">
-                                    {m.caseFile.name.split('.').pop()?.toUpperCase() || 'FILE'}
+                                  <span className="w-10 h-10 rounded-lg bg-violet-50 text-violet-700 flex items-center justify-center text-[10px] font-semibold shrink-0">
+                                    {pf.name.split('.').pop()?.toUpperCase() || 'FILE'}
                                   </span>
                                   <span className="min-w-0 flex-1">
                                     <span className="block text-sm text-stone-800 truncate">
-                                      {m.caseFile.name}
+                                      {pf.name}
                                     </span>
                                     <span className="block text-[11px] text-stone-400 truncate">
-                                      {docRootLabelPath('cases')}
-                                      {m.caseFile.path}
-                                      {m.caseFile.count > 0 ? ` · ${m.caseFile.count} 条` : ''}
-                                      {' · 双击本地打开'}
-                                    </span>
-                                  </span>
-                                </button>
-                              ) : null}
-                              {m.docsFile ? (
-                                <button
-                                  type="button"
-                                  data-focus-doc={`${m.docsFile.root}:${m.docsFile.path.replace(/\\/g, '/')}`}
-                                  title="点击本地打开"
-                                  onClick={() => {
-                                    void openDocsFile(m.docsFile!.root, m.docsFile!.path).catch(
-                                      (e) => setError(e instanceof Error ? e.message : String(e)),
-                                    );
-                                  }}
-                                  className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
-                                >
-                                  <span
-                                    className={`w-10 h-10 rounded-lg flex items-center justify-center text-[10px] font-semibold shrink-0 ${
-                                      m.docsFile.root === 'knowledge'
-                                        ? 'bg-amber-50 text-amber-800'
-                                        : 'bg-sky-50 text-sky-700'
-                                    }`}
-                                  >
-                                    {m.docsFile.name.split('.').pop()?.toUpperCase() || 'MD'}
-                                  </span>
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-sm text-stone-800 truncate">
-                                      {m.docsFile.name}
-                                    </span>
-                                    <span className="block text-[11px] text-stone-400 truncate">
-                                      {docRootLabelPath(m.docsFile.root)}
-                                      {m.docsFile.path}
-                                      {m.docsFile.note ? ` · ${m.docsFile.note}` : ''}
+                                      {pf.path}
+                                      {pf.description ? ` · ${pf.description}` : ''}
                                       {' · 点击打开'}
                                     </span>
                                   </span>
                                 </button>
-                              ) : null}
-                              {m.presentFiles?.length
-                                ? m.presentFiles.map((pf) => (
-                                    <button
-                                      key={pf.path}
-                                      type="button"
-                                      title="点击本地打开"
-                                      onClick={() => {
-                                        void openFsPath(pf.path, access).catch((e) =>
-                                          setError(e instanceof Error ? e.message : String(e)),
-                                        );
-                                      }}
-                                      className="mt-3 w-full max-w-md flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left hover:border-[#4176e6] hover:bg-[#f5f8ff] transition-colors cursor-pointer"
-                                    >
-                                      <span className="w-10 h-10 rounded-lg bg-violet-50 text-violet-700 flex items-center justify-center text-[10px] font-semibold shrink-0">
-                                        {pf.name.split('.').pop()?.toUpperCase() || 'FILE'}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block text-sm text-stone-800 truncate">
-                                          {pf.name}
-                                        </span>
-                                        <span className="block text-[11px] text-stone-400 truncate">
-                                          {pf.path}
-                                          {pf.description ? ` · ${pf.description}` : ''}
-                                          {' · 点击打开'}
-                                        </span>
-                                      </span>
-                                    </button>
-                                  ))
-                                : null}
-                              {m.content && !(i === messages.length - 1 && streaming) ? (
-                                <div className={`tw-msg-actions mt-1 ${revealCls(i)}`}>
-                                  <CopyButton text={m.content} />
-                                  {m.usage && (
-                                    <TurnUsageButton
-                                      usage={m.usage}
-                                      model={m.model ?? settings?.model}
-                                    />
-                                  )}
-                                  {m.time != null && (
-                                    <span className="tw-msg-action-time">{fmtClock(m.time)}</span>
-                                  )}
-                                </div>
-                              ) : null}
+                              ))
+                            : null}
+                          {m.content && !(i === messages.length - 1 && streaming) ? (
+                            <div className={`tw-msg-actions mt-1 ${revealCls(i)}`}>
+                              <CopyButton text={m.content} />
+                              {m.usage && (
+                                <TurnUsageButton
+                                  usage={m.usage}
+                                  model={m.model ?? settings?.model}
+                                />
+                              )}
+                              {m.time != null && (
+                                <span className="tw-msg-action-time">{fmtClock(m.time)}</span>
+                              )}
                             </div>
-                          ),
-                        )}
-                      </div>
+                          ) : null}
+                        </div>
+                      ),
                     )}
                   </div>
-
-                  {/* 回到底部（离开贴底位置时出现） */}
-                  {showJump && !empty && (
-                    <button
-                      type="button"
-                      onClick={jumpToBottom}
-                      title="回到底部"
-                      className="absolute bottom-3 right-[max(1.5rem,calc(50%-374px))] w-8 h-8 rounded-full bg-white border border-stone-200 shadow-md flex items-center justify-center text-stone-500 hover:text-stone-800 transition-colors"
-                    >
-                      <ChevronIcon className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-
-                {/* 错误提示 */}
-                {error && (
-                  <div className="shrink-0 px-6 pb-2">
-                    <div className="max-w-[764px] mx-auto flex items-start gap-3 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
-                      <span className="mt-0.5 w-5 h-5 shrink-0 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs font-semibold">
-                        !
-                      </span>
-                      <pre className="flex-1 min-w-0 m-0 font-sans text-[13px] leading-5 whitespace-pre-wrap break-words">
-                        {error
-                          .replace(/\*\*/g, '')
-                          .replace(/\s*:\s*\*\*/g, ': ')
-                          .trim()}
-                      </pre>
-                      <button
-                        type="button"
-                        onClick={() => setError(null)}
-                        className="shrink-0 text-red-400 hover:text-red-600 text-xs"
-                      >
-                        关闭
-                      </button>
-                    </div>
-                  </div>
                 )}
+              </div>
 
-                {/* 输入区：dsh composer——白色圆角卡片，左「+ / 权限」，右「模型·推理 / 发送」 */}
-                <div className="shrink-0 px-6 pb-3">
-                  <div className="max-w-[764px] mx-auto">
-                    {promptGenConfig?.active && pluginOn.promptGen ? (
-                      <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-[#4176e6]/30 bg-[#edf3fe] text-xs text-[#3565c7]">
-                        <span className="flex-1 min-w-0 truncate">
-                          生成提示词已启用 · {promptGenConfigLabel(promptGenConfig)}
-                        </span>
-                        <button
-                          type="button"
-                          className="shrink-0 hover:underline"
-                          onClick={() => setPromptGenPanelOpen(true)}
-                        >
-                          改配置
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 text-stone-500 hover:text-stone-800"
-                          onClick={() => applyPromptGenConfig(null)}
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : null}
-                    {knowledgeGenConfig?.active && pluginOn.knowledgeGen ? (
-                      <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-amber-300/60 bg-amber-50 text-xs text-amber-900">
-                        <span className="flex-1 min-w-0 truncate">
-                          生成知识库已启用 · {knowledgeGenConfigLabel(knowledgeGenConfig)}
-                        </span>
-                        <button
-                          type="button"
-                          className="shrink-0 hover:underline"
-                          onClick={() => setKnowledgeGenPanelOpen(true)}
-                        >
-                          改配置
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 text-stone-500 hover:text-stone-800"
-                          onClick={() => applyKnowledgeGenConfig(null)}
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : null}
-                    {caseGenConfig?.active && pluginOn.caseGen ? (
-                      <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-[#4176e6]/30 bg-[#edf3fe] text-xs text-[#3565c7]">
-                        <span className="flex-1 min-w-0 truncate">
-                          生成测试用例已启用 · {caseGenConfigLabel(caseGenConfig)}
-                        </span>
-                        <button
-                          type="button"
-                          className="shrink-0 hover:underline"
-                          onClick={() => setCaseGenPanelOpen(true)}
-                        >
-                          改配置
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 text-stone-500 hover:text-stone-800"
-                          onClick={() => applyCaseGenConfig(null)}
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : null}
-                    {/* dsh QueueDock：排队条目可见，当前轮结束后自动续发下一条 */}
-                    {sendQueue.length > 0 ? (
-                      <div className="mb-2 rounded-xl border border-stone-200/80 bg-stone-100/80 overflow-hidden">
-                        {sendQueue.map((q) => (
-                          <div
-                            key={q.id}
-                            className="flex items-center gap-2 px-3 py-2 border-b border-stone-200/60 last:border-b-0"
-                          >
-                            <span
-                              className="w-1.5 h-1.5 rounded-full bg-stone-400 shrink-0"
-                              aria-hidden
-                            />
-                            <span className="flex-1 min-w-0 truncate text-[13px] text-stone-700">
-                              {queueTitle(q)}
-                            </span>
-                            <button
-                              type="button"
-                              title="编辑回输入框"
-                              onClick={() => editQueued(q.id)}
-                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
-                            >
-                              <Svg className="w-3.5 h-3.5">
-                                <path d="M12 20h9" />
-                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                              </Svg>
-                            </button>
-                            <button
-                              type="button"
-                              title="从队列移除"
-                              onClick={() => removeQueued(q.id)}
-                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
-                            >
-                              <Svg className="w-3.5 h-3.5">
-                                <path d="M3 6h18" />
-                                <path d="M8 6V4h8v2" />
-                                <path d="M19 6l-1 14H6L5 6" />
-                              </Svg>
-                            </button>
-                            <button
-                              type="button"
-                              title="插话立即发送（其后队列仍会续发）"
-                              onClick={() => promoteQueued(q.id)}
-                              className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none text-[#4176e6]"
-                            >
-                              <SendIcon className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {planProposal ? (
-                      <div className="mb-2 rounded-xl border border-amber-300/60 bg-amber-50/90 px-4 py-3 shadow-sm">
-                        <div className="text-[13px] font-medium text-stone-800 mb-1">
-                          待批准计划
-                        </div>
-                        <div className="text-[14px] font-medium text-stone-900">{planProposal.title}</div>
-                        {planProposal.summary ? (
-                          <p className="mt-1 text-[13px] text-stone-600 leading-5">
-                            {planProposal.summary}
-                          </p>
-                        ) : null}
-                        <ol className="mt-2 list-decimal pl-5 space-y-1 text-[13px] text-stone-700">
-                          {planProposal.steps.map((s, i) => (
-                            <li key={`${i}-${s.slice(0, 24)}`}>{s}</li>
-                          ))}
-                        </ol>
-                        <div className="mt-3 flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            className="h-8 px-3 rounded-lg border border-stone-200 bg-white text-[12px] text-stone-600 hover:bg-stone-50"
-                            onClick={() => rejectPlan()}
-                          >
-                            驳回
-                          </button>
-                          <button
-                            type="button"
-                            className="h-8 px-3 rounded-lg bg-[#4176e6] text-[12px] text-white hover:bg-[#3467d4]"
-                            onClick={() => approvePlan()}
-                          >
-                            批准实施
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                    {askUserPrompt?.length ? (
-                      <div className="mb-2 rounded-xl border border-[#4176e6]/30 bg-[#f5f8ff] px-4 py-3 shadow-sm">
-                        <div className="text-[13px] font-medium text-stone-800 mb-2">
-                          模型需要你的确认
-                        </div>
-                        <div className="space-y-3">
-                          {askUserPrompt.map((q) => {
-                            const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
-                            return (
-                              <div key={q.id} className="rounded-lg border border-stone-200 bg-white p-3">
-                                {q.header ? (
-                                  <div className="text-[11px] font-medium text-[#4176e6] mb-1">
-                                    {q.header}
-                                  </div>
-                                ) : null}
-                                <div className="text-[13px] text-stone-800 mb-2">{q.question}</div>
-                                {q.options?.length ? (
-                                  <div className="space-y-1.5">
-                                    {q.options.map((opt) => {
-                                      const checked = draft.selected.includes(opt.label);
-                                      return (
-                                        <label
-                                          key={opt.label}
-                                          className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 cursor-pointer text-[12px] ${
-                                            checked
-                                              ? 'border-[#4176e6] bg-[#edf3fe]'
-                                              : 'border-stone-200 hover:border-stone-300'
-                                          }`}
-                                        >
-                                          <input
-                                            type={q.multi_select ? 'checkbox' : 'radio'}
-                                            name={`ask-${q.id}`}
-                                            className="mt-0.5"
-                                            checked={checked}
-                                            onChange={() => {
-                                              setAskUserDraft((prev) => {
-                                                const cur = prev[q.id] ?? {
-                                                  selected: [],
-                                                  text: '',
-                                                };
-                                                let selected: string[];
-                                                if (q.multi_select) {
-                                                  selected = checked
-                                                    ? cur.selected.filter((x) => x !== opt.label)
-                                                    : [...cur.selected, opt.label];
-                                                } else {
-                                                  selected = [opt.label];
-                                                }
-                                                return {
-                                                  ...prev,
-                                                  [q.id]: { ...cur, selected },
-                                                };
-                                              });
-                                            }}
-                                          />
-                                          <span className="min-w-0">
-                                            <span className="block text-stone-800">{opt.label}</span>
-                                            {opt.description ? (
-                                              <span className="block text-stone-400 mt-0.5">
-                                                {opt.description}
-                                              </span>
-                                            ) : null}
-                                          </span>
-                                        </label>
-                                      );
-                                    })}
-                                  </div>
-                                ) : (
-                                  <textarea
-                                    value={draft.text}
-                                    onChange={(e) =>
-                                      setAskUserDraft((prev) => ({
-                                        ...prev,
-                                        [q.id]: {
-                                          selected: [],
-                                          text: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    rows={2}
-                                    className="w-full rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] outline-none focus:border-[#4176e6]"
-                                    placeholder="输入你的回答…"
-                                  />
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="mt-3 flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              abortRef.current?.abort();
-                              settleAskUserCanceled();
-                            }}
-                            className="h-8 px-3 rounded-lg text-[12px] text-stone-600 hover:bg-stone-100"
-                          >
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => submitAskUserAnswers()}
-                            className="h-8 px-3 rounded-lg text-[12px] font-medium text-white bg-[#4176e6] hover:bg-[#3566d4]"
-                          >
-                            提交回答
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                    <div
-                      ref={composerRef}
-                      className="pt-2 rounded-[20px] bg-white border border-stone-200 shadow-[0_4px_20px_rgba(15,23,42,0.06)] transition-shadow focus-within:shadow-[0_4px_24px_rgba(65,118,230,0.14)]"
-                    >
-                      {(docRefs.length > 0 || attachments.length > 0 || images.length > 0) && (
-                        <div className="flex flex-wrap gap-1.5 px-3 pt-0.5 pb-2">
-                          {docRefs.map((r) => (
-                            <span
-                              key={`${r.collection}:${r.path}`}
-                              className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
-                              title={r.path}
-                            >
-                              <FileIcon className="w-3.5 h-3.5" />
-                              <span className="text-[10px] text-[#4176e6]/80 shrink-0">
-                                {r.collection === 'workspace'
-                                  ? '工作区'
-                                  : formatSlashBadge(r.format)}
-                              </span>
-                              <span className="max-w-40 truncate">{r.title}</span>
-                              <button
-                                type="button"
-                                title="移除引用"
-                                onClick={() =>
-                                  setDocRefs((prev) =>
-                                    prev.filter(
-                                      (x) => !(x.collection === r.collection && x.path === r.path),
-                                    ),
-                                  )
-                                }
-                                className="w-5 h-5 flex items-center justify-center rounded text-[#4176e6]/70 hover:text-[#4176e6] hover:bg-white/80"
-                              >
-                                <Svg className="w-3 h-3">
-                                  <path d="M18 6 6 18" />
-                                  <path d="m6 6 12 12" />
-                                </Svg>
-                              </button>
-                            </span>
-                          ))}
-                          {attachments.map((a, idx) => (
-                            <span
-                              key={`${a.name}-${idx}`}
-                              className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg"
-                            >
-                              <FileIcon className="w-3.5 h-3.5 text-[#4176e6]" />
-                              <span className="max-w-48 truncate">{a.name}</span>
-                              <span className="text-stone-400">{fmtSize(a.size)}</span>
-                              <button
-                                type="button"
-                                title="移除"
-                                onClick={() =>
-                                  setAttachments((prev) => prev.filter((_, j) => j !== idx))
-                                }
-                                className="w-5 h-5 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200"
-                              >
-                                <Svg className="w-3 h-3">
-                                  <path d="M18 6 6 18" />
-                                  <path d="m6 6 12 12" />
-                                </Svg>
-                              </button>
-                            </span>
-                          ))}
-                          {images.map((img) => (
-                            <span
-                              key={img.id}
-                              className="relative group inline-flex rounded-lg border border-stone-200 overflow-hidden bg-stone-50"
-                              title={`${img.name} · ${fmtSize(img.size)}`}
-                            >
-                              <img
-                                src={img.dataUrl}
-                                alt={img.name}
-                                className="h-14 w-14 object-cover"
-                              />
-                              <button
-                                type="button"
-                                title="移除图片"
-                                onClick={() =>
-                                  setImages((prev) => prev.filter((x) => x.id !== img.id))
-                                }
-                                className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/55 text-white hover:bg-black/75"
-                              >
-                                <Svg className="w-3 h-3">
-                                  <path d="M18 6 6 18" />
-                                  <path d="m6 6 12 12" />
-                                </Svg>
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <div className="relative">
-                        {pluginMenuOpen && (
-                          <div
-                            ref={pluginMenuRef}
-                            className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
-                          >
-                            <div className="px-3 py-1.5 text-[11px] text-stone-400">插件</div>
-                            {pluginMenuItems.map((p, i) => {
-                              const on = Boolean(pluginOn[p.id]);
-                              return (
-                                <button
-                                  key={p.id}
-                                  type="button"
-                                  data-plugin-index={i}
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onMouseEnter={() => setPluginIndex(i)}
-                                  onClick={() => pickPluginMenu(p.id)}
-                                  className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
-                                    i === pluginIndex ? 'is-active' : ''
-                                  } ${on ? '' : 'opacity-60'}`}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <div className="text-[13px] font-medium text-stone-800 flex-1">
-                                      {p.name}
-                                    </div>
-                                    {!on ? (
-                                      <span className="text-[10px] text-amber-700 shrink-0">
-                                        未启用
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div className="mt-0.5 text-xs text-stone-400 line-clamp-2">
-                                    {p.description}
-                                  </div>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                        {atOpen && (
-                          <div
-                            ref={mentionListRef}
-                            className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
-                          >
-                            {atFlatItems.length === 0 ? (
-                              <div className="px-3 py-2 text-xs text-stone-400 space-y-1">
-                                {!knowledgeOn ? (
-                                  <p>项目文档：请先启用「知识库检索」插件</p>
-                                ) : (
-                                  <p>项目文档：无匹配</p>
-                                )}
-                                {!hasWorkspace ? (
-                                  <p>工作区：请先在侧栏添加并选择工作区</p>
-                                ) : (
-                                  <p>工作区：无匹配</p>
-                                )}
-                              </div>
-                            ) : (
-                              <>
-                                {atProjectDocs.length > 0 ? (
-                                  <div className="px-3 py-1.5 text-[11px] font-medium text-stone-400">
-                                    项目文档（{docRootLabel('knowledge')} /{' '}
-                                    {docRootLabel('templates')}）
-                                  </div>
-                                ) : null}
-                                {atFlatItems.map((item, i) => {
-                                  const d = item.doc;
-                                  const prev = atFlatItems[i - 1];
-                                  const showWsHeader =
-                                    item.section === 'workspace' && prev?.section !== 'workspace';
-                                  return (
-                                    <div key={`${d.collection}/${d.id}`}>
-                                      {showWsHeader ? (
-                                        <>
-                                          {atProjectDocs.length > 0 ? (
-                                            <div
-                                              className="my-1 mx-2 border-t border-stone-200"
-                                              role="separator"
-                                            />
-                                          ) : null}
-                                          <div className="px-3 py-1.5 text-[11px] font-medium text-stone-400">
-                                            工作区
-                                          </div>
-                                        </>
-                                      ) : null}
-                                      <button
-                                        type="button"
-                                        data-mention-index={i}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        onClick={() => pickAtDoc(d)}
-                                        className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
-                                          i === mentionIndex ? 'is-active' : ''
-                                        }`}
-                                      >
-                                        <div className="flex items-center gap-2 text-[13px] text-stone-800">
-                                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500 shrink-0">
-                                            {d.collection === 'knowledge'
-                                              ? docRootLabel('knowledge')
-                                              : d.collection === 'templates'
-                                                ? docRootLabel('templates')
-                                                : d.format === 'dir'
-                                                  ? '文件夹'
-                                                  : '文件'}
-                                          </span>
-                                          {d.collection !== 'workspace' ? (
-                                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500 shrink-0">
-                                              {formatSlashBadge(d.format)}
-                                            </span>
-                                          ) : null}
-                                          <span className="truncate font-medium">{d.title}</span>
-                                        </div>
-                                        <div className="mt-0.5 pl-0 text-xs text-stone-400 truncate">
-                                          {d.collection === 'workspace'
-                                            ? d.path
-                                            : `${d.category}${d.description ? ` · ${d.description}` : ''}`}
-                                        </div>
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </>
-                            )}
-                          </div>
-                        )}
-                        <textarea
-                          ref={textareaRef}
-                          value={input}
-                          onChange={(e) => setInput(e.target.value)}
-                          onPaste={(e) => {
-                            const items = Array.from(e.clipboardData?.items ?? []);
-                            const imageFiles = items
-                              .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-                              .map((it) => it.getAsFile())
-                              .filter((f): f is File => Boolean(f));
-                            if (!imageFiles.length) return;
-                            e.preventDefault();
-                            void addImages(imageFiles);
-                          }}
-                          onKeyDown={(e) => {
-                            if (pluginMenuOpen && pluginMenuItems.length) {
-                              if (e.key === 'ArrowDown') {
-                                e.preventDefault();
-                                setPluginIndex((i) => (i + 1) % pluginMenuItems.length);
-                                return;
-                              }
-                              if (e.key === 'ArrowUp') {
-                                e.preventDefault();
-                                setPluginIndex(
-                                  (i) => (i - 1 + pluginMenuItems.length) % pluginMenuItems.length,
-                                );
-                                return;
-                              }
-                              if (e.key === 'Escape') {
-                                e.preventDefault();
-                                setPluginMenuDismissed(true);
-                                if (pluginSlashState)
-                                  setInput(input.slice(0, pluginSlashState.from));
-                                return;
-                              }
-                              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                                e.preventDefault();
-                                const item = pluginMenuItems[pluginIndex] ?? pluginMenuItems[0];
-                                if (item) pickPluginMenu(item.id);
-                                return;
-                              }
-                            }
-                            if (atOpen && atFlatItems.length) {
-                              if (e.key === 'ArrowDown') {
-                                e.preventDefault();
-                                setMentionIndex((i) => (i + 1) % atFlatItems.length);
-                                return;
-                              }
-                              if (e.key === 'ArrowUp') {
-                                e.preventDefault();
-                                setMentionIndex(
-                                  (i) => (i - 1 + atFlatItems.length) % atFlatItems.length,
-                                );
-                                return;
-                              }
-                              if (e.key === 'Escape') {
-                                e.preventDefault();
-                                setMentionDismissed(true);
-                                if (atState) setInput(input.slice(0, atState.from));
-                                return;
-                              }
-                              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                                e.preventDefault();
-                                const doc = atFlatItems[mentionIndex]?.doc;
-                                if (doc) pickAtDoc(doc);
-                                return;
-                              }
-                            }
-                            if (e.key === 'Escape' && (atState || pluginSlashState)) {
-                              e.preventDefault();
-                              setMentionDismissed(true);
-                              setPluginMenuDismissed(true);
-                              const from = atState?.from ?? pluginSlashState?.from;
-                              if (from != null) setInput(input.slice(0, from));
-                              return;
-                            }
-                            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                              e.preventDefault();
-                              const alt = e.metaKey || e.ctrlKey;
-                              if (streamingRef.current) {
-                                // Cmd/Ctrl+Enter：插话；有队列时带着队列后续自主续发
-                                if (alt) {
-                                  const draft = input.trim();
-                                  const hasDraft =
-                                    Boolean(draft) ||
-                                    attachments.length > 0 ||
-                                    images.length > 0 ||
-                                    docRefs.length > 0;
-                                  if (hasDraft) {
-                                    const extra: PendingSend = {
-                                      id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                                      content: draft,
-                                      files: [...attachments],
-                                      refs: [...docRefs],
-                                      imgs: [...images],
-                                    };
-                                    clearComposer();
-                                    flushQueueAsInterrupt(extra);
-                                  } else if (sendQueueRef.current.length) {
-                                    flushQueueAsInterrupt();
-                                  }
-                                  return;
-                                }
-                                const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
-                                void send(undefined, { forceBusy: primary });
-                              } else {
-                                void send();
-                              }
-                            }
-                          }}
-                          rows={1}
-                          placeholder={
-                            !settings
-                              ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
-                              : sendQueue.length > 0 && streaming
-                                ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
-                                : '请输入你的内容，使用 /  引用插件，使用 @ 引用文档'
-                          }
-                          className="tw-chat-input block w-full min-h-[36px] pl-[14px] pr-2 pt-1 pb-0 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
-                        />
-                      </div>
+              {/* 回到底部（离开贴底位置时出现） */}
+              {showJump && !empty && (
+                <button
+                  type="button"
+                  onClick={jumpToBottom}
+                  title="回到底部"
+                  className="absolute bottom-3 right-[max(1.5rem,calc(50%-374px))] w-8 h-8 rounded-full bg-white border border-stone-200 shadow-md flex items-center justify-center text-stone-500 hover:text-stone-800 transition-colors"
+                >
+                  <ChevronIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
 
-                      <div className="flex items-center gap-1.5 px-3 pb-3 pt-3">
-                        {/* 「+」：dsh 风格「添加 → 文件」 */}
-                        <Menu>
-                          <MenuButton
-                            title={
-                              planPhase === 'off'
-                                ? '添加'
-                                : planPhase === 'planning'
-                                  ? '添加（计划模式·探查中）'
-                                  : '添加（计划模式·已批准）'
-                            }
-                            className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none data-[open]:bg-[color:var(--tw-session-hover-bg)] transition-colors ${
-                              planPhase === 'planning'
-                                ? 'text-amber-700 bg-amber-50'
-                                : planPhase === 'approved'
-                                  ? 'text-emerald-700 bg-emerald-50'
-                                  : ''
-                            }`}
-                          >
-                            <Svg className="w-4 h-4">
-                              <path d="M5 12h14" />
-                              <path d="M12 5v14" />
-                            </Svg>
-                          </MenuButton>
-                          <MenuItems
-                            transition
-                            anchor={{ to: 'top start', gap: 8 }}
-                            className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,20rem)] rounded-xl border border-stone-200 py-1.5 shadow-xl focus:outline-none"
-                          >
-                            <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
-                              添加
-                            </div>
-                            <MenuItem>
-                              <button
-                                type="button"
-                                onClick={() => fileInputRef.current?.click()}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
-                              >
-                                <PaperclipIcon className="w-4 h-4 shrink-0 text-stone-500" />
-                                <span className="text-[13px] text-stone-800">
-                                  文件
-                                  <span className="ml-1.5 text-stone-400 font-normal">file</span>
-                                </span>
-                              </button>
-                            </MenuItem>
-                            <div className="my-1 border-t border-stone-100" />
-                            <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
-                              模式
-                            </div>
-                            <MenuItem>
-                              <button
-                                type="button"
-                                onClick={() => togglePlanMode()}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
-                              >
-                                <span
-                                  className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
-                                    planPhase === 'off'
-                                      ? 'border-stone-300 text-transparent'
-                                      : planPhase === 'planning'
-                                        ? 'border-amber-500 bg-amber-50 text-amber-700'
-                                        : 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                                  }`}
-                                  aria-hidden
-                                >
-                                  {planPhase !== 'off' ? '✓' : ''}
-                                </span>
-                                <span className="min-w-0 text-[13px] text-stone-800">
-                                  计划模式
-                                  <span className="ml-1.5 text-stone-400 font-normal">
-                                    {planPhase === 'off'
-                                      ? '关闭'
-                                      : planPhase === 'planning'
-                                        ? '探查中'
-                                        : '已批准'}
-                                  </span>
-                                </span>
-                              </button>
-                            </MenuItem>
-                          </MenuItems>
-                        </Menu>
-
-                        {/* dsh：输入栏工作区 picker（显式当前目录，可切换 / 添加） */}
-                        {fsLive && (
-                          <Menu>
-                            <MenuButton
-                              title={composerWsPath ? `工作区：${composerWsPath}` : '选择工作区'}
-                              disabled={wsBusy}
-                              className="group flex items-center gap-1 h-7 max-w-[min(40vw,11rem)] pl-1.5 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors disabled:opacity-50"
-                            >
-                              <FolderIcon className="w-3.5 h-3.5 shrink-0 text-stone-500" />
-                              <span className="truncate">{composerWsLabel}</span>
-                              <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
-                            </MenuButton>
-                            <MenuItems
-                              transition
-                              anchor={{ to: 'top start', gap: 8 }}
-                              className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,16rem)] rounded-xl border border-stone-200 py-1 shadow-xl focus:outline-none"
-                            >
-                              {(workspaceInfo?.items ?? []).map((item) => {
-                                const active = item.path === composerWsPath;
-                                return (
-                                  <MenuItem key={item.id}>
-                                    <button
-                                      type="button"
-                                      disabled={wsBusy}
-                                      onClick={() => void pickComposerWorkspace(item)}
-                                      className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100 disabled:opacity-50"
-                                    >
-                                      <FolderIcon className="w-4 h-4 shrink-0 text-stone-500" />
-                                      <span
-                                        className={`flex-1 min-w-0 truncate text-[13px] ${
-                                          active
-                                            ? 'text-stone-900 font-medium'
-                                            : 'text-stone-700'
-                                        }`}
-                                        title={item.path}
-                                      >
-                                        {workspaceDisplayName(item, projectRootPath)}
-                                      </span>
-                                      {active && (
-                                        <CheckIcon className="w-3.5 h-3.5 shrink-0 text-[#4176e6]" />
-                                      )}
-                                    </button>
-                                  </MenuItem>
-                                );
-                              })}
-                              {(workspaceInfo?.items?.length ?? 0) > 0 && (
-                                <div className="my-1 border-t border-stone-100" />
-                              )}
-                              <MenuItem>
-                                <button
-                                  type="button"
-                                  disabled={wsBusy}
-                                  onClick={() => void addWorkspaceByPicker()}
-                                  className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] text-stone-700 data-[focus]:bg-stone-100 disabled:opacity-50"
-                                >
-                                  <span className="w-4 h-4 shrink-0 flex items-center justify-center text-stone-500 text-base leading-none">
-                                    +
-                                  </span>
-                                  添加工作区...
-                                </button>
-                              </MenuItem>
-                            </MenuItems>
-                          </Menu>
-                        )}
-
-                        {/* 访问权限（dsh 左侧权限菜单） */}
-                        <Menu>
-                          <MenuButton
-                            title="访问权限"
-                            className="group flex items-center gap-1 h-7 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
-                          >
-                            <ShieldIcon
-                              level={access}
-                              className="w-3.5 h-3.5 shrink-0 text-stone-500"
-                            />
-                            {accessOpt.label}
-                            <span
-                              className={`ml-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${
-                                fsLive ? 'bg-emerald-500' : 'bg-stone-300'
-                              }`}
-                              title={fsLive ? 'Runner 在线' : 'Runner 离线'}
-                            />
-                            <ChevronIcon className="w-3.5 h-3.5 text-stone-400 transition-transform group-data-[open]:rotate-180" />
-                          </MenuButton>
-                          <MenuItems
-                            transition
-                            anchor={{ to: 'top start', gap: 8 }}
-                            className="tw-select-menu tw-menu-anim z-50 w-56 rounded-xl border border-stone-200 p-1 shadow-xl focus:outline-none"
-                          >
-                            <div className="px-3 py-1.5 text-[11px] text-stone-400">
-                              {fsLive ? '本地文件服务已连接' : '本地文件服务未就绪'}
-                            </div>
-                            {ACCESS_OPTIONS.map((o) => (
-                              <MenuItem key={o.value}>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setAccess(o.value);
-                                    saveAccessLevel(o.value);
-                                  }}
-                                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-[13px] data-[focus]:bg-stone-100"
-                                >
-                                  <ShieldIcon
-                                    level={o.value}
-                                    className="w-4 h-4 text-stone-500 shrink-0"
-                                  />
-                                  <span
-                                    className={`flex-1 ${access === o.value ? 'text-stone-900 font-medium' : 'text-stone-700'}`}
-                                  >
-                                    {o.label}
-                                  </span>
-                                  {access === o.value && (
-                                    <CheckIcon className="w-3.5 h-3.5 text-[#4176e6]" />
-                                  )}
-                                </button>
-                              </MenuItem>
-                            ))}
-                          </MenuItems>
-                        </Menu>
-
-                        <span className="flex-1" />
-
-                        <ModelEffortMenu settings={settings} />
-
-                        {/* 发送 / 停止同一座位：生成中点按停止；空闲点按发送（繁忙续发仍可用 Enter） */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (streamingRef.current) {
-                              stop();
-                              return;
-                            }
-                            void send();
-                          }}
-                          disabled={!streaming && !canSend}
-                          title={streaming ? '停止生成' : '发送'}
-                          className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
-                            streaming
-                              ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'
-                              : 'bg-[#4176e6] text-white hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed'
-                          }`}
-                        >
-                          {streaming ? (
-                            <span className="w-2.5 h-2.5 bg-current rounded-[2px]" />
-                          ) : (
-                            <SendIcon className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-
-                    <StatusBar
-                      messages={messages}
-                      model={settings?.model}
-                      systemPromptTokens={estimateTokens(systemPrompt)}
-                    />
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    hidden
-                    accept={[
-                      ...ATTACH_ACCEPT_EXTS.map((x) => `.${x}`),
-                      'image/*',
-                      'text/*',
-                      'application/json',
-                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                      'application/vnd.ms-excel',
-                      'application/msword',
-                    ].join(',')}
-                    onChange={(e) => void onPickFiles(e)}
-                  />
+            {/* 错误提示 */}
+            {error && (
+              <div className="shrink-0 px-6 pb-2">
+                <div className="max-w-[764px] mx-auto flex items-start gap-3 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
+                  <span className="mt-0.5 w-5 h-5 shrink-0 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs font-semibold">
+                    !
+                  </span>
+                  <pre className="flex-1 min-w-0 m-0 font-sans text-[13px] leading-5 whitespace-pre-wrap break-words">
+                    {error
+                      .replace(/\*\*/g, '')
+                      .replace(/\s*:\s*\*\*/g, ': ')
+                      .trim()}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    className="shrink-0 text-red-400 hover:text-red-600 text-xs"
+                  >
+                    关闭
+                  </button>
                 </div>
               </div>
             )}
+
+            {/* 输入区：dsh composer——白色圆角卡片，左「+ / 权限」，右「模型·推理 / 发送」 */}
+            <div className="shrink-0 px-6 pb-3">
+              <div className="max-w-[764px] mx-auto">
+                {promptGenConfig?.active && pluginOn.promptGen ? (
+                  <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-[#4176e6]/30 bg-[#edf3fe] text-xs text-[#3565c7]">
+                    <span className="flex-1 min-w-0 truncate">
+                      生成提示词已启用 · {promptGenConfigLabel(promptGenConfig)}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 hover:underline"
+                      onClick={() => setPromptGenPanelOpen(true)}
+                    >
+                      改配置
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 text-stone-500 hover:text-stone-800"
+                      onClick={() => applyPromptGenConfig(null)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : null}
+                {knowledgeGenConfig?.active && pluginOn.knowledgeGen ? (
+                  <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-amber-300/60 bg-amber-50 text-xs text-amber-900">
+                    <span className="flex-1 min-w-0 truncate">
+                      生成知识库已启用 · {knowledgeGenConfigLabel(knowledgeGenConfig)}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 hover:underline"
+                      onClick={() => setKnowledgeGenPanelOpen(true)}
+                    >
+                      改配置
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 text-stone-500 hover:text-stone-800"
+                      onClick={() => applyKnowledgeGenConfig(null)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : null}
+                {caseGenConfig?.active && pluginOn.caseGen ? (
+                  <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-[#4176e6]/30 bg-[#edf3fe] text-xs text-[#3565c7]">
+                    <span className="flex-1 min-w-0 truncate">
+                      生成测试用例已启用 · {caseGenConfigLabel(caseGenConfig)}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 hover:underline"
+                      onClick={() => setCaseGenPanelOpen(true)}
+                    >
+                      改配置
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 text-stone-500 hover:text-stone-800"
+                      onClick={() => applyCaseGenConfig(null)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : null}
+                {/* dsh QueueDock：排队条目可见，当前轮结束后自动续发下一条 */}
+                {sendQueue.length > 0 ? (
+                  <div className="mb-2 rounded-xl border border-stone-200/80 bg-stone-100/80 overflow-hidden">
+                    {sendQueue.map((q) => (
+                      <div
+                        key={q.id}
+                        className="flex items-center gap-2 px-3 py-2 border-b border-stone-200/60 last:border-b-0"
+                      >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full bg-stone-400 shrink-0"
+                          aria-hidden
+                        />
+                        <span className="flex-1 min-w-0 truncate text-[13px] text-stone-700">
+                          {queueTitle(q)}
+                        </span>
+                        <button
+                          type="button"
+                          title="编辑回输入框"
+                          onClick={() => editQueued(q.id)}
+                          className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
+                        >
+                          <Svg className="w-3.5 h-3.5">
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                          </Svg>
+                        </button>
+                        <button
+                          type="button"
+                          title="从队列移除"
+                          onClick={() => removeQueued(q.id)}
+                          className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
+                        >
+                          <Svg className="w-3.5 h-3.5">
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4h8v2" />
+                            <path d="M19 6l-1 14H6L5 6" />
+                          </Svg>
+                        </button>
+                        <button
+                          type="button"
+                          title="插话立即发送（其后队列仍会续发）"
+                          onClick={() => promoteQueued(q.id)}
+                          className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none text-[#4176e6]"
+                        >
+                          <SendIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {planProposal ? (
+                  <div className="mb-2 rounded-xl border border-amber-300/60 bg-amber-50/90 px-4 py-3 shadow-sm">
+                    <div className="text-[13px] font-medium text-stone-800 mb-1">待批准计划</div>
+                    <div className="text-[14px] font-medium text-stone-900">
+                      {planProposal.title}
+                    </div>
+                    {planProposal.summary ? (
+                      <p className="mt-1 text-[13px] text-stone-600 leading-5">
+                        {planProposal.summary}
+                      </p>
+                    ) : null}
+                    <ol className="mt-2 list-decimal pl-5 space-y-1 text-[13px] text-stone-700">
+                      {planProposal.steps.map((s, i) => (
+                        <li key={`${i}-${s.slice(0, 24)}`}>{s}</li>
+                      ))}
+                    </ol>
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        className="h-8 px-3 rounded-lg border border-stone-200 bg-white text-[12px] text-stone-600 hover:bg-stone-50"
+                        onClick={() => rejectPlan()}
+                      >
+                        驳回
+                      </button>
+                      <button
+                        type="button"
+                        className="h-8 px-3 rounded-lg bg-[#4176e6] text-[12px] text-white hover:bg-[#3467d4]"
+                        onClick={() => approvePlan()}
+                      >
+                        批准实施
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {askUserPrompt?.length ? (
+                  <div className="mb-2 rounded-xl border border-[#4176e6]/30 bg-[#f5f8ff] px-4 py-3 shadow-sm">
+                    <div className="text-[13px] font-medium text-stone-800 mb-2">
+                      模型需要你的确认
+                    </div>
+                    <div className="space-y-3">
+                      {askUserPrompt.map((q) => {
+                        const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
+                        return (
+                          <div
+                            key={q.id}
+                            className="rounded-lg border border-stone-200 bg-white p-3"
+                          >
+                            {q.header ? (
+                              <div className="text-[11px] font-medium text-[#4176e6] mb-1">
+                                {q.header}
+                              </div>
+                            ) : null}
+                            <div className="text-[13px] text-stone-800 mb-2">{q.question}</div>
+                            {q.options?.length ? (
+                              <div className="space-y-1.5">
+                                {q.options.map((opt) => {
+                                  const checked = draft.selected.includes(opt.label);
+                                  return (
+                                    <label
+                                      key={opt.label}
+                                      className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 cursor-pointer text-[12px] ${
+                                        checked
+                                          ? 'border-[#4176e6] bg-[#edf3fe]'
+                                          : 'border-stone-200 hover:border-stone-300'
+                                      }`}
+                                    >
+                                      <input
+                                        type={q.multi_select ? 'checkbox' : 'radio'}
+                                        name={`ask-${q.id}`}
+                                        className="mt-0.5"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setAskUserDraft((prev) => {
+                                            const cur = prev[q.id] ?? {
+                                              selected: [],
+                                              text: '',
+                                            };
+                                            let selected: string[];
+                                            if (q.multi_select) {
+                                              selected = checked
+                                                ? cur.selected.filter((x) => x !== opt.label)
+                                                : [...cur.selected, opt.label];
+                                            } else {
+                                              selected = [opt.label];
+                                            }
+                                            return {
+                                              ...prev,
+                                              [q.id]: { ...cur, selected },
+                                            };
+                                          });
+                                        }}
+                                      />
+                                      <span className="min-w-0">
+                                        <span className="block text-stone-800">{opt.label}</span>
+                                        {opt.description ? (
+                                          <span className="block text-stone-400 mt-0.5">
+                                            {opt.description}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <textarea
+                                value={draft.text}
+                                onChange={(e) =>
+                                  setAskUserDraft((prev) => ({
+                                    ...prev,
+                                    [q.id]: {
+                                      selected: [],
+                                      text: e.target.value,
+                                    },
+                                  }))
+                                }
+                                rows={2}
+                                className="w-full rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] outline-none focus:border-[#4176e6]"
+                                placeholder="输入你的回答…"
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          abortRef.current?.abort();
+                          settleAskUserCanceled();
+                        }}
+                        className="h-8 px-3 rounded-lg text-[12px] text-stone-600 hover:bg-stone-100"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => submitAskUserAnswers()}
+                        className="h-8 px-3 rounded-lg text-[12px] font-medium text-white bg-[#4176e6] hover:bg-[#3566d4]"
+                      >
+                        提交回答
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                <div
+                  ref={composerRef}
+                  className="pt-2 rounded-[20px] bg-white border border-stone-200 shadow-[0_4px_20px_rgba(15,23,42,0.06)] transition-shadow focus-within:shadow-[0_4px_24px_rgba(65,118,230,0.14)]"
+                >
+                  {(docRefs.length > 0 || attachments.length > 0 || images.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5 px-3 pt-0.5 pb-2">
+                      {docRefs.map((r) => (
+                        <span
+                          key={`${r.collection}:${r.path}`}
+                          className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
+                          title={r.path}
+                        >
+                          <FileIcon className="w-3.5 h-3.5" />
+                          <span className="text-[10px] text-[#4176e6]/80 shrink-0">
+                            {r.collection === 'workspace' ? '工作区' : formatSlashBadge(r.format)}
+                          </span>
+                          <span className="max-w-40 truncate">{r.title}</span>
+                          <button
+                            type="button"
+                            title="移除引用"
+                            onClick={() =>
+                              setDocRefs((prev) =>
+                                prev.filter(
+                                  (x) => !(x.collection === r.collection && x.path === r.path),
+                                ),
+                              )
+                            }
+                            className="w-5 h-5 flex items-center justify-center rounded text-[#4176e6]/70 hover:text-[#4176e6] hover:bg-white/80"
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ))}
+                      {attachments.map((a, idx) => (
+                        <span
+                          key={`${a.name}-${idx}`}
+                          className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg"
+                        >
+                          <FileIcon className="w-3.5 h-3.5 text-[#4176e6]" />
+                          <span className="max-w-48 truncate">{a.name}</span>
+                          <span className="text-stone-400">{fmtSize(a.size)}</span>
+                          <button
+                            type="button"
+                            title="移除"
+                            onClick={() =>
+                              setAttachments((prev) => prev.filter((_, j) => j !== idx))
+                            }
+                            className="w-5 h-5 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200"
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ))}
+                      {images.map((img) => (
+                        <span
+                          key={img.id}
+                          className="relative group inline-flex rounded-lg border border-stone-200 overflow-hidden bg-stone-50"
+                          title={`${img.name} · ${fmtSize(img.size)}`}
+                        >
+                          <img
+                            src={img.dataUrl}
+                            alt={img.name}
+                            className="h-14 w-14 object-cover"
+                          />
+                          <button
+                            type="button"
+                            title="移除图片"
+                            onClick={() => setImages((prev) => prev.filter((x) => x.id !== img.id))}
+                            className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/55 text-white hover:bg-black/75"
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="relative">
+                    {pluginMenuOpen && (
+                      <div
+                        ref={pluginMenuRef}
+                        className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
+                      >
+                        <div className="px-3 py-1.5 text-[11px] text-stone-400">插件</div>
+                        {pluginMenuItems.map((p, i) => {
+                          const on = Boolean(pluginOn[p.id]);
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              data-plugin-index={i}
+                              onMouseDown={(e) => e.preventDefault()}
+                              onMouseEnter={() => setPluginIndex(i)}
+                              onClick={() => pickPluginMenu(p.id)}
+                              className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                                i === pluginIndex ? 'is-active' : ''
+                              } ${on ? '' : 'opacity-60'}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="text-[13px] font-medium text-stone-800 flex-1">
+                                  {p.name}
+                                </div>
+                                {!on ? (
+                                  <span className="text-[10px] text-amber-700 shrink-0">
+                                    未启用
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="mt-0.5 text-xs text-stone-400 line-clamp-2">
+                                {p.description}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {atOpen && (
+                      <div
+                        ref={mentionListRef}
+                        className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
+                      >
+                        {atFlatItems.length === 0 ? (
+                          <div className="px-3 py-2 text-xs text-stone-400 space-y-1">
+                            {!knowledgeOn ? (
+                              <p>项目文档：请先启用「知识库检索」插件</p>
+                            ) : (
+                              <p>项目文档：无匹配</p>
+                            )}
+                            {!hasWorkspace ? (
+                              <p>工作区：请先在侧栏添加并选择工作区</p>
+                            ) : (
+                              <p>工作区：无匹配</p>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            {atProjectDocs.length > 0 ? (
+                              <div className="px-3 py-1.5 text-[11px] font-medium text-stone-400">
+                                项目文档（{docRootLabel('knowledge')} / {docRootLabel('templates')}
+                                ）
+                              </div>
+                            ) : null}
+                            {atFlatItems.map((item, i) => {
+                              const d = item.doc;
+                              const prev = atFlatItems[i - 1];
+                              const showWsHeader =
+                                item.section === 'workspace' && prev?.section !== 'workspace';
+                              return (
+                                <div key={`${d.collection}/${d.id}`}>
+                                  {showWsHeader ? (
+                                    <>
+                                      {atProjectDocs.length > 0 ? (
+                                        <div
+                                          className="my-1 mx-2 border-t border-stone-200"
+                                          role="separator"
+                                        />
+                                      ) : null}
+                                      <div className="px-3 py-1.5 text-[11px] font-medium text-stone-400">
+                                        工作区
+                                      </div>
+                                    </>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    data-mention-index={i}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => pickAtDoc(d)}
+                                    className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                                      i === mentionIndex ? 'is-active' : ''
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 text-[13px] text-stone-800">
+                                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500 shrink-0">
+                                        {d.collection === 'knowledge'
+                                          ? docRootLabel('knowledge')
+                                          : d.collection === 'templates'
+                                            ? docRootLabel('templates')
+                                            : d.format === 'dir'
+                                              ? '文件夹'
+                                              : '文件'}
+                                      </span>
+                                      {d.collection !== 'workspace' ? (
+                                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500 shrink-0">
+                                          {formatSlashBadge(d.format)}
+                                        </span>
+                                      ) : null}
+                                      <span className="truncate font-medium">{d.title}</span>
+                                    </div>
+                                    <div className="mt-0.5 pl-0 text-xs text-stone-400 truncate">
+                                      {d.collection === 'workspace'
+                                        ? d.path
+                                        : `${d.category}${d.description ? ` · ${d.description}` : ''}`}
+                                    </div>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </>
+                        )}
+                      </div>
+                    )}
+                    <textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onPaste={(e) => {
+                        const items = Array.from(e.clipboardData?.items ?? []);
+                        const imageFiles = items
+                          .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+                          .map((it) => it.getAsFile())
+                          .filter((f): f is File => Boolean(f));
+                        if (!imageFiles.length) return;
+                        e.preventDefault();
+                        void addImages(imageFiles);
+                      }}
+                      onKeyDown={(e) => {
+                        if (pluginMenuOpen && pluginMenuItems.length) {
+                          if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            setPluginIndex((i) => (i + 1) % pluginMenuItems.length);
+                            return;
+                          }
+                          if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            setPluginIndex(
+                              (i) => (i - 1 + pluginMenuItems.length) % pluginMenuItems.length,
+                            );
+                            return;
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setPluginMenuDismissed(true);
+                            if (pluginSlashState) setInput(input.slice(0, pluginSlashState.from));
+                            return;
+                          }
+                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                            e.preventDefault();
+                            const item = pluginMenuItems[pluginIndex] ?? pluginMenuItems[0];
+                            if (item) pickPluginMenu(item.id);
+                            return;
+                          }
+                        }
+                        if (atOpen && atFlatItems.length) {
+                          if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            setMentionIndex((i) => (i + 1) % atFlatItems.length);
+                            return;
+                          }
+                          if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            setMentionIndex(
+                              (i) => (i - 1 + atFlatItems.length) % atFlatItems.length,
+                            );
+                            return;
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setMentionDismissed(true);
+                            if (atState) setInput(input.slice(0, atState.from));
+                            return;
+                          }
+                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                            e.preventDefault();
+                            const doc = atFlatItems[mentionIndex]?.doc;
+                            if (doc) pickAtDoc(doc);
+                            return;
+                          }
+                        }
+                        if (e.key === 'Escape' && (atState || pluginSlashState)) {
+                          e.preventDefault();
+                          setMentionDismissed(true);
+                          setPluginMenuDismissed(true);
+                          const from = atState?.from ?? pluginSlashState?.from;
+                          if (from != null) setInput(input.slice(0, from));
+                          return;
+                        }
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                          e.preventDefault();
+                          const alt = e.metaKey || e.ctrlKey;
+                          if (streamingRef.current) {
+                            // Cmd/Ctrl+Enter：插话；有队列时带着队列后续自主续发
+                            if (alt) {
+                              const draft = input.trim();
+                              const hasDraft =
+                                Boolean(draft) ||
+                                attachments.length > 0 ||
+                                images.length > 0 ||
+                                docRefs.length > 0;
+                              if (hasDraft) {
+                                const extra: PendingSend = {
+                                  id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                  content: draft,
+                                  files: [...attachments],
+                                  refs: [...docRefs],
+                                  imgs: [...images],
+                                };
+                                clearComposer();
+                                flushQueueAsInterrupt(extra);
+                              } else if (sendQueueRef.current.length) {
+                                flushQueueAsInterrupt();
+                              }
+                              return;
+                            }
+                            const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
+                            void send(undefined, { forceBusy: primary });
+                          } else {
+                            void send();
+                          }
+                        }
+                      }}
+                      rows={1}
+                      placeholder={
+                        !settings
+                          ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
+                          : sendQueue.length > 0 && streaming
+                            ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
+                            : '请输入内容；/goal 目标；/compact 压缩；/ 插件；@ 文档'
+                      }
+                      className="tw-chat-input block w-full min-h-[36px] pl-[14px] pr-2 pt-1 pb-0 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1.5 px-3 pb-3 pt-3">
+                    {/* 「+」：dsh 风格「添加 → 文件」 */}
+                    <Menu>
+                      <MenuButton
+                        title={
+                          planPhase === 'off'
+                            ? '添加'
+                            : planPhase === 'planning'
+                              ? '添加（计划模式·探查中）'
+                              : '添加（计划模式·已批准）'
+                        }
+                        className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none data-[open]:bg-[color:var(--tw-session-hover-bg)] transition-colors ${
+                          planPhase === 'planning'
+                            ? 'text-amber-700 bg-amber-50'
+                            : planPhase === 'approved'
+                              ? 'text-emerald-700 bg-emerald-50'
+                              : ''
+                        }`}
+                      >
+                        <Svg className="w-4 h-4">
+                          <path d="M5 12h14" />
+                          <path d="M12 5v14" />
+                        </Svg>
+                      </MenuButton>
+                      <MenuItems
+                        transition
+                        anchor={{ to: 'top start', gap: 8 }}
+                        className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,20rem)] rounded-xl border border-stone-200 py-1.5 shadow-xl focus:outline-none"
+                      >
+                        <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
+                          添加
+                        </div>
+                        <MenuItem>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
+                          >
+                            <PaperclipIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                            <span className="text-[13px] text-stone-800">
+                              文件
+                              <span className="ml-1.5 text-stone-400 font-normal">file</span>
+                            </span>
+                          </button>
+                        </MenuItem>
+                        <div className="my-1 border-t border-stone-100" />
+                        <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
+                          模式
+                        </div>
+                        <MenuItem>
+                          <button
+                            type="button"
+                            onClick={() => togglePlanMode()}
+                            className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
+                          >
+                            <span
+                              className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
+                                planPhase === 'off'
+                                  ? 'border-stone-300 text-transparent'
+                                  : planPhase === 'planning'
+                                    ? 'border-amber-500 bg-amber-50 text-amber-700'
+                                    : 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                              }`}
+                              aria-hidden
+                            >
+                              {planPhase !== 'off' ? '✓' : ''}
+                            </span>
+                            <span className="min-w-0 text-[13px] text-stone-800">
+                              计划模式
+                              <span className="ml-1.5 text-stone-400 font-normal">
+                                {planPhase === 'off'
+                                  ? '关闭'
+                                  : planPhase === 'planning'
+                                    ? '探查中'
+                                    : '已批准'}
+                              </span>
+                            </span>
+                          </button>
+                        </MenuItem>
+                      </MenuItems>
+                    </Menu>
+
+                    {/* dsh：输入栏工作区 picker（显式当前目录，可切换 / 添加） */}
+                    {fsLive && (
+                      <Menu>
+                        <MenuButton
+                          title={composerWsPath ? `工作区：${composerWsPath}` : '选择工作区'}
+                          disabled={wsBusy}
+                          className="group flex items-center gap-1 h-7 max-w-[min(40vw,11rem)] pl-1.5 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors disabled:opacity-50"
+                        >
+                          <FolderIcon className="w-3.5 h-3.5 shrink-0 text-stone-500" />
+                          <span className="truncate">{composerWsLabel}</span>
+                          <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
+                        </MenuButton>
+                        <MenuItems
+                          transition
+                          anchor={{ to: 'top start', gap: 8 }}
+                          className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,16rem)] rounded-xl border border-stone-200 py-1 shadow-xl focus:outline-none"
+                        >
+                          {(workspaceInfo?.items ?? []).map((item) => {
+                            const active = item.path === composerWsPath;
+                            return (
+                              <MenuItem key={item.id}>
+                                <button
+                                  type="button"
+                                  disabled={wsBusy}
+                                  onClick={() => void pickComposerWorkspace(item)}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100 disabled:opacity-50"
+                                >
+                                  <FolderIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                                  <span
+                                    className={`flex-1 min-w-0 truncate text-[13px] ${
+                                      active ? 'text-stone-900 font-medium' : 'text-stone-700'
+                                    }`}
+                                    title={item.path}
+                                  >
+                                    {workspaceDisplayName(item, projectRootPath)}
+                                  </span>
+                                  {active && (
+                                    <CheckIcon className="w-3.5 h-3.5 shrink-0 text-[#4176e6]" />
+                                  )}
+                                </button>
+                              </MenuItem>
+                            );
+                          })}
+                          {(workspaceInfo?.items?.length ?? 0) > 0 && (
+                            <div className="my-1 border-t border-stone-100" />
+                          )}
+                          <MenuItem>
+                            <button
+                              type="button"
+                              disabled={wsBusy}
+                              onClick={() => void addWorkspaceByPicker()}
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] text-stone-700 data-[focus]:bg-stone-100 disabled:opacity-50"
+                            >
+                              <span className="w-4 h-4 shrink-0 flex items-center justify-center text-stone-500 text-base leading-none">
+                                +
+                              </span>
+                              添加工作区...
+                            </button>
+                          </MenuItem>
+                        </MenuItems>
+                      </Menu>
+                    )}
+
+                    {/* 访问权限（dsh 左侧权限菜单） */}
+                    <Menu>
+                      <MenuButton
+                        title="访问权限"
+                        className="group flex items-center gap-1 h-7 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
+                      >
+                        <ShieldIcon
+                          level={access}
+                          className="w-3.5 h-3.5 shrink-0 text-stone-500"
+                        />
+                        {accessOpt.label}
+                        <span
+                          className={`ml-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${
+                            fsLive ? 'bg-emerald-500' : 'bg-stone-300'
+                          }`}
+                          title={fsLive ? 'Runner 在线' : 'Runner 离线'}
+                        />
+                        <ChevronIcon className="w-3.5 h-3.5 text-stone-400 transition-transform group-data-[open]:rotate-180" />
+                      </MenuButton>
+                      <MenuItems
+                        transition
+                        anchor={{ to: 'top start', gap: 8 }}
+                        className="tw-select-menu tw-menu-anim z-50 w-56 rounded-xl border border-stone-200 p-1 shadow-xl focus:outline-none"
+                      >
+                        <div className="px-3 py-1.5 text-[11px] text-stone-400">
+                          {fsLive ? '本地文件服务已连接' : '本地文件服务未就绪'}
+                        </div>
+                        {ACCESS_OPTIONS.map((o) => (
+                          <MenuItem key={o.value}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccess(o.value);
+                                saveAccessLevel(o.value);
+                              }}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-[13px] data-[focus]:bg-stone-100"
+                            >
+                              <ShieldIcon
+                                level={o.value}
+                                className="w-4 h-4 text-stone-500 shrink-0"
+                              />
+                              <span
+                                className={`flex-1 ${access === o.value ? 'text-stone-900 font-medium' : 'text-stone-700'}`}
+                              >
+                                {o.label}
+                              </span>
+                              {access === o.value && (
+                                <CheckIcon className="w-3.5 h-3.5 text-[#4176e6]" />
+                              )}
+                            </button>
+                          </MenuItem>
+                        ))}
+                      </MenuItems>
+                    </Menu>
+
+                    <span className="flex-1" />
+
+                    <ModelEffortMenu settings={settings} />
+
+                    {/* 发送 / 停止同一座位：生成中点按停止；空闲点按发送（繁忙续发仍可用 Enter） */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (streamingRef.current) {
+                          stop();
+                          return;
+                        }
+                        void send();
+                      }}
+                      disabled={!streaming && !canSend}
+                      title={streaming ? '停止生成' : '发送'}
+                      className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
+                        streaming
+                          ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'
+                          : 'bg-[#4176e6] text-white hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed'
+                      }`}
+                    >
+                      {streaming ? (
+                        <span className="w-2.5 h-2.5 bg-current rounded-[2px]" />
+                      ) : (
+                        <SendIcon className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <StatusBar
+                  messages={messages}
+                  model={settings?.model}
+                  systemPromptTokens={estimateTokens(systemPrompt)}
+                />
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                accept={[
+                  ...ATTACH_ACCEPT_EXTS.map((x) => `.${x}`),
+                  'image/*',
+                  'text/*',
+                  'application/json',
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                  'application/vnd.ms-excel',
+                  'application/msword',
+                ].join(',')}
+                onChange={(e) => void onPickFiles(e)}
+              />
+            </div>
+          </div>
+        )}
       </div>
       <CaseGenPanel
         open={caseGenPanelOpen}
@@ -5248,9 +5655,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         label="显示名称"
         placeholder="请输入工作区名称"
         initialValue={
-          wsRenameId
-            ? (workspaceInfo?.items.find((x) => x.id === wsRenameId)?.name ?? '')
-            : ''
+          wsRenameId ? (workspaceInfo?.items.find((x) => x.id === wsRenameId)?.name ?? '') : ''
         }
         confirmLabel="保存"
         cancelLabel="取消"

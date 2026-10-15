@@ -2,13 +2,23 @@
  * 会话 shell 执行（对齐 dsh tool-bash / tool-pwsh + tool-jobs 子集）：
  * - `/__tb_bash` · `/__tb_pwsh`；共用内存 job 注册表
  * - 同步：超时 / 输出截断；后台：job_list / job_output / job_kill
- * - 无沙箱升级、无跨进程持久化
+ * - 软沙箱策略 + 持久 bash 会话（node-pty 优先，管道回退）
  */
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { assertCommandAllowed, buildChildEnv, resolveSandboxPolicy } from './sandbox-policy.mjs';
+import {
+  closeBashSession,
+  detectPtyBackend,
+  execBashSession,
+  listBashSessions,
+  openBashSession,
+  readBashSession,
+  sessionStats,
+} from './bash-session.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -207,9 +217,7 @@ function whichBinary(name) {
 /** 解析 PowerShell：优先 pwsh，Windows 回退 powershell.exe */
 function resolvePwshBinary() {
   const order =
-    process.platform === 'win32'
-      ? ['pwsh.exe', 'pwsh', 'powershell.exe', 'powershell']
-      : ['pwsh'];
+    process.platform === 'win32' ? ['pwsh.exe', 'pwsh', 'powershell.exe', 'powershell'] : ['pwsh'];
   for (const name of order) {
     const hit = whichBinary(name);
     if (hit) return hit;
@@ -241,8 +249,9 @@ function shellInvocation(shell, command) {
 
 /**
  * @param {'bash' | 'pwsh'} shell
+ * @param {Record<string, string>} [env]
  */
-async function runShell(shell, command, cwd, timeoutMs) {
+async function runShell(shell, command, cwd, timeoutMs, env) {
   const inv = shellInvocation(shell, command);
   if ('error' in inv) {
     return {
@@ -255,13 +264,14 @@ async function runShell(shell, command, cwd, timeoutMs) {
       durationMs: 0,
     };
   }
+  const childEnv = env || buildChildEnv({ scrubEnv: true });
   const started = Date.now();
   try {
     const { stdout, stderr } = await execFileAsync(inv.bin, inv.args, {
       cwd,
       timeout: timeoutMs,
       maxBuffer: MAX_OUT * 4,
-      env: { ...process.env, TERM: 'dumb' },
+      env: childEnv,
       windowsHide: true,
     });
     const out = truncateText(stdout);
@@ -356,8 +366,9 @@ function publicJob(job) {
 
 /**
  * @param {'bash' | 'pwsh'} shell
+ * @param {Record<string, string>} [env]
  */
-function startBackgroundJob(shell, command, cwd, workdirDisplay) {
+function startBackgroundJob(shell, command, cwd, workdirDisplay, env) {
   const inv = shellInvocation(shell, command);
   if ('error' in inv) {
     throw new Error(inv.error);
@@ -367,7 +378,7 @@ function startBackgroundJob(shell, command, cwd, workdirDisplay) {
   try {
     child = spawn(inv.bin, inv.args, {
       cwd,
-      env: { ...process.env, TERM: 'dumb' },
+      env: env || buildChildEnv({ scrubEnv: true }),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -451,17 +462,26 @@ async function handleShellExec(shell, req, res, projectRoot) {
   if (command.length > MAX_COMMAND) {
     return sendJson(res, 400, { error: `command too long (max ${MAX_COMMAND})` });
   }
+  const policy = resolveSandboxPolicy({ access, workspace });
+  const denied = assertCommandAllowed(command, policy);
+  if (!denied.ok) return sendJson(res, 400, { error: denied.error });
+
   const timeoutMs = Math.min(
     Math.max(Number(body.timeoutMs) || DEFAULT_TIMEOUT_MS, 1_000),
     120_000,
   );
-  const { abs, display } = resolveWorkdir(workspace, body.workdir || '.', access);
+  let workdirInput = body.workdir || '.';
+  if (policy.enforceWorkspaceCwd && path.isAbsolute(String(workdirInput))) {
+    // still allow absolute only if inside workspace via resolveWorkdir
+  }
+  const { abs, display } = resolveWorkdir(workspace, workdirInput, access);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
     return sendJson(res, 400, { error: 'workdir is not a directory', path: display });
   }
+  const env = buildChildEnv(policy);
   const background = Boolean(body.background);
   if (background) {
-    const job = startBackgroundJob(shell, command, abs, display);
+    const job = startBackgroundJob(shell, command, abs, display, env);
     return sendJson(res, 200, {
       ok: true,
       background: true,
@@ -470,15 +490,92 @@ async function handleShellExec(shell, req, res, projectRoot) {
       command,
       workdir: display,
       shell,
+      sandbox: policy.mode,
     });
   }
-  const result = await runShell(shell, command, abs, timeoutMs);
+  const result = await runShell(shell, command, abs, timeoutMs, env);
   return sendJson(res, 200, {
     ...result,
     workdir: display,
     command,
     shell,
+    sandbox: policy.mode,
   });
+}
+
+async function handleSessionRoutes(req, res, projectRoot, url) {
+  const workspace = readWorkspace(projectRoot);
+
+  if (url === `${PREFIX_BASH}/session/list` && req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      sessions: listBashSessions(),
+      ...sessionStats(),
+    });
+  }
+
+  if (url === `${PREFIX_BASH}/session/open` && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req)) || '{}');
+    const access = normalizeAccess(body.access);
+    if (access === 'readonly') {
+      return sendJson(res, 403, {
+        error: 'bash session 需要「工作区内修改」或「完全权限」',
+      });
+    }
+    const policy = resolveSandboxPolicy({ access, workspace });
+    const { abs, display } = resolveWorkdir(workspace, body.workdir || '.', access);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+      return sendJson(res, 400, { error: 'workdir is not a directory', path: display });
+    }
+    const env = buildChildEnv(policy);
+    const result = await openBashSession({
+      cwdAbs: abs,
+      cwdDisplay: display,
+      env,
+    });
+    return sendJson(res, result.ok ? 200 : 400, { ...result, sandbox: policy.mode });
+  }
+
+  if (url === `${PREFIX_BASH}/session/exec` && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req)) || '{}');
+    const access = normalizeAccess(body.access);
+    if (access === 'readonly') {
+      return sendJson(res, 403, {
+        error: 'bash session 需要「工作区内修改」或「完全权限」',
+      });
+    }
+    const command = String(body.command ?? '');
+    if (!command.trim()) return sendJson(res, 400, { error: 'command is required' });
+    if (command.length > MAX_COMMAND) {
+      return sendJson(res, 400, { error: `command too long (max ${MAX_COMMAND})` });
+    }
+    const result = await execBashSession({
+      sessionId: body.sessionId || body.id,
+      command,
+      timeoutMs: body.timeoutMs,
+    });
+    return sendJson(res, result.ok || result.timedOut ? 200 : 400, result);
+  }
+
+  if (url === `${PREFIX_BASH}/session/read` && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req)) || '{}');
+    const result = readBashSession(body.sessionId || body.id, body.offset);
+    return sendJson(res, result.ok ? 200 : 404, result);
+  }
+
+  if (url === `${PREFIX_BASH}/session/close` && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req)) || '{}');
+    const access = normalizeAccess(body.access);
+    if (access === 'readonly') {
+      return sendJson(res, 403, {
+        error: 'bash session 需要「工作区内修改」或「完全权限」',
+      });
+    }
+    const result = closeBashSession(body.sessionId || body.id);
+    return sendJson(res, result.ok ? 200 : 404, result);
+  }
+
+  return null;
 }
 
 /**
@@ -503,6 +600,8 @@ export function tbBashPlugin() {
 
           if (url === `${prefix}/health` && req.method === 'GET') {
             const running = [...jobs.values()].filter((j) => j.status === 'running').length;
+            const ptyInfo = await detectPtyBackend();
+            const sess = sessionStats();
             if (shell === 'pwsh') {
               const bin = resolvePwshBinary();
               return sendJson(res, 200, {
@@ -517,6 +616,7 @@ export function tbBashPlugin() {
                 jobs: true,
                 jobCount: jobs.size,
                 runningJobs: running,
+                sandboxPolicy: true,
               });
             }
             return sendJson(res, 200, {
@@ -531,7 +631,17 @@ export function tbBashPlugin() {
               jobs: true,
               jobCount: jobs.size,
               runningJobs: running,
+              sandboxPolicy: true,
+              pty: ptyInfo.available,
+              persistentSessions: true,
+              sessionCount: sess.count,
+              sessionMax: sess.max,
             });
+          }
+
+          if (isBash && url.startsWith(`${PREFIX_BASH}/session/`)) {
+            const handled = await handleSessionRoutes(req, res, projectRoot, url);
+            if (handled !== null) return handled;
           }
 
           // jobs 仅挂在 bash 前缀（pwsh 后台任务也写入同一注册表）

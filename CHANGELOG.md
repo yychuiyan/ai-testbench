@@ -64,7 +64,14 @@ ai-testbench -y          # 数据目录用当前目录
 - 会话 `plan-mode`：探查门闩 + `submit_plan`；入口在输入栏「添加」菜单
 - 插件页双列卡片：顶对齐，避免展开一张时邻卡被撑高「假打开」
 - 恢复思索 UI：`思考中…` / `思考完成`（不再用灰底「已完成，用时」摘要条）
-- 沙箱 / PTY 另批
+- 会话 `tool-result-pruner`：过长工具返回头尾保留，写入 tools loop 前裁剪
+- 会话 `compaction-basic` / `command-compact`：自动阈值压缩 + `/compact`
+- 会话 `tool-goal` / `command-goal`：目标工具 + `/goal` 命令
+- 会话 `tool-schedule`：定时提醒 create/list/update/cancel；页面打开时投递回原会话
+- 会话 `tool-subagent*`：`spawn_subagent` / `fork_subagent` / `list_agents` / await·abort（进程内同模型）
+- 会话 `tool-workflow` / `workflow-ptc`：`workflow` 编排脚本 + 浏览器引擎（agent/parallel/pipeline）
+- 软沙箱 `sandbox-policy`：bash/pwsh 命令黑名单 + 精简 env（非 OS 隔离）
+- 持久 bash：`bash_session_*`（`node-pty` optional，失败则管道 marker 回退）
 - 规格文档：`docs/会话插件.md`、`docs/全局插件.md`
 - 对话时间线：思考 / 工具步骤（搜索、获取、本地文件等）折叠展示
 - 插件管理页：按诉求推荐扩展能力（结果缓存本机）

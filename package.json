@@ -74,6 +74,9 @@
     "sirv": "^3.0.2",
     "xlsx": "^0.18.5"
   },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/typography": "^0.5.16",

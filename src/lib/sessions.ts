@@ -8,6 +8,7 @@ import type { CaseGenPluginConfig } from './case-gen-config';
 import type { KnowledgeGenPluginConfig } from './knowledge-gen-config';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
 import type { TodoItem } from './session-interact';
+import type { SessionGoal } from './session-goal';
 
 const SESS_API = '/__tb_sessions';
 const STORE_KEY = 'tw-chat-sessions';
@@ -40,6 +41,8 @@ export interface ChatSession {
   knowledgeGen?: KnowledgeGenPluginConfig;
   /** 会话待办（todo_write） */
   todos?: TodoItem[];
+  /** 会话目标（tool-goal / command-goal） */
+  goal?: SessionGoal;
 }
 
 export interface SessionStore {
@@ -87,9 +90,9 @@ function readLegacyMessages(): unknown[] {
 function normalizeStore(parsed: Partial<SessionStore> | null | undefined): SessionStore | null {
   if (!parsed) return null;
   // 已取消「已删除」回收站：加载时清掉历史软删除，仅保留真实会话
-  const sessions = (Array.isArray(parsed.sessions) ? (parsed.sessions as ChatSession[]) : []).filter(
-    (s) => !s.deleted,
-  );
+  const sessions = (
+    Array.isArray(parsed.sessions) ? (parsed.sessions as ChatSession[]) : []
+  ).filter((s) => !s.deleted);
   if (!sessions.length) return null;
   const activeId =
     typeof parsed.activeId === 'string' && sessions.some((s) => s.id === parsed.activeId)
@@ -337,7 +340,10 @@ export function isEphemeralEmptySession(s: ChatSession): boolean {
 export function updateActiveMessages(
   store: SessionStore,
   messages: unknown[],
-  opts?: { touchTitle?: boolean; /** 默认 true；切会话仅回写时传 false，避免侧栏重排 */ touchUpdatedAt?: boolean },
+  opts?: {
+    touchTitle?: boolean;
+    /** 默认 true；切会话仅回写时传 false，避免侧栏重排 */ touchUpdatedAt?: boolean;
+  },
 ): SessionStore {
   const touchUpdatedAt = opts?.touchUpdatedAt !== false;
   return {
@@ -360,12 +366,28 @@ export function updateActiveMessages(
   };
 }
 
+/** 向任意会话追加一条消息（定时提醒投递等） */
+export function appendSessionMessage(
+  store: SessionStore,
+  sessionId: string,
+  message: unknown,
+): SessionStore {
+  return {
+    ...store,
+    sessions: store.sessions.map((s) => {
+      if (s.id !== sessionId) return s;
+      const messages = [...(Array.isArray(s.messages) ? s.messages : []), message].slice(-80);
+      return { ...s, messages, updatedAt: Date.now() };
+    }),
+  };
+}
+
 export function updateActiveSessionMeta(
   store: SessionStore,
   patch: Partial<
     Pick<
       ChatSession,
-      'caseGen' | 'promptGen' | 'knowledgeGen' | 'title' | 'workspacePath' | 'todos'
+      'caseGen' | 'promptGen' | 'knowledgeGen' | 'title' | 'workspacePath' | 'todos' | 'goal'
     >
   >,
 ): SessionStore {

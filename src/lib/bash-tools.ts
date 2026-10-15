@@ -1,5 +1,6 @@
 /**
- * 本地 bash / pwsh + jobs（/__tb_bash · /__tb_pwsh；对齐 dsh tool-bash / tool-pwsh / tool-jobs）。
+ * 本地 bash / pwsh + jobs + 持久会话（/__tb_bash · /__tb_pwsh）。
+ * 软沙箱策略在 Runner 侧执行；持久会话优先 node-pty，否则管道回退。
  */
 import type { AccessLevel } from './settings';
 
@@ -18,6 +19,11 @@ export interface BashHealth {
   jobs?: boolean;
   jobCount?: number;
   runningJobs?: number;
+  sandboxPolicy?: boolean;
+  pty?: boolean;
+  persistentSessions?: boolean;
+  sessionCount?: number;
+  sessionMax?: number;
 }
 
 export interface PwshHealth {
@@ -35,12 +41,13 @@ export interface PwshHealth {
 }
 
 export const BASH_SYSTEM_HINT =
-  '你可以使用 bash / jobs 工具（需本地服务，且访问权限为「工作区内修改」或「完全权限」）：\n' +
+  '你可以使用 bash / jobs / 持久会话工具（需本地服务，且访问权限为「工作区内修改」或「完全权限」）：\n' +
   '- bash：默认同步执行；长任务设 background=true，立即返回 jobId，再用 job_* 查看/终止\n' +
   '- job_list / job_output / job_kill：管理后台任务（bash 与 pwsh 共用）\n' +
-  '- 默认 cwd 为侧栏工作区；完全权限可用绝对路径作 workdir\n' +
-  '- 同步有超时与输出截断；后台输出缓存在本地服务内存中\n' +
-  '- 改文件优先用 fs_*；bash 适合构建、测试、git 状态等命令';
+  '- bash_session_open / exec / read / close / list：跨调用保持 cwd/env 的持久 bash（PTY 或管道回退）\n' +
+  '- 需要保留目录状态、交互式探索时用持久会话；一次性命令用 bash\n' +
+  '- 软沙箱会拒绝明显危险命令（非 OS 隔离）；默认 cwd 为侧栏工作区\n' +
+  '- 同步有超时与输出截断；改文件优先用 fs_*';
 
 export const PWSH_SYSTEM_HINT =
   '你可以使用 pwsh 工具（本机已安装 PowerShell 时可用）：\n' +
@@ -146,6 +153,78 @@ export const JOB_TOOLS = [
         },
         required: ['jobId'],
       },
+    },
+  },
+];
+
+export const BASH_SESSION_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'bash_session_open',
+      description:
+        'Open a persistent bash session (PTY if available, else pipe). State (cwd/env) survives across exec calls.',
+      parameters: {
+        type: 'object',
+        properties: {
+          workdir: {
+            type: 'string',
+            description:
+              'Initial working directory relative to workspace (or absolute when full access)',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'bash_session_exec',
+      description: 'Run a command in an open persistent bash session and wait for the next prompt.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          command: { type: 'string' },
+          timeoutMs: { type: 'number' },
+        },
+        required: ['sessionId', 'command'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'bash_session_read',
+      description: 'Read scrollback buffer from a persistent bash session.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          offset: { type: 'number' },
+        },
+        required: ['sessionId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'bash_session_close',
+      description: 'Close a persistent bash session.',
+      parameters: {
+        type: 'object',
+        properties: { sessionId: { type: 'string' } },
+        required: ['sessionId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'bash_session_list',
+      description: 'List open persistent bash sessions.',
+      parameters: { type: 'object', properties: {} },
     },
   },
 ];
@@ -290,7 +369,11 @@ export async function runPwshTool(argsJson: string, access: AccessLevel): Promis
   return runShellTool(API_PWSH, 'Pwsh', argsJson, access);
 }
 
-export async function runJobTool(name: string, argsJson: string, access: AccessLevel): Promise<string> {
+export async function runJobTool(
+  name: string,
+  argsJson: string,
+  access: AccessLevel,
+): Promise<string> {
   if (name === 'job_kill' && access === 'readonly') {
     return JSON.stringify({ error: 'job_kill 需要「工作区内修改」或「完全权限」' });
   }
@@ -326,6 +409,86 @@ export async function runJobTool(name: string, argsJson: string, access: AccessL
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId, access }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json();
+      return JSON.stringify(data, null, 2);
+    }
+    return JSON.stringify({ error: `unknown tool: ${name}` });
+  } catch (e) {
+    return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+export async function runBashSessionTool(
+  name: string,
+  argsJson: string,
+  access: AccessLevel,
+): Promise<string> {
+  if (access === 'readonly') {
+    return JSON.stringify({ error: 'bash session 需要「工作区内修改」或「完全权限」' });
+  }
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(argsJson || '{}') as Record<string, unknown>;
+  } catch {
+    return JSON.stringify({ error: 'invalid JSON arguments' });
+  }
+
+  try {
+    if (name === 'bash_session_list') {
+      const res = await fetch(`${API_BASH}/session/list`, { signal: AbortSignal.timeout(5000) });
+      const data = await res.json();
+      return JSON.stringify(data, null, 2);
+    }
+    if (name === 'bash_session_open') {
+      const res = await fetch(`${API_BASH}/session/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access, workdir: args.workdir }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await res.json();
+      return JSON.stringify(data, null, 2);
+    }
+    if (name === 'bash_session_exec') {
+      const sessionId = String(args.sessionId ?? args.id ?? '').trim();
+      const command = String(args.command ?? '');
+      if (!sessionId) return JSON.stringify({ error: 'sessionId is required' });
+      if (!command.trim()) return JSON.stringify({ error: 'command is required' });
+      const res = await fetch(`${API_BASH}/session/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          access,
+          sessionId,
+          command,
+          timeoutMs: args.timeoutMs,
+        }),
+        signal: AbortSignal.timeout(130_000),
+      });
+      const data = await res.json();
+      return JSON.stringify(data, null, 2);
+    }
+    if (name === 'bash_session_read') {
+      const sessionId = String(args.sessionId ?? args.id ?? '').trim();
+      if (!sessionId) return JSON.stringify({ error: 'sessionId is required' });
+      const res = await fetch(`${API_BASH}/session/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, offset: args.offset }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json();
+      return JSON.stringify(data, null, 2);
+    }
+    if (name === 'bash_session_close') {
+      const sessionId = String(args.sessionId ?? args.id ?? '').trim();
+      if (!sessionId) return JSON.stringify({ error: 'sessionId is required' });
+      const res = await fetch(`${API_BASH}/session/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, access }),
         signal: AbortSignal.timeout(10_000),
       });
       const data = await res.json();
