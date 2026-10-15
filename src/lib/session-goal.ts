@@ -17,7 +17,8 @@ export const GOAL_SYSTEM_HINT =
   '- goal_set：设定或更新目标（status=active）\n' +
   '- goal_done：将目标标为已完成\n' +
   '- goal_clear：清除目标\n' +
-  '有活跃目标时应围绕其推进；重大偏离前用 ask_user_question 或更新目标。';
+  '有活跃目标时应围绕其推进；重大偏离前用 ask_user_question 或更新目标。\n' +
+  '系统可能在目标未完成时自动续轮（goal-round-driver）；完成后务必 goal_done，避免空转。';
 
 export const GOAL_TOOLS = [
   {

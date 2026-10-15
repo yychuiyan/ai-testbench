@@ -14,7 +14,7 @@ const introMatch = bodyMd.match(/^([\s\S]*?)(?=\n##\s|$)/);
 const introMd = (introMatch?.[1] ?? '').trim();
 const versionsMd = bodyMd.slice(introMatch?.[0]?.length ?? 0).trim();
 
-/** 外链在新窗口打开（留言板、操作手册等） */
+/** 外链在新窗口打开（问题与建议、操作手册等） */
 function withBlankExternalLinks(html: string): string {
   return html.replace(
     /<a\s+([^>]*?)href="(https?:\/\/[^"]+)"([^>]*)>/gi,
@@ -80,57 +80,51 @@ const versions = splitVersionBlocks(versionsMd);
   <div class="tw-changelog">
     <header class="tw-changelog-hero">
       <p class="tw-changelog-eyebrow">ai-testbench</p>
-      <h1 class="tw-changelog-title" data-i18n="nav.changelog">变更日志</h1>
-      {
-        introHtml ? (
-          <div class="tw-changelog-intro" set:html={introHtml} />
-        ) : (
-          <p class="tw-changelog-lead">记录 ai-testbench 的版本演进与重要变更。</p>
-        )
-      }
+      <h1 class="tw-changelog-title" data-i18n="nav.changelog">
+        变更日志
+      </h1>
+      {introHtml ? (
+        <div class="tw-changelog-intro" set:html={introHtml} />
+      ) : (
+        <p class="tw-changelog-lead">记录 ai-testbench 的版本演进与重要变更。</p>
+      )}
     </header>
 
     <div class="tw-changelog-list tw-anim-list">
-      {
-        versions.map((v) => (
-          <section class="tw-changelog-card" data-open="false">
-            <div class="tw-changelog-card-head" set:html={v.titleHtml} />
-            {v.summaryHtml ? (
-              <div class="tw-changelog-card-summary" set:html={v.summaryHtml} />
-            ) : null}
-            {v.hasDetail ? (
-              <>
-                <div class="tw-changelog-card-detail-wrap">
-                  <div class="tw-changelog-card-detail" set:html={v.detailHtml} />
-                </div>
-                <div class="tw-changelog-toggle-row">
-                  <button
-                    type="button"
-                    class="tw-changelog-toggle"
-                    aria-expanded="false"
+      {versions.map((v) => (
+        <section class="tw-changelog-card" data-open="false">
+          <div class="tw-changelog-card-head" set:html={v.titleHtml} />
+          {v.summaryHtml ? (
+            <div class="tw-changelog-card-summary" set:html={v.summaryHtml} />
+          ) : null}
+          {v.hasDetail ? (
+            <>
+              <div class="tw-changelog-card-detail-wrap">
+                <div class="tw-changelog-card-detail" set:html={v.detailHtml} />
+              </div>
+              <div class="tw-changelog-toggle-row">
+                <button type="button" class="tw-changelog-toggle" aria-expanded="false">
+                  <span class="tw-changelog-toggle-label">查看更多</span>
+                  <svg
+                    class="tw-changelog-toggle-arrow"
+                    viewBox="0 0 16 16"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
                   >
-                    <span class="tw-changelog-toggle-label">查看更多</span>
-                    <svg
-                      class="tw-changelog-toggle-arrow"
-                      viewBox="0 0 16 16"
-                      width="14"
-                      height="14"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.75"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M6 3.5 L10.5 8 L6 12.5"></path>
-                    </svg>
-                  </button>
-                </div>
-              </>
-            ) : null}
-          </section>
-        ))
-      }
+                    <path d="M6 3.5 L10.5 8 L6 12.5"></path>
+                  </svg>
+                </button>
+              </div>
+            </>
+          ) : null}
+        </section>
+      ))}
     </div>
   </div>
 

@@ -9,6 +9,7 @@ import type { KnowledgeGenPluginConfig } from './knowledge-gen-config';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
 import type { TodoItem } from './session-interact';
 import type { SessionGoal } from './session-goal';
+import type { WorkspaceChange } from './workspace-changes';
 
 const SESS_API = '/__tb_sessions';
 const STORE_KEY = 'tw-chat-sessions';
@@ -43,6 +44,8 @@ export interface ChatSession {
   todos?: TodoItem[];
   /** 会话目标（tool-goal / command-goal） */
   goal?: SessionGoal;
+  /** 本会话工作区写操作记录（workspace-changes） */
+  workspaceChanges?: WorkspaceChange[];
 }
 
 export interface SessionStore {
@@ -141,7 +144,12 @@ function bootstrapEmptyStore(): SessionStore {
  * 启动时优先拉文件会话；失败则用 localStorage。
  * ChatApp 应 await 此函数后再 setStore。
  */
-export async function hydrateSessionStore(): Promise<SessionStore> {
+export async function hydrateSessionStore(opts?: {
+  /** 若服务端尚无该会话，尝试从 localStorage 合并进来（跳转新建会话竞态） */
+  preferSessionId?: string | null;
+}): Promise<SessionStore> {
+  const preferId = opts?.preferSessionId?.trim() || '';
+  const fromLs = loadSessionStoreFromLs();
   try {
     const res = await fetch(SESS_API, { signal: AbortSignal.timeout(2000) });
     if (res.ok) {
@@ -149,9 +157,24 @@ export async function hydrateSessionStore(): Promise<SessionStore> {
       sessionsFileMode = true;
       let store = normalizeStore(data.store ?? null);
       if (!store) {
-        store = loadSessionStoreFromLs() ?? bootstrapEmptyStore();
+        store = fromLs ?? bootstrapEmptyStore();
         await persistSessionStoreNow(store);
+      } else if (preferId && fromLs && !store.sessions.some((s) => s.id === preferId)) {
+        const orphan = fromLs.sessions.find((s) => s.id === preferId);
+        if (orphan) {
+          store = {
+            ...store,
+            sessions: [orphan, ...store.sessions],
+            activeId: preferId,
+          };
+          await persistSessionStoreNow(store);
+        } else {
+          writeSessionStoreLs(store);
+        }
       } else {
+        if (preferId && store.sessions.some((s) => s.id === preferId)) {
+          store = { ...store, activeId: preferId };
+        }
         writeSessionStoreLs(store);
       }
       return store;
@@ -160,7 +183,7 @@ export async function hydrateSessionStore(): Promise<SessionStore> {
     // fall through
   }
   sessionsFileMode = false;
-  return loadSessionStoreFromLs() ?? bootstrapEmptyStore();
+  return fromLs ?? bootstrapEmptyStore();
 }
 
 /** 同步读取（hydrate 前可能为空壳）；优先内存镜像 localStorage */
@@ -191,8 +214,77 @@ export function saveSessionStore(store: SessionStore): void {
   }, 320);
 }
 
+/** 立即落盘（含 sessions.json），供跳转前确保新会话不被 hydrate 冲掉 */
+export async function flushSessionStore(store: SessionStore): Promise<void> {
+  if (persistSessTimer) {
+    clearTimeout(persistSessTimer);
+    persistSessTimer = null;
+  }
+  await persistSessionStoreNow(store);
+}
+
 export function isSessionsFileMode(): boolean {
   return sessionsFileMode;
+}
+
+/** 从本机会话文件再拉一份（主机 schedule 投递后合并用）；失败返回 null */
+export async function fetchSessionStoreFromFile(): Promise<SessionStore | null> {
+  if (!sessionsFileMode) return null;
+  try {
+    const res = await fetch(SESS_API, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { store?: Partial<SessionStore> | null };
+    return normalizeStore(data.store ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把远端会话里带 `<!--tb-schedule:…-->` 的提醒消息合并进本地（按 marker 去重）。
+ * 用于主机 tick 已写入 sessions.json、浏览器侧尚未感知的情况。
+ */
+export function mergeScheduleMessagesFromRemote(
+  local: SessionStore,
+  remote: SessionStore,
+): SessionStore {
+  const markerRe = /<!--tb-schedule:([^>]+)-->/;
+  let changed = false;
+  const sessions = local.sessions.map((s) => {
+    const rem = remote.sessions.find((r) => r.id === s.id);
+    if (!rem || !Array.isArray(rem.messages)) return s;
+    const localMsgs = Array.isArray(s.messages) ? [...s.messages] : [];
+    const have = new Set<string>();
+    for (const m of localMsgs) {
+      const c =
+        m && typeof m === 'object' && 'content' in m
+          ? String((m as { content?: unknown }).content ?? '')
+          : '';
+      const hit = markerRe.exec(c);
+      if (hit?.[1]) have.add(hit[1]);
+      const sid =
+        m && typeof m === 'object' && 'scheduleId' in m
+          ? String((m as { scheduleId?: unknown }).scheduleId ?? '')
+          : '';
+      if (sid) have.add(sid);
+    }
+    let added = false;
+    for (const m of rem.messages) {
+      const c =
+        m && typeof m === 'object' && 'content' in m
+          ? String((m as { content?: unknown }).content ?? '')
+          : '';
+      const hit = markerRe.exec(c);
+      if (!hit?.[1] || have.has(hit[1])) continue;
+      localMsgs.push(m);
+      have.add(hit[1]);
+      added = true;
+    }
+    if (!added) return s;
+    changed = true;
+    return { ...s, messages: localMsgs, updatedAt: Date.now() };
+  });
+  return changed ? { ...local, sessions } : local;
 }
 
 export function createSession(
@@ -328,17 +420,19 @@ export function unbindSessionsFromWorkspace(
   };
 }
 
-/** 无消息、无插件任务的空「新对话」，切换时丢弃 */
+/**
+ * 无消息的空会话，切换时丢弃（不限标题）。
+ * 含：挂 chip 未发送、已确认生成插件配置但尚未对话。
+ */
 export function isEphemeralEmptySession(s: ChatSession): boolean {
   if (s.archived || s.deleted || s.pinned) return false;
-  if (s.caseGen?.active || s.promptGen?.active || s.knowledgeGen?.active) return false;
   if (Array.isArray(s.messages) && s.messages.length > 0) return false;
-  const title = (s.title || '').trim();
-  return !title || title === '新对话';
+  return true;
 }
 
-export function updateActiveMessages(
+export function updateSessionMessages(
   store: SessionStore,
+  sessionId: string,
   messages: unknown[],
   opts?: {
     touchTitle?: boolean;
@@ -349,7 +443,7 @@ export function updateActiveMessages(
   return {
     ...store,
     sessions: store.sessions.map((s) => {
-      if (s.id !== store.activeId) return s;
+      if (s.id !== sessionId) return s;
       const title =
         opts?.touchTitle && (s.title === '新对话' || !s.title)
           ? titleFromMessages(messages as Array<{ role?: string; content?: string }>)
@@ -364,6 +458,49 @@ export function updateActiveMessages(
       };
     }),
   };
+}
+
+export function updateActiveMessages(
+  store: SessionStore,
+  messages: unknown[],
+  opts?: {
+    touchTitle?: boolean;
+    /** 默认 true；切会话仅回写时传 false，避免侧栏重排 */ touchUpdatedAt?: boolean;
+  },
+): SessionStore {
+  return updateSessionMessages(store, store.activeId, messages, opts);
+}
+
+/** 加载/刷新后：把未结束的 activitySteps 标为 done，避免「思考完成」下仍转圈 */
+export function settleRunningActivitySteps(messages: unknown[]): unknown[] {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((raw) => {
+    if (!raw || typeof raw !== 'object') return raw;
+    const m = raw as {
+      role?: string;
+      activitySteps?: Array<{ status?: string; [k: string]: unknown }>;
+    };
+    if (m.role !== 'assistant' || !Array.isArray(m.activitySteps)) return raw;
+    if (!m.activitySteps.some((s) => s.status === 'running')) return raw;
+    return {
+      ...m,
+      activitySteps: m.activitySteps.map((s) =>
+        s.status === 'running' ? { ...s, status: 'done' } : s,
+      ),
+    };
+  });
+}
+
+/** 整库结算未完成步骤（页面刷新后 JS 运行已中断） */
+export function settleStoreRunningSteps(store: SessionStore): SessionStore {
+  let changed = false;
+  const sessions = store.sessions.map((s) => {
+    const nextMsgs = settleRunningActivitySteps(s.messages);
+    if (nextMsgs === s.messages) return s;
+    changed = true;
+    return { ...s, messages: nextMsgs };
+  });
+  return changed ? { ...store, sessions } : store;
 }
 
 /** 向任意会话追加一条消息（定时提醒投递等） */
@@ -382,21 +519,38 @@ export function appendSessionMessage(
   };
 }
 
-export function updateActiveSessionMeta(
+type SessionMetaPatch = Partial<
+  Pick<
+    ChatSession,
+    | 'caseGen'
+    | 'promptGen'
+    | 'knowledgeGen'
+    | 'title'
+    | 'workspacePath'
+    | 'todos'
+    | 'goal'
+    | 'workspaceChanges'
+  >
+>;
+
+export function updateSessionMeta(
   store: SessionStore,
-  patch: Partial<
-    Pick<
-      ChatSession,
-      'caseGen' | 'promptGen' | 'knowledgeGen' | 'title' | 'workspacePath' | 'todos' | 'goal'
-    >
-  >,
+  sessionId: string,
+  patch: SessionMetaPatch,
 ): SessionStore {
   return {
     ...store,
     sessions: store.sessions.map((s) =>
-      s.id === store.activeId ? { ...s, ...patch, updatedAt: Date.now() } : s,
+      s.id === sessionId ? { ...s, ...patch, updatedAt: Date.now() } : s,
     ),
   };
+}
+
+export function updateActiveSessionMeta(
+  store: SessionStore,
+  patch: SessionMetaPatch,
+): SessionStore {
+  return updateSessionMeta(store, store.activeId, patch);
 }
 
 function normalizeCasePath(p: string): string {

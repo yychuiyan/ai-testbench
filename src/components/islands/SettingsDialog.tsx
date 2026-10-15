@@ -229,6 +229,7 @@ export default function SettingsDialog() {
     sessionFontSize: 14,
     toolStepDetail: 'standard',
     busySendBehavior: 'queue',
+    subagentModel: '',
   });
   const fetchSeq = useRef(0);
 
@@ -236,11 +237,7 @@ export default function SettingsDialog() {
   const lang = prefs.language;
   const activeProvider = providers.find((p) => p.id === activeId);
   const providerName = (activeProvider?.name || '').trim();
-  const providerChipLabel = providerName
-    ? providerName
-    : lang === 'en'
-      ? 'No model'
-      : '未配置';
+  const providerChipLabel = providerName ? providerName : lang === 'en' ? 'No model' : '未配置';
   const providerChipTitle = providerName
     ? activeProvider?.model?.trim()
       ? `${providerName} · ${activeProvider.model.trim()}`
@@ -480,412 +477,440 @@ export default function SettingsDialog() {
             />
           </TransitionChild>
           <TransitionChild>
-          <div className="tw-settings-dialog tw-dialog-panel-anim relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl h-[min(92vh,720px)] overflow-hidden flex flex-col">
-            {/* 顶栏：标题 + 关闭，避免压住右侧控件 */}
-            <div className="shrink-0 h-12 px-4 flex items-center justify-between border-b border-stone-100 bg-white">
-              <h2 className="text-sm font-semibold text-stone-800 truncate pr-3">{headerTitle}</h2>
-              <button
-                type="button"
-                aria-label={t('settings.close', undefined, lang)}
-                title={t('settings.close', undefined, lang)}
-                onClick={() => setOpen(false)}
-                className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
-              >
-                <svg
-                  className="w-4 h-4"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
+            <div className="tw-settings-dialog tw-dialog-panel-anim relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl h-[min(92vh,720px)] overflow-hidden flex flex-col">
+              {/* 顶栏：标题 + 关闭，避免压住右侧控件 */}
+              <div className="shrink-0 h-12 px-4 flex items-center justify-between border-b border-stone-100 bg-white">
+                <h2 className="text-sm font-semibold text-stone-800 truncate pr-3">
+                  {headerTitle}
+                </h2>
+                <button
+                  type="button"
+                  aria-label={t('settings.close', undefined, lang)}
+                  title={t('settings.close', undefined, lang)}
+                  onClick={() => setOpen(false)}
+                  className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
                 >
-                  <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                  >
+                    <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
 
-            <div className="flex-1 min-h-0 flex">
-              <aside className="w-[9.5rem] shrink-0 border-r border-stone-100 bg-[#f4f5f7] py-3 px-2 space-y-0.5">
-                {nav.map((item) => {
-                  const active = tab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setTab(item.id);
-                        if (item.id === 'model') setEditingId(null);
-                      }}
-                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                        active
-                          ? 'bg-[#e8f0fe] text-[#4176e6] font-medium'
-                          : 'text-stone-600 hover:bg-white/70 hover:text-stone-800'
-                      }`}
-                    >
-                      <span className={active ? 'text-[#4176e6]' : 'text-stone-400'}>
-                        {item.icon}
-                      </span>
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </aside>
-
-              <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-white">
-                {tab === 'general' ? (
-                  <div className="flex-1 min-h-0 flex flex-col">
-                    <div className="flex-1 overflow-y-auto px-6 py-1">
-                      <SettingRow
-                        title={t('settings.access', undefined, lang)}
-                        description={t('settings.accessDesc', undefined, lang)}
-                        control={
-                          <PrefSelect
-                            value={access}
-                            options={accessOptions}
-                            onChange={(v) => {
-                              setAccess(v);
-                              saveAccessLevel(v);
-                            }}
-                          />
-                        }
-                      />
-                      <SettingRow
-                        title={t('settings.language', undefined, lang)}
-                        control={
-                          <PrefSelect
-                            value={prefs.language}
-                            options={LANG_OPTIONS}
-                            onChange={(v) => patchPrefs({ language: v })}
-                          />
-                        }
-                      />
-                      <div className="py-4 border-b border-stone-100">
-                        <div className="text-sm font-medium text-stone-800 mb-3">
-                          {t('settings.appearance', undefined, lang)}
-                        </div>
-                        <div className="grid grid-cols-3 gap-2.5">
-                          {appearanceOptions.map((o) => {
-                            const active = prefs.appearance === o.value;
-                            return (
-                              <button
-                                key={o.value}
-                                type="button"
-                                onClick={() => patchPrefs({ appearance: o.value })}
-                                className={`flex flex-col items-center justify-center gap-2 h-[4.75rem] rounded-xl border transition-colors ${
-                                  active
-                                    ? 'border-[#4176e6] bg-[#edf3fe] text-[#4176e6] ring-1 ring-[#4176e6]/30'
-                                    : 'border-stone-200 text-stone-500 hover:border-stone-300 hover:bg-stone-50'
-                                }`}
-                              >
-                                <AppearIcon kind={o.icon} />
-                                <span className="text-xs font-medium">{o.label}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      <SettingRow
-                        title={t('settings.fontSize', undefined, lang)}
-                        description={t('settings.fontSizeDesc', undefined, lang)}
-                        control={
-                          <div className="inline-flex items-center gap-1.5">
-                            <input
-                              type="number"
-                              min={12}
-                              max={22}
-                              value={prefs.sessionFontSize}
-                              onChange={(e) => {
-                                const n = Number(e.target.value);
-                                if (!Number.isFinite(n)) return;
-                                patchPrefs({ sessionFontSize: n });
-                              }}
-                              className="w-14 h-9 px-2 text-sm text-center rounded-lg bg-stone-100 border-0 outline-none focus:ring-2 focus:ring-[#4176e6]/30"
-                            />
-                            <span className="text-sm text-stone-400">px</span>
-                          </div>
-                        }
-                      />
-                      <SettingRow
-                        title={t('settings.toolSteps', undefined, lang)}
-                        description={t('settings.toolStepsDesc', undefined, lang)}
-                        control={
-                          <PrefSelect
-                            value={prefs.toolStepDetail}
-                            options={stepOptions}
-                            onChange={(v) => patchPrefs({ toolStepDetail: v })}
-                          />
-                        }
-                      />
-                      <SettingRow
-                        title={t('settings.busySend', undefined, lang)}
-                        description={t('settings.busySendDesc', undefined, lang)}
-                        control={
-                          <PrefSelect
-                            value={prefs.busySendBehavior}
-                            options={busySendOptions}
-                            onChange={(v) => patchPrefs({ busySendBehavior: v })}
-                          />
-                        }
-                      />
-                    </div>
-                    <div className="shrink-0 px-6 py-3 border-t border-stone-100 flex items-center justify-between text-[11px] text-stone-400">
-                      <span>{t('settings.platformVersion', undefined, lang)}</span>
-                      <span className="tabular-nums text-stone-500">v{APP_VERSION}</span>
-                    </div>
-                  </div>
-                ) : isEditing ? (
-                  <>
-                    <div className="shrink-0 px-5 pt-3 pb-2 flex items-center gap-2 border-b border-stone-100">
+              <div className="flex-1 min-h-0 flex">
+                <aside className="w-[9.5rem] shrink-0 border-r border-stone-100 bg-[#f4f5f7] py-3 px-2 space-y-0.5">
+                  {nav.map((item) => {
+                    const active = tab === item.id;
+                    return (
                       <button
+                        key={item.id}
                         type="button"
-                        onClick={() => setEditingId(null)}
-                        className="text-sm text-stone-500 hover:text-stone-800"
+                        onClick={() => {
+                          setTab(item.id);
+                          if (item.id === 'model') setEditingId(null);
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                          active
+                            ? 'bg-[#e8f0fe] text-[#4176e6] font-medium'
+                            : 'text-stone-600 hover:bg-white/70 hover:text-stone-800'
+                        }`}
                       >
-                        {t('settings.back', undefined, lang)}
+                        <span className={active ? 'text-[#4176e6]' : 'text-stone-400'}>
+                          {item.icon}
+                        </span>
+                        {item.label}
                       </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-                      <div>
-                        <label className="block text-xs font-medium text-stone-500 mb-1.5">
-                          {t('settings.displayName', undefined, lang)}
-                        </label>
-                        <input
-                          type="text"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="DeepSeek"
-                          className={inputCls}
+                    );
+                  })}
+                </aside>
+
+                <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-white">
+                  {tab === 'general' ? (
+                    <div className="flex-1 min-h-0 flex flex-col">
+                      <div className="flex-1 overflow-y-auto px-6 py-1">
+                        <SettingRow
+                          title={t('settings.access', undefined, lang)}
+                          description={t('settings.accessDesc', undefined, lang)}
+                          control={
+                            <PrefSelect
+                              value={access}
+                              options={accessOptions}
+                              onChange={(v) => {
+                                setAccess(v);
+                                saveAccessLevel(v);
+                              }}
+                            />
+                          }
                         />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-stone-500 mb-1.5">
-                          {t('settings.preset', undefined, lang)}
-                        </label>
-                        <div className="grid grid-cols-2 gap-2">
-                          {PROVIDER_PRESETS.map((p) => {
-                            const active = preset === p.label;
-                            return (
-                              <button
-                                key={p.label}
-                                type="button"
-                                onClick={() => applyPreset(p.label)}
-                                className={`text-left px-3 py-2 rounded-lg border transition-colors ${
-                                  active
-                                    ? 'border-[#4176e6] bg-[#edf3fe] ring-1 ring-[#4176e6]/30'
-                                    : 'border-stone-200 hover:border-stone-300 hover:bg-stone-50'
-                                }`}
-                              >
-                                <div
-                                  className={`text-sm ${
-                                    active ? 'text-[#3565c7] font-medium' : 'text-stone-700'
+                        <SettingRow
+                          title={t('settings.language', undefined, lang)}
+                          control={
+                            <PrefSelect
+                              value={prefs.language}
+                              options={LANG_OPTIONS}
+                              onChange={(v) => patchPrefs({ language: v })}
+                            />
+                          }
+                        />
+                        <div className="py-4 border-b border-stone-100">
+                          <div className="text-sm font-medium text-stone-800 mb-3">
+                            {t('settings.appearance', undefined, lang)}
+                          </div>
+                          <div className="grid grid-cols-3 gap-2.5">
+                            {appearanceOptions.map((o) => {
+                              const active = prefs.appearance === o.value;
+                              return (
+                                <button
+                                  key={o.value}
+                                  type="button"
+                                  onClick={() => patchPrefs({ appearance: o.value })}
+                                  className={`flex flex-col items-center justify-center gap-2 h-[4.75rem] rounded-xl border transition-colors ${
+                                    active
+                                      ? 'border-[#4176e6] bg-[#edf3fe] text-[#4176e6] ring-1 ring-[#4176e6]/30'
+                                      : 'border-stone-200 text-stone-500 hover:border-stone-300 hover:bg-stone-50'
                                   }`}
                                 >
-                                  {p.label}
-                                </div>
-                                <div className="text-[11px] text-stone-400 truncate">
-                                  {p.baseURL ? hostOf(p.baseURL) : 'OpenAI compatible'}
-                                </div>
-                              </button>
-                            );
-                          })}
+                                  <AppearIcon kind={o.icon} />
+                                  <span className="text-xs font-medium">{o.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-stone-500 mb-1.5">
-                          {t('settings.baseUrl', undefined, lang)}
-                        </label>
-                        <input
-                          type="text"
-                          value={baseURL}
-                          onChange={(e) => setBaseURL(e.target.value)}
-                          placeholder="https://api.deepseek.com/v1"
-                          className={inputCls}
+                        <SettingRow
+                          title={t('settings.fontSize', undefined, lang)}
+                          description={t('settings.fontSizeDesc', undefined, lang)}
+                          control={
+                            <div className="inline-flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min={12}
+                                max={22}
+                                value={prefs.sessionFontSize}
+                                onChange={(e) => {
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n)) return;
+                                  patchPrefs({ sessionFontSize: n });
+                                }}
+                                className="w-14 h-9 px-2 text-sm text-center rounded-lg bg-stone-100 border-0 outline-none focus:ring-2 focus:ring-[#4176e6]/30"
+                              />
+                              <span className="text-sm text-stone-400">px</span>
+                            </div>
+                          }
+                        />
+                        <SettingRow
+                          title={t('settings.toolSteps', undefined, lang)}
+                          description={t('settings.toolStepsDesc', undefined, lang)}
+                          control={
+                            <PrefSelect
+                              value={prefs.toolStepDetail}
+                              options={stepOptions}
+                              onChange={(v) => patchPrefs({ toolStepDetail: v })}
+                            />
+                          }
+                        />
+                        <SettingRow
+                          title={t('settings.busySend', undefined, lang)}
+                          description={t('settings.busySendDesc', undefined, lang)}
+                          control={
+                            <PrefSelect
+                              value={prefs.busySendBehavior}
+                              options={busySendOptions}
+                              onChange={(v) => patchPrefs({ busySendBehavior: v })}
+                            />
+                          }
+                        />
+                        <SettingRow
+                          title={t('settings.subagentModel', undefined, lang)}
+                          description={t('settings.subagentModelDesc', undefined, lang)}
+                          control={
+                            <PrefSelect
+                              value={prefs.subagentModel?.trim() ? prefs.subagentModel : 'inherit'}
+                              options={[
+                                {
+                                  value: 'inherit',
+                                  label: t('settings.subagentModel.inherit', undefined, lang),
+                                },
+                                ...Array.from(
+                                  new Set([
+                                    ...(activeProvider?.availableModels ?? []),
+                                    ...(activeProvider?.model ? [activeProvider.model] : []),
+                                  ]),
+                                )
+                                  .filter(Boolean)
+                                  .map((m) => ({ value: m, label: m })),
+                              ]}
+                              onChange={(v) =>
+                                patchPrefs({ subagentModel: v === 'inherit' ? '' : v })
+                              }
+                            />
+                          }
                         />
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-stone-500 mb-1.5">
-                          {t('settings.apiKey', undefined, lang)}
-                        </label>
-                        <div className="relative">
-                          <input
-                            type={showKey ? 'text' : 'password'}
-                            value={apiKey}
-                            onChange={(e) => setApiKey(e.target.value)}
-                            placeholder="sk-..."
-                            className={`${inputCls} pr-14`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowKey((v) => !v)}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-stone-400 hover:text-stone-600 px-1.5 py-1"
-                          >
-                            {showKey
-                              ? lang === 'en'
-                                ? 'Hide'
-                                : '隐藏'
-                              : lang === 'en'
-                                ? 'Show'
-                                : '显示'}
-                          </button>
-                        </div>
-                        {fileMode ? (
-                          <p className="mt-1.5 text-[11px] text-stone-400 leading-5">
-                            {t('settings.keyHint', undefined, lang)}
-                          </p>
-                        ) : null}
+                      <div className="shrink-0 px-6 py-3 border-t border-stone-100 flex items-center justify-between text-[11px] text-stone-400">
+                        <span>{t('settings.platformVersion', undefined, lang)}</span>
+                        <span className="tabular-nums text-stone-500">v{APP_VERSION}</span>
                       </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-xs font-medium text-stone-500">
-                            {t('settings.modelField', undefined, lang)}
+                    </div>
+                  ) : isEditing ? (
+                    <>
+                      <div className="shrink-0 px-5 pt-3 pb-2 flex items-center gap-2 border-b border-stone-100">
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className="text-sm text-stone-500 hover:text-stone-800"
+                        >
+                          {t('settings.back', undefined, lang)}
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                        <div>
+                          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                            {t('settings.displayName', undefined, lang)}
                           </label>
-                          {modelsStatus === 'loading' && (
-                            <span className="text-[11px] text-stone-400">
-                              {t('settings.recognizing', undefined, lang)}
-                            </span>
-                          )}
-                          {hasModelOptions && modelsStatus === 'ok' && (
-                            <span className="text-[11px] text-emerald-600">
-                              {t('settings.recognized', { n: modelOptions.length }, lang)}
-                            </span>
-                          )}
-                          {modelsStatus === 'fail' && !hasModelOptions && (
-                            <span className="text-[11px] text-amber-600">
-                              {t('settings.recognizeFail', undefined, lang)}
-                            </span>
-                          )}
-                          {modelsStatus === 'fail' && hasModelOptions && (
-                            <span className="text-[11px] text-amber-600">
-                              {t('settings.recognizeKeep', undefined, lang)}
-                            </span>
-                          )}
-                        </div>
-                        {hasModelOptions ? (
-                          <Listbox value={model} onChange={setModel}>
-                            <ListboxButton
-                              className={`${inputCls} flex items-center justify-between text-left hover:border-stone-400 cursor-pointer`}
-                            >
-                              <span className="truncate text-stone-800">
-                                {model || (lang === 'en' ? 'Select a model' : '请选择模型')}
-                              </span>
-                              <ChevronDown className="w-4 h-4 shrink-0 ml-2 text-stone-400" />
-                            </ListboxButton>
-                            <ListboxOptions
-                              transition
-                              anchor={{ to: 'bottom start', gap: 6 }}
-                              className="tw-select-menu tw-menu-anim z-[60] w-[var(--button-width)] max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
-                            >
-                              {modelOptions.map((m) => (
-                                <ListboxOption
-                                  key={m}
-                                  value={m}
-                                  className="group cursor-pointer select-none flex items-center justify-between px-3 py-2 text-sm text-stone-700 data-[focus]:bg-[#edf3fe] data-[selected]:text-[#3565c7] data-[selected]:font-medium"
-                                >
-                                  <span className="truncate">{m}</span>
-                                  <CheckMini className="w-4 h-4 text-[#4176e6] opacity-0 group-data-[selected]:opacity-100 shrink-0 ml-2" />
-                                </ListboxOption>
-                              ))}
-                            </ListboxOptions>
-                          </Listbox>
-                        ) : (
                           <input
                             type="text"
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            placeholder={t('settings.modelPlaceholder', undefined, lang)}
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="DeepSeek"
                             className={inputCls}
                           />
-                        )}
-                      </div>
-                    </div>
-                    <div className="shrink-0 px-5 py-3.5 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditingId(null)}
-                        className="px-3.5 py-1.5 text-sm text-stone-600 hover:bg-stone-200/60 rounded-lg"
-                      >
-                        {t('settings.cancel', undefined, lang)}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={onSaveProvider}
-                        disabled={!canSave}
-                        className="px-3.5 py-1.5 text-sm font-medium text-white bg-[#4176e6] hover:bg-[#3565c7] rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        {t('settings.save', undefined, lang)}
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex-1 overflow-y-auto px-6 py-5 bg-[#f4f5f7]">
-                    <p className="text-sm text-stone-500">
-                      {t('settings.modelIntro', undefined, lang)}
-                    </p>
-                    <div className="mt-5 space-y-2.5">
-                      {providers.map((p) => {
-                        const ready = Boolean(
-                          p.apiKey?.trim() && p.baseURL.trim() && p.model.trim(),
-                        );
-                        const isActive = p.id === activeId;
-                        return (
-                          <div
-                            key={p.id}
-                            className="flex items-center gap-3 rounded-xl border border-stone-200/90 bg-white px-4 py-3.5 shadow-[0_1px_0_rgba(15,23,42,0.02)]"
-                          >
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                            {t('settings.preset', undefined, lang)}
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            {PROVIDER_PRESETS.map((p) => {
+                              const active = preset === p.label;
+                              return (
+                                <button
+                                  key={p.label}
+                                  type="button"
+                                  onClick={() => applyPreset(p.label)}
+                                  className={`text-left px-3 py-2 rounded-lg border transition-colors ${
+                                    active
+                                      ? 'border-[#4176e6] bg-[#edf3fe] ring-1 ring-[#4176e6]/30'
+                                      : 'border-stone-200 hover:border-stone-300 hover:bg-stone-50'
+                                  }`}
+                                >
+                                  <div
+                                    className={`text-sm ${
+                                      active ? 'text-[#3565c7] font-medium' : 'text-stone-700'
+                                    }`}
+                                  >
+                                    {p.label}
+                                  </div>
+                                  <div className="text-[11px] text-stone-400 truncate">
+                                    {p.baseURL ? hostOf(p.baseURL) : 'OpenAI compatible'}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                            {t('settings.baseUrl', undefined, lang)}
+                          </label>
+                          <input
+                            type="text"
+                            value={baseURL}
+                            onChange={(e) => setBaseURL(e.target.value)}
+                            placeholder="https://api.deepseek.com/v1"
+                            className={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                            {t('settings.apiKey', undefined, lang)}
+                          </label>
+                          <div className="relative">
+                            <input
+                              type={showKey ? 'text' : 'password'}
+                              value={apiKey}
+                              onChange={(e) => setApiKey(e.target.value)}
+                              placeholder="sk-..."
+                              className={`${inputCls} pr-14`}
+                            />
                             <button
                               type="button"
-                              title={
-                                isActive
-                                  ? lang === 'en'
-                                    ? 'Active'
-                                    : '当前使用'
-                                  : lang === 'en'
-                                    ? 'Set active'
-                                    : '设为当前'
-                              }
-                              onClick={() => onActivate(p.id)}
-                              className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                              onClick={() => setShowKey((v) => !v)}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-stone-400 hover:text-stone-600 px-1.5 py-1"
                             >
-                              <span className="text-sm font-medium text-stone-800 truncate">
-                                {p.name}
-                              </span>
-                              {ready ? (
-                                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
-                              ) : null}
+                              {showKey
+                                ? lang === 'en'
+                                  ? 'Hide'
+                                  : '隐藏'
+                                : lang === 'en'
+                                  ? 'Show'
+                                  : '显示'}
                             </button>
-                            <div className="flex items-center gap-1.5 shrink-0">
+                          </div>
+                          {fileMode ? (
+                            <p className="mt-1.5 text-[11px] text-stone-400 leading-5">
+                              {t('settings.keyHint', undefined, lang)}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-xs font-medium text-stone-500">
+                              {t('settings.modelField', undefined, lang)}
+                            </label>
+                            {modelsStatus === 'loading' && (
+                              <span className="text-[11px] text-stone-400">
+                                {t('settings.recognizing', undefined, lang)}
+                              </span>
+                            )}
+                            {hasModelOptions && modelsStatus === 'ok' && (
+                              <span className="text-[11px] text-emerald-600">
+                                {t('settings.recognized', { n: modelOptions.length }, lang)}
+                              </span>
+                            )}
+                            {modelsStatus === 'fail' && !hasModelOptions && (
+                              <span className="text-[11px] text-amber-600">
+                                {t('settings.recognizeFail', undefined, lang)}
+                              </span>
+                            )}
+                            {modelsStatus === 'fail' && hasModelOptions && (
+                              <span className="text-[11px] text-amber-600">
+                                {t('settings.recognizeKeep', undefined, lang)}
+                              </span>
+                            )}
+                          </div>
+                          {hasModelOptions ? (
+                            <Listbox value={model} onChange={setModel}>
+                              <ListboxButton
+                                className={`${inputCls} flex items-center justify-between text-left hover:border-stone-400 cursor-pointer`}
+                              >
+                                <span className="truncate text-stone-800">
+                                  {model || (lang === 'en' ? 'Select a model' : '请选择模型')}
+                                </span>
+                                <ChevronDown className="w-4 h-4 shrink-0 ml-2 text-stone-400" />
+                              </ListboxButton>
+                              <ListboxOptions
+                                transition
+                                anchor={{ to: 'bottom start', gap: 6 }}
+                                className="tw-select-menu tw-menu-anim z-[60] w-[var(--button-width)] max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+                              >
+                                {modelOptions.map((m) => (
+                                  <ListboxOption
+                                    key={m}
+                                    value={m}
+                                    className="group cursor-pointer select-none flex items-center justify-between px-3 py-2 text-sm text-stone-700 data-[focus]:bg-[#edf3fe] data-[selected]:text-[#3565c7] data-[selected]:font-medium"
+                                  >
+                                    <span className="truncate">{m}</span>
+                                    <CheckMini className="w-4 h-4 text-[#4176e6] opacity-0 group-data-[selected]:opacity-100 shrink-0 ml-2" />
+                                  </ListboxOption>
+                                ))}
+                              </ListboxOptions>
+                            </Listbox>
+                          ) : (
+                            <input
+                              type="text"
+                              value={model}
+                              onChange={(e) => setModel(e.target.value)}
+                              placeholder={t('settings.modelPlaceholder', undefined, lang)}
+                              className={inputCls}
+                            />
+                          )}
+                        </div>
+                      </div>
+                      <div className="shrink-0 px-5 py-3.5 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className="px-3.5 py-1.5 text-sm text-stone-600 hover:bg-stone-200/60 rounded-lg"
+                        >
+                          {t('settings.cancel', undefined, lang)}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onSaveProvider}
+                          disabled={!canSave}
+                          className="px-3.5 py-1.5 text-sm font-medium text-white bg-[#4176e6] hover:bg-[#3565c7] rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {t('settings.save', undefined, lang)}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto px-6 py-5 bg-[#f4f5f7]">
+                      <p className="text-sm text-stone-500">
+                        {t('settings.modelIntro', undefined, lang)}
+                      </p>
+                      <div className="mt-5 space-y-2.5">
+                        {providers.map((p) => {
+                          const ready = Boolean(
+                            p.apiKey?.trim() && p.baseURL.trim() && p.model.trim(),
+                          );
+                          const isActive = p.id === activeId;
+                          return (
+                            <div
+                              key={p.id}
+                              className="flex items-center gap-3 rounded-xl border border-stone-200/90 bg-white px-4 py-3.5 shadow-[0_1px_0_rgba(15,23,42,0.02)]"
+                            >
                               <button
                                 type="button"
-                                onClick={() => openEditor(p)}
-                                className="h-8 px-3 text-sm text-stone-700 rounded-lg border border-stone-200 bg-white hover:bg-stone-50"
+                                title={
+                                  isActive
+                                    ? lang === 'en'
+                                      ? 'Active'
+                                      : '当前使用'
+                                    : lang === 'en'
+                                      ? 'Set active'
+                                      : '设为当前'
+                                }
+                                onClick={() => onActivate(p.id)}
+                                className="flex-1 min-w-0 flex items-center gap-2 text-left"
                               >
-                                {t('settings.edit', undefined, lang)}
+                                <span className="text-sm font-medium text-stone-800 truncate">
+                                  {p.name}
+                                </span>
+                                {ready ? (
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
+                                ) : null}
                               </button>
-                              {providers.length > 1 ? (
+                              <div className="flex items-center gap-1.5 shrink-0">
                                 <button
                                   type="button"
-                                  onClick={() => requestDeleteProvider(p.id)}
-                                  className="h-8 px-3 text-sm text-red-600 rounded-lg hover:bg-red-50"
+                                  onClick={() => openEditor(p)}
+                                  className="h-8 px-3 text-sm text-stone-700 rounded-lg border border-stone-200 bg-white hover:bg-stone-50"
                                 >
-                                  {t('settings.delete', undefined, lang)}
+                                  {t('settings.edit', undefined, lang)}
                                 </button>
-                              ) : null}
+                                {providers.length > 1 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => requestDeleteProvider(p.id)}
+                                    className="h-8 px-3 text-sm text-red-600 rounded-lg hover:bg-red-50"
+                                  >
+                                    {t('settings.delete', undefined, lang)}
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        onClick={() => openEditor(null)}
-                        className="w-full h-12 rounded-xl border border-dashed border-stone-300 bg-white/60 text-sm text-stone-600 hover:border-[#4176e6] hover:text-[#4176e6] hover:bg-[#edf3fe]/50 transition-colors"
-                      >
-                        {t('settings.addProvider', undefined, lang)}
-                      </button>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => openEditor(null)}
+                          className="w-full h-12 rounded-xl border border-dashed border-stone-300 bg-white/60 text-sm text-stone-600 hover:border-[#4176e6] hover:text-[#4176e6] hover:bg-[#edf3fe]/50 transition-colors"
+                        >
+                          {t('settings.addProvider', undefined, lang)}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
-          </div>
           </TransitionChild>
         </div>
       </Transition>

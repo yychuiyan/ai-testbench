@@ -1,4 +1,7 @@
 import type { LLMSettings } from './settings';
+import { isRetryableHttpStatus, withLlmRetry } from './llm-retry';
+import { appendRepeatReminder, RepeatToolTracker } from './repeat-tool-reminder';
+import { maybeSpillToolResult } from './spill-local';
 import { pruneToolResult } from './tool-result-pruner';
 
 /** OpenAI 兼容多模态 content 片段（文本 / 图片） */
@@ -40,12 +43,15 @@ export interface ToolDef {
 }
 
 async function friendlyError(res: Response): Promise<Error> {
-  const body = (await res.text().catch(() => '')).slice(0, 200);
+  const body = (await res.text().catch(() => '')).slice(0, 400);
   if (res.status === 401) return new Error('API Key 无效或已过期（401），请检查模型设置');
   if (res.status === 403) return new Error('访问被拒绝（403），请检查 Key 权限或账户状态');
   if (res.status === 429) return new Error('请求被限流（429），请稍后重试或检查账户额度');
   if (res.status === 404)
     return new Error('接口地址不存在（404），请检查 Base URL 是否以 /v1 结尾、模型名是否正确');
+  if (res.status === 503 || /service_unavailable/i.test(body) || /too busy/i.test(body)) {
+    return new Error('模型服务瞬时繁忙（503），请稍后重试');
+  }
   return new Error(`请求失败（HTTP ${res.status}）${body ? `：${body}` : ''}`);
 }
 
@@ -83,6 +89,8 @@ export interface UsageInfo {
 
 export type StreamChunk =
   | { type: 'reasoning'; delta: string } // 思考过程增量（DeepSeek 思考模式 reasoning_content）
+  /** 流结束时回传的原始 reasoning_content（未 sanitize），供后续请求原样带回 */
+  | { type: 'reasoning_api'; content: string }
   | { type: 'content'; delta: string } // 最终回答增量
   | { type: 'usage'; usage: UsageInfo } // 流结束前的用量统计
   | {
@@ -148,23 +156,34 @@ export async function* streamChat(
     temperature: 0.3, // 思考模式下该参数被 DeepSeek 忽略（文档明确不报错），非思考模式生效
   };
   applyThinkingOptions(body, settings, options);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${settings.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    throw new Error('网络请求失败，请检查 Base URL 是否可达、目标服务是否允许浏览器跨域调用');
-  }
+  // llm-retry：仅重试建连/首包失败，流开始后不再重试
+  const res = await withLlmRetry(
+    async () => {
+      let r: Response;
+      try {
+        r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${settings.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal,
+        });
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') throw e;
+        throw new Error('网络请求失败，请检查 Base URL 是否可达、目标服务是否允许浏览器跨域调用');
+      }
+      if (!r.ok) {
+        const err = await friendlyError(r);
+        if (isRetryableHttpStatus(r.status)) throw err;
+        throw err;
+      }
+      return r;
+    },
+    { signal, maxAttempts: 3 },
+  );
 
-  if (!res.ok) throw await friendlyError(res);
   if (!res.body) throw new Error('响应无内容流');
 
   const reader = res.body.getReader();
@@ -266,15 +285,18 @@ interface CompletionResult {
 /** DeepSeek V4 DSML 标签中的管道符：全角 ｜ 或 ASCII |（供 RegExp 源串拼接） */
 const DSML_PIPE = '[\\uFF5C|]';
 /**
- * 开/闭标签里 DSML 与动词之间的分隔：
- * - 单竖线：`<|DSML|calls>` / `<｜DSML｜invoke>`
- * - 双竖线（V4 常见）：`<|DSML||calls>` / `<|DSML||invoke>`
+ * 开/闭标签里管道串（允许空格变体）：
+ * - `<|DSML|calls>` / `<｜DSML｜invoke>`
+ * - `<|DSML||calls>` / `<|DSML||invoke>`
+ * - `< | | DSML | | calls>`（流式/部分网关会插入空格）
  */
-const DSML_SEP = `${DSML_PIPE}{1,2}`;
-/** 开标签前缀：`<|DSML||` 或 `<｜DSML｜`（普通模板，`\\s` → RegExp 空白） */
-const DSML_OPEN = `<\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_SEP}`;
-/** 闭标签前缀：`</|DSML||` */
-const DSML_CLOSE = `<\\/\\s*${DSML_PIPE}\\s*DSML\\s*${DSML_SEP}`;
+const DSML_PIPES = `(?:${DSML_PIPE}\\s*){1,3}`;
+/** @deprecated 兼容旧拼接；等同宽松管道串 */
+const DSML_SEP = DSML_PIPES;
+/** 开标签前缀 */
+const DSML_OPEN = `<\\s*${DSML_PIPES}DSML\\s*${DSML_PIPES}`;
+/** 闭标签前缀 */
+const DSML_CLOSE = `<\\/\\s*${DSML_PIPES}DSML\\s*${DSML_PIPES}`;
 
 function newDsmlCallId(index: number): string {
   return `dsml_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 8)}`;
@@ -387,17 +409,22 @@ export function scrubDsmlArtifacts(text: string): string {
 
   const detectors: RegExp[] = [
     new RegExp(DSML_OPEN, 'i'),
-    /<\s*\/?\s*[^>]*DSML/i,
-    /[\uFF5C|]\s*DSML\s*[\uFF5C|]{1,2}/i,
-    /DSML\s*[\uFF5C|]{0,2}\s*(?:tool_)?calls/i,
-    /DSML\s*[\uFF5C|]{0,2}\s*invoke/i,
-    /DSML\s*[\uFF5C|]{0,2}\s*parameter/i,
+    /<\s*\/?\s*[\s\uFF5C|]*DSML/i,
+    /[\uFF5C|](?:\s*[\uFF5C|])*\s*DSML/i,
+    /DSML\s*(?:[\uFF5C|]\s*){0,3}(?:tool_)?calls/i,
+    /DSML\s*(?:[\uFF5C|]\s*){0,3}invoke/i,
+    /DSML\s*(?:[\uFF5C|]\s*){0,3}parameter/i,
   ];
 
   let cut = -1;
   for (const re of detectors) {
     const m = re.exec(text);
     if (m && m.index != null && (cut < 0 || m.index < cut)) cut = m.index;
+  }
+  // 尽量切到标签起始的 `<`，避免留下 `< |` 半截
+  if (cut > 0) {
+    const lt = text.lastIndexOf('<', cut);
+    if (lt >= 0 && cut - lt < 24) cut = lt;
   }
   if (cut >= 0) return text.slice(0, cut).trimEnd();
 
@@ -481,22 +508,32 @@ async function completeOnce(
     body.tools = tools;
     body.tool_choice = 'auto';
   }
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${settings.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    throw new Error('网络请求失败，请检查 Base URL 是否可达、目标服务是否允许浏览器跨域调用');
-  }
-  if (!res.ok) throw await friendlyError(res);
+  const res = await withLlmRetry(
+    async () => {
+      let r: Response;
+      try {
+        r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${settings.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal,
+        });
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') throw e;
+        throw new Error('网络请求失败，请检查 Base URL 是否可达、目标服务是否允许浏览器跨域调用');
+      }
+      if (!r.ok) {
+        const err = await friendlyError(r);
+        if (isRetryableHttpStatus(r.status)) throw err;
+        throw err;
+      }
+      return r;
+    },
+    { signal, maxAttempts: 3 },
+  );
   const json = (await res.json()) as {
     choices?: Array<{
       message?: {
@@ -546,8 +583,9 @@ export interface ToolChatOptions extends StreamOptions {
 }
 
 /**
- * 带工具的对话：非流式跑工具轮次（含 DSML 回退解析），无工具后直接产出最终回答。
- * 避免再开一轮不带 tools 的流式请求，把 DeepSeek DSML 当正文泄漏到 UI。
+ * 带工具的对话：
+ * - 工具轮：非流式 completeOnce（稳妥解析 tool_calls / DSML），先 yield 思考再跑工具
+ * - 终轮（无 tool_calls）：丢弃探测结果，SSE 流式输出最终正文（对齐 dsh 渐进观感）
  */
 export async function* streamChatWithTools(
   settings: LLMSettings,
@@ -573,12 +611,19 @@ export async function* streamChatWithTools(
   // 工具轮与最终回答共用思考设置：DeepSeek 要求带 tool_calls 的 assistant
   // 若产生过 reasoning_content，后续请求必须原样回传。
   const toolOpts: StreamOptions = { ...options };
+  const repeatTracker = new RepeatToolTracker();
 
   for (let round = 0; round < maxRounds; round++) {
     const result = await completeOnce(settings, apiMessages, signal, toolOpts, tools);
     const { calls, content } = resolveToolCalls(result);
 
     if (calls.length) {
+      // 工具轮思考先交给 UI（剥离 DSML），API 仍回传原始 reasoning_content
+      if (result.reasoning_content) {
+        yield { type: 'reasoning_api', content: result.reasoning_content };
+        const forUi = sanitizeAssistantContent(result.reasoning_content);
+        if (forUi) yield { type: 'reasoning', delta: forUi };
+      }
       const assistantMsg: ApiMessage = {
         role: 'assistant',
         content,
@@ -593,7 +638,10 @@ export async function* streamChatWithTools(
         const args = call.function.arguments ?? '{}';
         yield { type: 'tool', name, status: 'running', args };
         const out = await runTool(name, args);
-        const pruned = pruneToolResult(out);
+        const reminder = repeatTracker.note(name, args);
+        // spill-local：超大结果先落盘占位，再交给 pruner
+        const spilled = await maybeSpillToolResult(out, name);
+        const pruned = appendRepeatReminder(pruneToolResult(spilled), reminder);
         yield {
           type: 'tool',
           name,
@@ -610,22 +658,15 @@ export async function* streamChatWithTools(
       continue;
     }
 
-    // 无工具调用：直接产出本轮（保留思考过程），不再二次 streamChat
-    if (result.reasoning_content) {
-      yield { type: 'reasoning', delta: result.reasoning_content };
-    }
-    const safeContent = sanitizeAssistantContent(content);
-    if (safeContent) {
-      yield { type: 'content', delta: safeContent };
-    }
-    if (result.usage) {
-      yield { type: 'usage', usage: result.usage };
-    }
+    // 无工具调用：探测轮结束，改走 SSE 流式最终回答（不传 tools，避免再进工具环）
+    const finalOpts: StreamOptions = { thinking: toolOpts.thinking };
+    yield* streamChatScrubbingDsml(settings, apiMessages, signal, finalOpts);
     return;
   }
 
   // 轮次耗尽：兜底流式，并过滤 DSML
-  yield* streamChatScrubbingDsml(settings, apiMessages, signal, options);
+  const fallbackOpts: StreamOptions = { thinking: options.thinking };
+  yield* streamChatScrubbingDsml(settings, apiMessages, signal, fallbackOpts);
 }
 
 /**
@@ -641,14 +682,58 @@ async function* streamChatScrubbingDsml(
   let contentBuf = '';
   let dsmlHold = false;
   let visibleEmitted = '';
+  let reasoningBuf = '';
+  let reasoningHold = false;
+  let reasoningEmitted = '';
 
   for await (const chunk of streamChat(settings, messages, signal, options)) {
+    if (chunk.type === 'reasoning') {
+      reasoningBuf += chunk.delta;
+      if (!reasoningHold) {
+        if (looksLikeDsml(reasoningBuf)) {
+          reasoningHold = true;
+          const safe = sanitizeAssistantContent(reasoningBuf);
+          const delta = safe.slice(reasoningEmitted.length);
+          if (delta) {
+            reasoningEmitted = safe;
+            yield { type: 'reasoning', delta };
+          }
+          continue;
+        }
+        // 与正文相同：保留尾部，避免半截 DSML 标签提前露出
+        const hold = 24;
+        if (reasoningBuf.length > hold) {
+          const safe = reasoningBuf.slice(0, reasoningBuf.length - hold);
+          const delta = safe.slice(reasoningEmitted.length);
+          if (delta) {
+            reasoningEmitted = safe;
+            yield { type: 'reasoning', delta };
+          }
+        }
+      }
+      continue;
+    }
     if (chunk.type !== 'content') {
       yield chunk;
       continue;
     }
     contentBuf += chunk.delta;
     if (!dsmlHold) {
+      // 与思考流一致：一旦出现 DSML 字样立即闸门（含空格变体，不只依赖 OPEN 正则）
+      if (looksLikeDsml(contentBuf)) {
+        dsmlHold = true;
+        const safe = scrubDsmlArtifacts(contentBuf);
+        const delta = safe.slice(visibleEmitted.length);
+        if (delta) {
+          visibleEmitted = safe;
+          yield { type: 'content', delta };
+        }
+        // 已泄漏进 visible 的 DSML：用安全文本整体回退标记（后续 final 再闸）
+        if (looksLikeDsml(visibleEmitted)) {
+          visibleEmitted = scrubDsmlArtifacts(visibleEmitted);
+        }
+        continue;
+      }
       const startRe = new RegExp(DSML_OPEN, 'i');
       const m = startRe.exec(contentBuf);
       if (m && m.index != null) {
@@ -661,8 +746,8 @@ async function* streamChatScrubbingDsml(
         }
         continue;
       }
-      // 保留更长尾部，避免半截 `<|DSML||` / `<｜DSML｜` 被提前吐出
-      const hold = 24;
+      // 保留更长尾部，避免半截 `<|DSML||` / `< | | DSML` 被提前吐出
+      const hold = 48;
       if (contentBuf.length > hold) {
         const safe = contentBuf.slice(0, contentBuf.length - hold);
         const delta = safe.slice(visibleEmitted.length);
@@ -675,7 +760,22 @@ async function* streamChatScrubbingDsml(
     }
   }
 
+  if (reasoningBuf) {
+    // 先交出原始串，再补 UI 用的安全增量
+    yield { type: 'reasoning_api', content: reasoningBuf };
+    const finalReasoning = sanitizeAssistantContent(reasoningBuf);
+    const restR = finalReasoning.slice(reasoningEmitted.length);
+    if (restR) yield { type: 'reasoning', delta: restR };
+  }
   const finalText = sanitizeAssistantContent(contentBuf);
-  const rest = finalText.slice(visibleEmitted.length);
-  if (rest) yield { type: 'content', delta: rest };
+  // 终态以闸门结果为准；若此前误吐过 DSML，不再追加脏增量
+  if (!looksLikeDsml(finalText) && finalText.length >= visibleEmitted.length) {
+    const rest = finalText.slice(visibleEmitted.length);
+    if (rest) yield { type: 'content', delta: rest };
+  } else if (finalText !== visibleEmitted) {
+    // 用 replace 语义：若 UI 已脏，靠后续 sanitize 合并；此处只补安全尾巴
+    const safeVisible = scrubDsmlArtifacts(visibleEmitted);
+    const rest = finalText.slice(safeVisible.length);
+    if (rest && !looksLikeDsml(rest)) yield { type: 'content', delta: rest };
+  }
 }

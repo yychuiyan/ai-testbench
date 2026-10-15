@@ -2,7 +2,7 @@
  * 会话 shell 执行（对齐 dsh tool-bash / tool-pwsh + tool-jobs 子集）：
  * - `/__tb_bash` · `/__tb_pwsh`；共用内存 job 注册表
  * - 同步：超时 / 输出截断；后台：job_list / job_output / job_kill
- * - 软沙箱策略 + 持久 bash 会话（node-pty 优先，管道回退）
+ * - 软沙箱策略 + 持久 bash/pwsh 会话（node-pty 优先，管道回退）
  */
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -19,6 +19,14 @@ import {
   readBashSession,
   sessionStats,
 } from './bash-session.mjs';
+import {
+  closePwshSession,
+  execPwshSession,
+  listPwshSessions,
+  openPwshSession,
+  pwshSessionStats,
+  readPwshSession,
+} from './pwsh-session.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -503,23 +511,31 @@ async function handleShellExec(shell, req, res, projectRoot) {
   });
 }
 
-async function handleSessionRoutes(req, res, projectRoot, url) {
+/**
+ * @param {'bash' | 'pwsh'} shell
+ */
+async function handleSessionRoutes(shell, req, res, projectRoot, url) {
   const workspace = readWorkspace(projectRoot);
+  const prefix = shell === 'pwsh' ? PREFIX_PWSH : PREFIX_BASH;
+  const label = shell === 'pwsh' ? 'pwsh session' : 'bash session';
 
-  if (url === `${PREFIX_BASH}/session/list` && req.method === 'GET') {
+  if (url === `${prefix}/session/list` && req.method === 'GET') {
+    const list = shell === 'pwsh' ? listPwshSessions() : listBashSessions();
+    const stats = shell === 'pwsh' ? pwshSessionStats() : sessionStats();
     return sendJson(res, 200, {
       ok: true,
-      sessions: listBashSessions(),
-      ...sessionStats(),
+      shell,
+      sessions: list,
+      ...stats,
     });
   }
 
-  if (url === `${PREFIX_BASH}/session/open` && req.method === 'POST') {
+  if (url === `${prefix}/session/open` && req.method === 'POST') {
     const body = JSON.parse((await readBody(req)) || '{}');
     const access = normalizeAccess(body.access);
     if (access === 'readonly') {
       return sendJson(res, 403, {
-        error: 'bash session 需要「工作区内修改」或「完全权限」',
+        error: `${label} 需要「工作区内修改」或「完全权限」`,
       });
     }
     const policy = resolveSandboxPolicy({ access, workspace });
@@ -528,20 +544,19 @@ async function handleSessionRoutes(req, res, projectRoot, url) {
       return sendJson(res, 400, { error: 'workdir is not a directory', path: display });
     }
     const env = buildChildEnv(policy);
-    const result = await openBashSession({
-      cwdAbs: abs,
-      cwdDisplay: display,
-      env,
-    });
+    const result =
+      shell === 'pwsh'
+        ? await openPwshSession({ cwdAbs: abs, cwdDisplay: display, env })
+        : await openBashSession({ cwdAbs: abs, cwdDisplay: display, env });
     return sendJson(res, result.ok ? 200 : 400, { ...result, sandbox: policy.mode });
   }
 
-  if (url === `${PREFIX_BASH}/session/exec` && req.method === 'POST') {
+  if (url === `${prefix}/session/exec` && req.method === 'POST') {
     const body = JSON.parse((await readBody(req)) || '{}');
     const access = normalizeAccess(body.access);
     if (access === 'readonly') {
       return sendJson(res, 403, {
-        error: 'bash session 需要「工作区内修改」或「完全权限」',
+        error: `${label} 需要「工作区内修改」或「完全权限」`,
       });
     }
     const command = String(body.command ?? '');
@@ -549,29 +564,42 @@ async function handleSessionRoutes(req, res, projectRoot, url) {
     if (command.length > MAX_COMMAND) {
       return sendJson(res, 400, { error: `command too long (max ${MAX_COMMAND})` });
     }
-    const result = await execBashSession({
-      sessionId: body.sessionId || body.id,
-      command,
-      timeoutMs: body.timeoutMs,
-    });
+    const result =
+      shell === 'pwsh'
+        ? await execPwshSession({
+            sessionId: body.sessionId || body.id,
+            command,
+            timeoutMs: body.timeoutMs,
+          })
+        : await execBashSession({
+            sessionId: body.sessionId || body.id,
+            command,
+            timeoutMs: body.timeoutMs,
+          });
     return sendJson(res, result.ok || result.timedOut ? 200 : 400, result);
   }
 
-  if (url === `${PREFIX_BASH}/session/read` && req.method === 'POST') {
+  if (url === `${prefix}/session/read` && req.method === 'POST') {
     const body = JSON.parse((await readBody(req)) || '{}');
-    const result = readBashSession(body.sessionId || body.id, body.offset);
+    const result =
+      shell === 'pwsh'
+        ? readPwshSession(body.sessionId || body.id, body.offset)
+        : readBashSession(body.sessionId || body.id, body.offset);
     return sendJson(res, result.ok ? 200 : 404, result);
   }
 
-  if (url === `${PREFIX_BASH}/session/close` && req.method === 'POST') {
+  if (url === `${prefix}/session/close` && req.method === 'POST') {
     const body = JSON.parse((await readBody(req)) || '{}');
     const access = normalizeAccess(body.access);
     if (access === 'readonly') {
       return sendJson(res, 403, {
-        error: 'bash session 需要「工作区内修改」或「完全权限」',
+        error: `${label} 需要「工作区内修改」或「完全权限」`,
       });
     }
-    const result = closeBashSession(body.sessionId || body.id);
+    const result =
+      shell === 'pwsh'
+        ? closePwshSession(body.sessionId || body.id)
+        : closeBashSession(body.sessionId || body.id);
     return sendJson(res, result.ok ? 200 : 404, result);
   }
 
@@ -604,6 +632,7 @@ export function tbBashPlugin() {
             const sess = sessionStats();
             if (shell === 'pwsh') {
               const bin = resolvePwshBinary();
+              const psess = pwshSessionStats();
               return sendJson(res, 200, {
                 ok: true,
                 mode: 'pwsh',
@@ -617,6 +646,10 @@ export function tbBashPlugin() {
                 jobCount: jobs.size,
                 runningJobs: running,
                 sandboxPolicy: true,
+                pty: ptyInfo.available,
+                persistentSessions: true,
+                sessionCount: psess.count,
+                sessionMax: psess.max,
               });
             }
             return sendJson(res, 200, {
@@ -640,7 +673,12 @@ export function tbBashPlugin() {
           }
 
           if (isBash && url.startsWith(`${PREFIX_BASH}/session/`)) {
-            const handled = await handleSessionRoutes(req, res, projectRoot, url);
+            const handled = await handleSessionRoutes('bash', req, res, projectRoot, url);
+            if (handled !== null) return handled;
+          }
+
+          if (isPwsh && url.startsWith(`${PREFIX_PWSH}/session/`)) {
+            const handled = await handleSessionRoutes('pwsh', req, res, projectRoot, url);
             if (handled !== null) return handled;
           }
 

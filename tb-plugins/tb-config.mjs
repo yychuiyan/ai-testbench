@@ -9,6 +9,15 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { appendDeepseekSessionLog } from './session-log-deepseek.mjs';
+import {
+  appendSessionsJsonl,
+  listCheckpoints,
+  maybeWriteCheckpoint,
+  readLatestCheckpoint,
+} from './session-persist.mjs';
+import { querySessionIndex, syncSessionQueryIndex } from './session-query-sqlite.mjs';
+import { listStorageDomains } from './storage-domain.mjs';
 
 const PREFIX = '/__tb_config';
 const SESS_PREFIX = '/__tb_sessions';
@@ -204,6 +213,14 @@ export function tbConfigPlugin() {
             return sendJson(res, 200, { ok: true, mode: 'file' });
           }
 
+          if (url === `${PREFIX}/storage-domains` && req.method === 'GET') {
+            return sendJson(res, 200, {
+              ok: true,
+              root,
+              domains: listStorageDomains(root),
+            });
+          }
+
           if (url === PREFIX && req.method === 'GET') {
             const config = ensureLocalConfig(root);
             return sendJson(res, 200, {
@@ -241,11 +258,77 @@ export function tbConfigPlugin() {
             if (!store || !Array.isArray(store.sessions)) {
               return sendJson(res, 400, { error: 'invalid store' });
             }
-            writeJson(sessionsPath(root), {
+            const next = {
               sessions: store.sessions,
               activeId: store.activeId ?? store.sessions[0]?.id ?? '',
-            });
+            };
+            writeJson(sessionsPath(root), next);
+            try {
+              appendSessionsJsonl(root, next);
+            } catch {
+              // ignore jsonl errors
+            }
+            try {
+              maybeWriteCheckpoint(root, next);
+            } catch {
+              // ignore checkpoint errors
+            }
+            try {
+              await syncSessionQueryIndex(root, next);
+            } catch {
+              // ignore sqlite index errors
+            }
             return sendJson(res, 200, { ok: true });
+          }
+
+          if (url === `${SESS_PREFIX}/query` && req.method === 'GET') {
+            const u = new URL(req.url || '', 'http://local');
+            const q = String(u.searchParams.get('q') || '').trim();
+            const includeArchived = u.searchParams.get('archived') === '1';
+            const limit = Number(u.searchParams.get('limit') || 20);
+            if (!q) return sendJson(res, 200, { ok: true, backend: 'sqlite', hits: [] });
+            let result = await querySessionIndex(root, q, { limit, includeArchived });
+            if (!result.ok && result.error === 'index missing; sync first') {
+              const store = readJson(sessionsPath(root), null);
+              if (store) await syncSessionQueryIndex(root, store);
+              result = await querySessionIndex(root, q, { limit, includeArchived });
+            }
+            return sendJson(res, result.ok ? 200 : 200, result);
+          }
+
+          if (url === `${SESS_PREFIX}/checkpoints` && req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, checkpoints: listCheckpoints(root) });
+          }
+
+          if (url.startsWith(`${SESS_PREFIX}/checkpoints/`) && req.method === 'GET') {
+            const sessionId = decodeURIComponent(url.slice(`${SESS_PREFIX}/checkpoints/`.length));
+            const cp = readLatestCheckpoint(root, sessionId);
+            if (!cp) return sendJson(res, 404, { ok: false, error: 'checkpoint not found' });
+            return sendJson(res, 200, { ok: true, checkpoint: cp });
+          }
+
+          if (url === `${SESS_PREFIX}/log` && req.method === 'POST') {
+            const body = JSON.parse((await readBody(req)) || '{}');
+            const sessionId = String(body.sessionId ?? '').trim();
+            if (!sessionId) {
+              return sendJson(res, 400, { error: 'sessionId is required' });
+            }
+            const messages = Array.isArray(body.messages) ? body.messages : [];
+            if (!messages.length) {
+              return sendJson(res, 400, { error: 'messages is required' });
+            }
+            try {
+              const result = appendDeepseekSessionLog(root, {
+                sessionId,
+                model: typeof body.model === 'string' ? body.model : '',
+                messages,
+              });
+              return sendJson(res, 200, { ok: true, ...result });
+            } catch (e) {
+              return sendJson(res, 500, {
+                error: e instanceof Error ? e.message : String(e),
+              });
+            }
           }
 
           if (url === CASES_PREFIX && req.method === 'GET') {
@@ -281,6 +364,10 @@ export function tbConfigPlugin() {
             return sendJson(res, 200, { ok: true });
           }
 
+          // 会话回合 API 由 session-runs 插件处理
+          if (url.startsWith(`${SESS_PREFIX}/runs`)) {
+            return next();
+          }
           if (
             url.startsWith(PREFIX) ||
             url.startsWith(SESS_PREFIX) ||

@@ -44,6 +44,12 @@ export interface MemoryEntry {
   text: string;
 }
 
+export interface MemoryTrackData {
+  entries: MemoryEntry[];
+  path?: string | null;
+  target?: string;
+}
+
 export interface MemorySuggestion {
   id: string;
   time: string;
@@ -207,14 +213,27 @@ export async function fetchMemorySnapshot(cwd = ''): Promise<string> {
 export async function fetchMemoryTracks(
   cwd = '',
   target: MemoryTrack | 'all' = 'all',
-): Promise<Record<string, { entries: MemoryEntry[] }>> {
+): Promise<{ tracks: Record<string, MemoryTrackData>; projectId?: string }> {
   const data = (await postJson('/tracks', { cwd, target })) as {
-    tracks?: Record<string, { entries: MemoryEntry[] }>;
+    tracks?: Record<string, MemoryTrackData>;
     entries?: MemoryEntry[];
+    path?: string | null;
     target?: string;
+    projectId?: string;
   };
-  if (target === 'all') return data.tracks ?? {};
-  return { [target]: { entries: data.entries ?? [] } };
+  if (target === 'all') {
+    return { tracks: data.tracks ?? {}, projectId: data.projectId };
+  }
+  return {
+    tracks: {
+      [target]: {
+        entries: data.entries ?? [],
+        path: data.path,
+        target,
+      },
+    },
+    projectId: data.projectId,
+  };
 }
 
 export async function fetchSuggestions(): Promise<MemorySuggestion[]> {
@@ -332,7 +351,8 @@ export async function recallMemory(
   }
 }
 
-const CAPTURE_RE = /记住|记下|别忘了|以后都|请记得|我喜欢|我的偏好|默认用|约定|不要再/;
+const CAPTURE_RE =
+  /记住|记下|别忘了|以后都|请记得|我喜欢|我的偏好|默认用|默认显示|默认城市|约定|不要再|以后默认/;
 
 /** 用户话术明显要求记住时，写入待确认队列（不直接落盘）。 */
 export async function maybeCaptureMemory(userText: string, cwd = ''): Promise<boolean> {
@@ -343,7 +363,7 @@ export async function maybeCaptureMemory(userText: string, cwd = ''): Promise<bo
   try {
     await postJson('/suggest', {
       cwd,
-      target: /偏好|喜欢|习惯|称呼/.test(text) ? 'user' : 'memory',
+      target: /偏好|喜欢|习惯|称呼|默认/.test(text) ? 'user' : 'memory',
       content,
       reason: '用户话术触发自动沉淀',
     });

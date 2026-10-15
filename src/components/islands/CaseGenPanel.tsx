@@ -147,6 +147,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
   const [busy, setBusy] = useState(false);
   const [typeEditor, setTypeEditor] = useState<'add' | 'edit' | null>(null);
   const [typeDraft, setTypeDraft] = useState('');
+  const [deleteTypePending, setDeleteTypePending] = useState(false);
 
   const template = useMemo(
     () => templates.find((t) => t.id === templateId) ?? templates[0],
@@ -196,6 +197,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
     setOutputFormat(initial?.outputFormat ?? 'xlsx');
     setTypeEditor(null);
     setTypeDraft('');
+    setDeleteTypePending(false);
     setError(null);
     void (async () => {
       const ok =
@@ -372,7 +374,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
             onClick={() => void confirm()}
             className="flex-1 h-9 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
           >
-            确认使用
+            确认
           </button>
         </footer>
       }
@@ -384,7 +386,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
       ) : null}
 
       <p className="text-xs text-stone-500 leading-5">
-        配置类型、模板与提示词后点击「确认使用」。之后在下方主输入框发送消息，将按此配置生成用例并写入用例库。
+        按所选用例类型、模板与提示词生成可入库用例：确认后在主输入框描述需求并发送，输出结构化用例并写入用例库，可在「用例管理」中查看。
       </p>
 
       {error ? (
@@ -403,6 +405,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
               setTypeEditor('add');
               setTypeDraft('');
               setError(null);
+              setDeleteTypePending(false);
             }}
           >
             新增
@@ -414,33 +417,62 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
               setTypeEditor('edit');
               setTypeDraft(activeTypeDef.label);
               setError(null);
+              setDeleteTypePending(false);
             }}
           >
             编辑
           </button>
-          <button
-            type="button"
-            className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
-            disabled={caseTypes.length <= 1}
-            onClick={() => {
-              try {
-                const next = removeCaseType(caseType);
-                setCaseTypes(next);
-                setCaseType(next[0]?.id ?? '');
+          {deleteTypePending ? (
+            <>
+              <span className="text-[11px] text-stone-500 shrink-0">确认删除？</span>
+              <button
+                type="button"
+                className="text-[11px] text-red-600 hover:underline shrink-0"
+                onClick={() => {
+                  setDeleteTypePending(false);
+                  try {
+                    const next = removeCaseType(caseType);
+                    setCaseTypes(next);
+                    setCaseType(next[0]?.id ?? '');
+                    setTypeEditor(null);
+                    setError(null);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                确认
+              </button>
+              <button
+                type="button"
+                className="text-[11px] text-stone-500 hover:underline shrink-0"
+                onClick={() => setDeleteTypePending(false)}
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
+              disabled={caseTypes.length <= 1}
+              onClick={() => {
                 setTypeEditor(null);
+                setDeleteTypePending(true);
                 setError(null);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            删除
-          </button>
+              }}
+            >
+              删除
+            </button>
+          )}
         </div>
         <SelectDropdown
           options={caseTypes.map((o) => ({ value: o.id, label: o.label }))}
           value={caseType}
-          onChange={setCaseType}
+          onChange={(v) => {
+            setCaseType(v);
+            setDeleteTypePending(false);
+          }}
         />
         {typeEditor ? (
           <div className="mt-2 rounded-lg border border-stone-200 bg-stone-50 p-2 space-y-2">

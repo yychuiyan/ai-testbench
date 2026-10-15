@@ -30,6 +30,46 @@ export function builtinRuntimeKey(id: string): BuiltinRuntimeKey {
     id === 'command-goal' ||
     id === 'goal' ||
     id === 'tool-schedule' ||
+    id === 'schedule' ||
+    id === 'goal-round-driver' ||
+    id === 'session-log-download' ||
+    id === 'llm-retry' ||
+    id === 'session-title-llm' ||
+    id === 'session-stats' ||
+    id === 'locale' ||
+    id === 'config-editor' ||
+    id === 'subagent' ||
+    id === 'subagent-fork-in-process' ||
+    id === 'spill-local' ||
+    id === 'spill-policy' ||
+    id === 'session-turn-outline' ||
+    id === 'image-offload' ||
+    id === 'session-persistence-jsonl' ||
+    id === 'session-checkpoint-policy' ||
+    id === 'session-query-sqlite' ||
+    id === 'session-projection-cache' ||
+    id === 'storage-domain' ||
+    id === 'workspace-changes' ||
+    id === 'workspace-dependencies' ||
+    id === 'skill-office' ||
+    id === 'fs-observation-policy' ||
+    id === 'deepseek-llm-api-extensions' ||
+    id === 'session-log-deepseek' ||
+    id === 'subagent-model-selection-settings' ||
+    id === 'authorization' ||
+    id === 'modules' ||
+    id === 'resources' ||
+    id === 'mcp-resources' ||
+    id === 'ptc-runtime' ||
+    id === 'headless-runner' ||
+    id === 'headless-startup' ||
+    id === 'sdk-jsonrpc-server' ||
+    id === 'sdk-app-startup' ||
+    id === 'acp' ||
+    id === 'acp-app-startup' ||
+    id === 'subagent-spawn-in-process' ||
+    id === 'llm-pi-ai' ||
+    id === 'session-reference' ||
     id === 'tool-subagent' ||
     id === 'tool-subagent-control' ||
     id === 'tool-subagent-list-agents' ||
@@ -50,7 +90,17 @@ export function builtinRuntimeKey(id: string): BuiltinRuntimeKey {
     id === 'sessions' ||
     id === 'session-projection' ||
     id === 'storage' ||
-    id === 'storage-json'
+    id === 'storage-json' ||
+    id === 'settings' ||
+    id === 'commands' ||
+    id === 'shortcuts' ||
+    id === 'timeout-policy' ||
+    id === 'shell-env' ||
+    id === 'approval' ||
+    id === 'agent' ||
+    id === 'system-prompt' ||
+    id === 'tools' ||
+    id === 'repeat-tool-reminder'
   ) {
     return 'ready';
   }
@@ -70,12 +120,21 @@ export function builtinRuntimeKey(id: string): BuiltinRuntimeKey {
   ) {
     return 'bash';
   }
-  if (id === 'tool-pwsh') return 'pwsh';
+  if (
+    id === 'tool-pwsh' ||
+    id === 'persistent-pwsh' ||
+    id === 'terminal-pwsh' ||
+    id === 'pwsh-sandbox'
+  )
+    return 'pwsh';
   if (
     id === 'tool-fs' ||
     id === 'tool-fs-search' ||
+    id === 'tool-skill' ||
+    id === 'skill' ||
     id === 'agent-instructions' ||
     id === 'present' ||
+    id === 'office-to-pdf' ||
     id === 'filesystem' ||
     id === 'fs-sandbox' ||
     id === 'permission' ||
@@ -120,9 +179,21 @@ export const SESSION_PLUGIN_CATALOG: BuiltinCatalogEntry[] = [
     category: '会话能力',
   },
   {
+    id: 'tool-working-directory',
+    packageName: '@deepseek-ai/dsh-tool-working-directory',
+    roleZh: '模型可查看/切换会话工作目录。',
+    category: '会话能力',
+  },
+  {
     id: 'tool-fs-search',
     packageName: '@deepseek-ai/dsh-tool-fs-search',
     roleZh: '模型可用 glob / grep 搜索工作区文件（内置 ripgrep）。',
+    category: '会话能力',
+  },
+  {
+    id: 'tool-skill',
+    packageName: '@deepseek-ai/dsh-tool-skill',
+    roleZh: '模型可按需加载工作区 SKILL.md。',
     category: '会话能力',
   },
   {
@@ -245,7 +316,7 @@ export const GLOBAL_PLUGIN_CATALOG: BuiltinCatalogEntry[] = [
   {
     id: 'session',
     packageName: '@deepseek-ai/dsh-session',
-    roleZh: '事件溯源的会话存储（dsh 会话真相源）。',
+    roleZh: '事件溯源的会话存储（会话真相源）。',
     category: '会话 / 存储',
   },
   {
@@ -311,7 +382,7 @@ export const GLOBAL_PLUGIN_CATALOG: BuiltinCatalogEntry[] = [
   {
     id: 'session-turn-outline',
     packageName: '@deepseek-ai/dsh-session-turn-outline',
-    roleZh: '回合大纲/结构。',
+    roleZh: '对话回合摘要。',
     category: '会话 / 存储',
   },
   {
@@ -342,12 +413,6 @@ export const GLOBAL_PLUGIN_CATALOG: BuiltinCatalogEntry[] = [
     id: 'command-compact',
     packageName: '@deepseek-ai/dsh-command-compact',
     roleZh: '人类手动压缩会话的 slash 命令。',
-    category: '模型面工具/命令',
-  },
-  {
-    id: 'command-feedback',
-    packageName: '@deepseek-ai/dsh-command-feedback',
-    roleZh: '人类提交反馈的 slash 命令与记录。',
     category: '模型面工具/命令',
   },
   {
@@ -685,12 +750,6 @@ export const GLOBAL_PLUGIN_CATALOG: BuiltinCatalogEntry[] = [
     packageName: '@deepseek-ai/dsh-web-fetch-http',
     roleZh: '通用 HTTP 抓取网页正文 provider。',
     category: '网页能力',
-  },
-  {
-    id: 'message-feedback',
-    packageName: '@deepseek-ai/dsh-message-feedback',
-    roleZh: '消息反馈采集。',
-    category: '遥测 / 反馈',
   },
   {
     id: 'goal',

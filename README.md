@@ -1,6 +1,6 @@
 # TestBench
 
-面向测试工程师的纯静态个人工作台：AI 对话、功能测试用例生成、模板库、知识库。
+面向测试工程师的AI个人工作台：AI 对话、功能测试用例生成、模板库、知识库。
 
 仓库：[yychuiyan/ai-testbench](https://github.com/yychuiyan/ai-testbench) · npm：[ai-testbench](https://www.npmjs.com/package/ai-testbench) · [变更日志](./CHANGELOG.md)
 
@@ -24,7 +24,7 @@
 
 适合日常使用：安装包后直接起本地服务，读写知识库 / 用例 / 提示词 / 记忆。数据默认落在**当前目录**，启动时可改。
 
-1. 安装：
+1、 安装：
 
 ```bash
 npx ai-testbench
@@ -32,7 +32,7 @@ npx ai-testbench
 npm i -g ai-testbench
 ```
 
-2. 启动（全局安装后）：
+2、 启动（全局安装后）：
 
 ```bash
 ai-testbench              # 交互选择数据目录
@@ -41,20 +41,20 @@ ai-testbench --dir ~/qa   # 指定数据目录
 ai-testbench --pick       # 系统文件夹选择器
 ```
 
-3. 按终端提示打开浏览器即可使用。
+3、 按终端提示打开浏览器即可使用。
 
 ### 方式二：源码启动
 
 适合改代码或二次开发。先克隆本仓库，再安装依赖。
 
-1. 开发模式（热更新，含本地落盘 API）：
+1、开发模式（热更新，含本地落盘 API）：
 
 ```bash
 npm install
 npm run dev
 ```
 
-2. 或先构建再起一体服务（与方式一体验接近，数据目录为当前仓库根）：
+2、 或先构建再起一体服务（与方式一体验接近，数据目录为当前仓库根）：
 
 ```bash
 npm install
@@ -62,28 +62,11 @@ npm run build
 npm start
 ```
 
-3. 仅预览静态页（无本地落盘，与 GitHub Pages 类似）：
+3、 仅预览静态页（无本地落盘）：
 
 ```bash
 npm run preview
 ```
-
-## 开发约定
-
-```bash
-npm run lint          # ESLint（src）
-npm run format        # Prettier 写回
-npm run format:check  # Prettier 检查
-```
-
-- **提交信息**：Conventional Commits（见 `.cursor/rules/git-commit.mdc`），如 `feat(nav): …` / `fix(memory): …`。
-- **pre-commit**：`simple-git-hooks` + `lint-staged` 会对暂存的 `src` 文件跑 Prettier，并对 `.ts/.tsx` 跑 ESLint。
-- **ESLint / Prettier**：建议保留。本仓库已接入；门禁偏轻量，避免历史代码一次炸满，后续可逐步收紧规则。
-
-## 技术栈
-
-Astro 5（静态输出 + Content Collections）· React 19（交互岛）· Tailwind CSS v4 · SheetJS · GitHub Actions（`withastro/action`）
-
 
 ## 许可证
 

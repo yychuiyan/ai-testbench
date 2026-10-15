@@ -1,8 +1,6 @@
 # 版本日志
 
-问题与建议 [去反馈](https://docs.yychuiyan.com/friends/apply/)
-
-### 本地安装与使用
+### 本地一键部署
 
 要求本地已安装 [Node.js](https://nodejs.org/)（建议 20+）。任选其一：
 
@@ -18,69 +16,78 @@ ai-testbench -y          # 数据目录用当前目录
 
 浏览器打开终端提示的地址（默认 `http://127.0.0.1:4321/`），在侧栏「设置」里配置模型（BYOK）即可。更完整的说明见 [操作手册](https://github.com/yychuiyan/ai-testbench/blob/main/docs/操作手册.md) 。
 
+## [0.1.1] - 2026-10-15
+
+工作台体验与稳定性小版本。
+
+### 变更
+
+- 空会话居中欢迎（标语「让测试更高效」）；无消息时隐藏标题与「对话 / 回合 / 记忆」Tab
+- 「回合」Tab：「从此处继续」截断到该轮并自动续写；页面边距与对话区对齐
+- 输入区随屏宽适配（最大约 1024px），默认高度与自动长高上限加大；左右边距加大
+- 生成类抽屉：类型/分类删除改为行内二次确认
+- 思考模式多轮回传 `reasoning_content`，避免工具续轮 HTTP 400
+- 插件规格 / 操作手册同步更新；npm 补充中英文 keywords
+
 ## [0.1.0] - 2026-10-14
 
-初版发布：面向测试工程师的纯静态个人工作台（Astro + React + Tailwind），支持本地一体服务与 GitHub Pages 演示。
+测试工程师的专属 AI 工作台，支持本地一键部署。
 
 ### 新增
 
 #### 分发与部署
 
 - npm 一体服务：`npx ai-testbench` / 全局命令 `ai-testbench`（`-y` / `--dir` / `--pick` 选择数据目录）
-- 源码开发：`npm run dev`（含本地落盘 API）、`npm start`、静态 `preview`
+- 源码开发：`npm run dev`（含本地落盘 API，固定 `127.0.0.1:4321`）、`npm start`、静态 `preview`
+- CLI：`ask`（可 `--tools`）、`rpc`（stdio JSON-RPC）、`acp`（轻量 ACP 子集）
 - GitHub Pages 静态部署（`withastro/action`）
-- 操作手册：`docs/操作手册.md`
+- 操作手册：`docs/操作手册.md`；规格：`docs/会话插件.md`、`docs/全局插件.md`
 
 #### 我的工作台
 
-- BYOK 直连 OpenAI 兼容接口（DeepSeek / 通义千问 / OpenAI / 自定义）；Key 仅存本机 localStorage
-- 流式对话、思考过程摘要、用量展示；模型与 reasoning effort 选择
-- 访问权限：仅可查看 / 工作区内修改 / 完全权限；本地文件工具 `fs_*`
-- 附件：合并「添加文件」（多格式、体积上限，含 Excel / Word 解析）；粘贴图片
-- 斜杠与引用：`/` 调用插件能力，`@` 引用知识库 / 模板等文档
-- 多会话侧栏：置顶、重命名、归档、软删除与恢复；空会话可自动清理
-- 多工作区（dsh 风格）：侧栏文件夹树挂会话；输入栏工作区下拉切换 / 添加本地文件夹；项目根工作区不可删除；无归属会话归入项目根展示
-- DeepSeek DSML 工具调用解析加固（含双竖线形态），避免原始标签泄漏到界面
+- BYOK 直连 OpenAI 兼容接口（DeepSeek / 通义千问 / OpenAI / 自定义）；Key 仅存本机
+- 流式对话；思索 UI：`思考中…` / `正在分析请求` / `思考完成`（时间线展开时标题不再重复摘要）
+- 对话时间线：思考 / 工具步骤折叠展示；会话统计（模型用时、工具用时、TTFT、TPS）
+- 用量展示；模型与 reasoning effort；LLM 自动重试（429/5xx/网络，最多 3 次）
+- 访问权限：仅可查看 / 工作区内修改 / 完全权限
+- 附件：添加文件（多格式含 Excel / Word）；粘贴图片；粘贴本地文件/路径 → 路径引用或附件卡片
+- 斜杠与引用：`/` 插件、`@` 引用知识库 / 模板 / 工作区文档；输入栏「+」添加面板
+- 多会话侧栏：置顶、重命名、归档、软删除、导出会话 JSON；空会话（无消息）切换时丢弃；LLM 短标题
+- 多工作区：侧栏文件夹树；输入栏切换 / 添加本地文件夹
+- 服务端会话回合 `/__tb_sessions/runs`：刷新/切页可重连；手动停止展示「已停止」
+- DeepSeek DSML 工具调用解析加固，避免标签泄漏
+- 「回合」Tab：轮次大纲
+- 会话搜索（含 sqlite 同步查询）
+- 「在会话中打开」（用例 / 提示词 / 知识库）：新建会话并挂路径卡片（不预填正文）
 
 #### 内容库（磁盘英文目录 + 界面中文）
 
-- 用例管理（`cases/`）：列表、结构化表格、导出 Excel / CSV / Markdown
-- 知识库（`knowledge/`）：规范 / 方法论 / 环境约定；列表管理与创建
-- 提示词管理（`prompts/`）
-- 测试模板库（`templates/`）：功能 / 接口 / 性能用例与报告；`.md` 预览，`.xlsx` / `.docx` 上架下载
-- 需求文档库（`requirements/`）
+- 用例管理（`cases/`）：根与子目录文件平铺列表；双击打开、批量删除、「在会话中打开」
+- 知识库（`knowledge/`）、提示词管理（`prompts/`）
+- 需求文档库（`requirements/`）：存放需求，供生成用例引用对照
+- 测试模板库（`templates/`）：测试方案 / 用例 / 报告等模板复用
 
-#### 插件库
+#### 插件与本地能力
 
-- 内置能力开关（状态存本机）：生成测试用例、生成提示词、生成知识库、知识库检索、会话记忆（扩展插件）
-- 我的插件三分类：会话默认（24）/ 全局默认（111）/ 扩展（可开关）；未落地项标「规划中」
-- 网页搜索已升格为会话默认（对齐 dsh `tool-web`）：`web_search` / `web_fetch`（经 `/__tb_web`，需一体服务）
-- 会话默认注入类能力：`agent-instructions`（加载 AGENTS.md/CLAUDE.md）、`time-context`（时钟节流注入）、`present`（交付文件卡片 + `/__tb_fs/open`）
-- 会话 `tool-fs-search`：`fs_glob` / `fs_grep`（`/__tb_fs/glob|grep`，优先本机 ripgrep）
-- 会话交互：`todo_write`（会话待办清单）/ `ask_user_question`（结构化提问并等待回答）
-- 会话内置 Runner 迁至 `builtin/session/`（`tb-fs` / `tb-web`）；`tb-plugins/` 仅保留扩展与基建
-- 会话 `tool-bash`：同步执行（`/__tb_bash`）；`background` + `tool-jobs`（list/output/kill）
-- 会话 `tool-pwsh`：`/__tb_pwsh`，与 bash 共用 jobs（需本机安装 PowerShell）
-- 会话 `plan-mode`：探查门闩 + `submit_plan`；入口在输入栏「添加」菜单
-- 插件页双列卡片：顶对齐，避免展开一张时邻卡被撑高「假打开」
-- 恢复思索 UI：`思考中…` / `思考完成`（不再用灰底「已完成，用时」摘要条）
-- 会话 `tool-result-pruner`：过长工具返回头尾保留，写入 tools loop 前裁剪
-- 会话 `compaction-basic` / `command-compact`：自动阈值压缩 + `/compact`
-- 会话 `tool-goal` / `command-goal`：目标工具 + `/goal` 命令
-- 会话 `tool-schedule`：定时提醒 create/list/update/cancel；页面打开时投递回原会话
-- 会话 `tool-subagent*`：`spawn_subagent` / `fork_subagent` / `list_agents` / await·abort（进程内同模型）
-- 会话 `tool-workflow` / `workflow-ptc`：`workflow` 编排脚本 + 浏览器引擎（agent/parallel/pipeline）
-- 软沙箱 `sandbox-policy`：bash/pwsh 命令黑名单 + 精简 env（非 OS 隔离）
-- 持久 bash：`bash_session_*`（`node-pty` optional，失败则管道 marker 回退）
-- 全局插件目录：把已有会话/存储/LLM/网页等映射标为已就绪或部分就绪
-- 规格文档：`docs/会话插件.md`、`docs/全局插件.md`
-- 对话时间线：思考 / 工具步骤（搜索、获取、本地文件等）折叠展示
-- 插件管理页：按诉求推荐扩展能力（结果缓存本机）
-- 会话记忆：五轨 md（user / memory / key + project / daily）、待确认队列；`.local/memories/`（本地服务）
+- 我的插件：会话默认 / 全局默认 / 扩展（可开关）；网页搜索为会话默认（`web_search` / `web_fetch`）
+- 扩展：生成测试用例、生成提示词、生成知识库、知识库检索、会话记忆
+- 本地工具：`fs_*`、`fs_glob` / `fs_grep`、bash / pwsh（含 session 与 jobs）、`present`、office→pdf（有 LibreOffice 时）
+- 注入：`agent-instructions`（AGENTS.md / CLAUDE.md）、`time-context`
+- 交互：`todo_write`、`ask_user_question`、`plan-mode` / `submit_plan`
+- 目标 / 定时 / 子代理 / workflow；软沙箱；spill 超大结果落盘；skill 加载
+- 工作区变更追踪、依赖探测、子代理模型可选
+
+#### 会话记忆
+
+- 存储：`.local/memories/`（USER / MEMORY / KEY / project / daily + SUGGESTIONS）
+- 工作台「记忆」Tab：指南、待确认记忆建议（角标）、项目日志、项目关键记忆 KEY.md、长期记忆 MEMORY.md、全局规则（文件卡片本地打开）、归档、设置
+- 重要写入经待确认采纳后注入；项目日志可直写不注入
 
 #### 工程与质量
 
-- ESLint（`src`）+ Prettier；`simple-git-hooks` + `lint-staged` 提交前检查
-- 轻量自测：`npm test`（含 DSML 解析等）
+- ESLint（`src`）+ Prettier；`simple-git-hooks` + `lint-staged`
+- 轻量自测：`npm test`
+- 开发服忽略打开内容库目录与 `.local/**` 导致的整页热更新
 
+[0.1.1]: https://www.npmjs.com/package/ai-testbench/v/0.1.1
 [0.1.0]: https://www.npmjs.com/package/ai-testbench/v/0.1.0

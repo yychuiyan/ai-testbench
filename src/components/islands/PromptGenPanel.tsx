@@ -31,6 +31,8 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
   const [error, setError] = useState<string | null>(null);
   const [kindEditor, setKindEditor] = useState<'add' | 'edit' | null>(null);
   const [kindDraft, setKindDraft] = useState('');
+  /** 行内二次确认删除类型 */
+  const [deleteKindPending, setDeleteKindPending] = useState(false);
 
   const activeKind = kinds.find((k) => k.id === kind) ?? kinds[0] ?? promptKindMeta(kind);
 
@@ -68,6 +70,7 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
     setKind(initial?.kind ?? listPromptKinds()[0]?.id ?? 'case');
     setKindEditor(null);
     setKindDraft('');
+    setDeleteKindPending(false);
     setError(null);
     void fetchDocsHealth('prompts').then(setDocsLive);
   }, [open, initial]);
@@ -110,7 +113,7 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
             onClick={confirm}
             className="flex-1 h-9 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
           >
-            确认使用
+            确认
           </button>
         </footer>
       }
@@ -122,7 +125,7 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
       ) : null}
 
       <p className="text-xs text-stone-500 leading-5">
-        确认后在主输入框描述需求并发送；模型输出经质检通过后自动写入提示词库，可在「提示词管理」中查看。
+        按所选类型生成可复用提示词：确认后在主输入框描述编写要求并发送，质检通过后写入提示词库，可在「提示词管理」中查看与引用。
       </p>
 
       {error ? (
@@ -141,6 +144,7 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
               setKindEditor('add');
               setKindDraft('');
               setError(null);
+              setDeleteKindPending(false);
             }}
           >
             新增
@@ -152,35 +156,64 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
               setKindEditor('edit');
               setKindDraft(activeKind.label);
               setError(null);
+              setDeleteKindPending(false);
             }}
           >
             编辑
           </button>
-          <button
-            type="button"
-            className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
-            disabled={kinds.length <= 1}
-            onClick={() => {
-              try {
-                const next = removePromptKind(kind);
-                setKinds(next);
-                setKind(next[0]?.id ?? '');
+          {deleteKindPending ? (
+            <>
+              <span className="text-[11px] text-stone-500 shrink-0">确认删除？</span>
+              <button
+                type="button"
+                className="text-[11px] text-red-600 hover:underline shrink-0"
+                onClick={() => {
+                  setDeleteKindPending(false);
+                  try {
+                    const next = removePromptKind(kind);
+                    setKinds(next);
+                    setKind(next[0]?.id ?? '');
+                    setKindEditor(null);
+                    setError(null);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                确认
+              </button>
+              <button
+                type="button"
+                className="text-[11px] text-stone-500 hover:underline shrink-0"
+                onClick={() => setDeleteKindPending(false)}
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
+              disabled={kinds.length <= 1}
+              onClick={() => {
                 setKindEditor(null);
+                setDeleteKindPending(true);
                 setError(null);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            删除
-          </button>
+              }}
+            >
+              删除
+            </button>
+          )}
         </div>
         <SelectDropdown
           options={kinds.map((o) => ({ value: o.id, label: o.label }))}
           value={kind}
-          onChange={setKind}
+          onChange={(v) => {
+            setKind(v);
+            setDeleteKindPending(false);
+          }}
         />
-        <p className="mt-1 text-[11px] text-stone-400 leading-4">{activeKind.hint}</p>
+        <p className="mt-1 text-[11px] text-stone-400 leading-4 break-words">{activeKind.hint}</p>
         {kindEditor ? (
           <div className="mt-2 rounded-lg border border-stone-200 bg-stone-50 p-2 space-y-2">
             <label className="text-[11px] text-stone-500" htmlFor="pg-kind-draft">
@@ -224,17 +257,17 @@ export default function PromptGenPanel({ open, onClose, initial, onConfirm }: Pr
 
       <div>
         <label className="text-xs font-medium text-stone-500" htmlFor="pg-title">
-          期望名称（可选）
+          期望名称
         </label>
         <input
           id="pg-title"
           value={titleHint}
           onChange={(e) => setTitleHint(e.target.value)}
-          placeholder="如：接口测试用例提示词v1.0"
+          placeholder="如：接口测试用例提示词.md"
           className="mt-1 w-full h-9 px-3 text-sm rounded-lg border border-stone-200 focus:outline-none focus:ring-2 focus:ring-[#4176e6]/40"
         />
         <p className="mt-1.5 text-[11px] text-stone-400 leading-4">
-          具体编写要求在主输入框描述即可。
+          可填期望文件名；留空则由模型自拟。具体编写要求在主输入框描述。
         </p>
       </div>
     </SlideOverDrawer>

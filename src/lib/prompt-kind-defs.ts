@@ -14,12 +14,12 @@ export const DEFAULT_PROMPT_KINDS: PromptKindDef[] = [
   {
     id: 'case',
     label: '用例生成提示词',
-    hint: '生成「测试用例生成」类提示词：指导模型按需求与模板输出可入库用例；须约束输出 JSON 结构、字段对齐模板、步骤换行、覆盖策略等；不要限定固定用例条数。',
+    hint: '用于编写「用例生成」提示词：指导模型按需求与模板输出可入库用例；须约束 JSON 结构、字段对齐模板、步骤换行与覆盖策略，不要限定固定用例条数。',
   },
   {
     id: 'general',
     label: '通用提示词',
-    hint: '生成通用测试/工作台提示词：角色、输出风格、约束清晰，可直接作为系统或任务提示词使用。',
+    hint: '用于编写通用测试/工作台提示词：角色、输出风格与约束清晰，可直接作为系统或任务提示词使用。',
   },
 ];
 
@@ -38,8 +38,12 @@ export function normalizePromptKindDef(raw: unknown): PromptKindDef | null {
   const label = String(o.label ?? '').trim();
   if (!label) return null;
   const id = String(o.id ?? '').trim() || uid();
-  const hint =
+  let hint =
     typeof o.hint === 'string' && o.hint.trim() ? o.hint.trim() : defaultHintForLabel(label);
+  // 纠正常见旧文案：标签为「用例生成提示词」却写成「测试用例生成」
+  if (id === 'case' && hint.includes('「测试用例生成」')) {
+    hint = DEFAULT_PROMPT_KINDS[0]!.hint;
+  }
   return { id, label, hint };
 }
 

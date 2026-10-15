@@ -9,11 +9,8 @@ import {
   openDocsFile,
   type DocsEntry,
 } from '../../lib/project-docs';
-import {
-  findChatSessionByDocsPath,
-  hydrateSessionStore,
-  loadSessionStore,
-} from '../../lib/sessions';
+import { openDocsInChatSession } from '../../lib/open-docs-in-session';
+import { hydrateSessionStore } from '../../lib/sessions';
 import ConfirmDialog from './ConfirmDialog';
 
 function fmtSize(n?: number) {
@@ -83,28 +80,12 @@ export default function PromptsLibrary() {
   }
 
   async function openInSession(entry: DocsEntry) {
-    const base = import.meta.env.BASE_URL || '/';
     setBusy(true);
     setError(null);
     try {
-      await hydrateSessionStore().catch(() => null);
-      const store = loadSessionStore();
-      const chat = findChatSessionByDocsPath(store, 'prompts', entry.path);
-      if (chat) {
-        const q = new URLSearchParams({
-          session: chat.id,
-          focusRoot: 'prompts',
-          focusPath: entry.path,
-        });
-        window.location.href = `${base}?${q.toString()}`;
-        return;
-      }
-      setError(
-        '未找到关联的工作台会话。请在「我的工作台」用「生成提示词」插件生成并入库后，再从此处跳转。',
-      );
+      await openDocsInChatSession('prompts', entry);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setBusy(false);
     }
   }

@@ -1,10 +1,11 @@
 /**
- * 会话定时提醒（tool-schedule MVP）：
- * 浏览器内调度；页面打开时轮询投递回原会话。
- * 存 localStorage（非 Cordis）。
+ * 会话定时提醒（tool-schedule）：
+ * - 优先主机 `/__tb_schedule`（落盘 + 服务 tick 投递会话）
+ * - 无本地服务时回退 localStorage（仅页面打开时投递）
  */
 
 const STORE_KEY = 'tw-session-schedules';
+const API = '/__tb_schedule';
 
 export type ScheduleStatus = 'scheduled' | 'delivered' | 'cancelled';
 
@@ -19,12 +20,12 @@ export interface ScheduledReminder {
 }
 
 export const SCHEDULE_SYSTEM_HINT =
-  '你可以使用定时提醒工具（页面打开时才会到点投递）：\n' +
+  '你可以使用定时提醒工具：\n' +
   '- schedule_create：创建提醒（text + dueAt ISO 或 delayMinutes）\n' +
   '- schedule_list：列出本会话未取消的提醒\n' +
   '- schedule_update：修改 text / dueAt\n' +
   '- schedule_cancel：取消提醒\n' +
-  '到点后会在原会话插入一条提醒消息。';
+  '本地服务在线时提醒落盘并由主机到点写入原会话；否则仅页面打开时投递。';
 
 export const SCHEDULE_TOOLS = [
   {
@@ -93,6 +94,28 @@ export const SCHEDULE_TOOLS = [
 
 function uid(): string {
   return `sch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+let hostAvailable: boolean | null = null;
+
+export async function probeScheduleHost(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) {
+      hostAvailable = false;
+      return false;
+    }
+    const data = (await res.json()) as { ok?: boolean };
+    hostAvailable = Boolean(data.ok);
+    return hostAvailable;
+  } catch {
+    hostAvailable = false;
+    return false;
+  }
+}
+
+export function isScheduleHostCached(): boolean | null {
+  return hostAvailable;
 }
 
 export function loadSchedules(): ScheduledReminder[] {
@@ -232,7 +255,7 @@ export function cancelSchedule(
   return { ok: true, reminder };
 }
 
-/** 取出所有已到期且仍 scheduled 的提醒，并标记 delivered */
+/** 取出所有已到期且仍 scheduled 的提醒，并标记 delivered（localStorage） */
 export function claimDueSchedules(now = Date.now()): ScheduledReminder[] {
   const list = loadSchedules();
   const due: ScheduledReminder[] = [];
@@ -255,6 +278,56 @@ export function formatReminderShort(r: ScheduledReminder): string {
   return `${r.id} · ${r.status} · ${when} · ${r.text}`;
 }
 
+export function reminderMessageContent(text: string, scheduleId: string): string {
+  return `⏰ 定时提醒：${text}\n<!--tb-schedule:${scheduleId}-->`;
+}
+
+async function hostPost(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** 优先主机 claim（会写入 sessions.json）；失败则 localStorage */
+export async function claimDueSchedulesAsync(): Promise<ScheduledReminder[]> {
+  if (hostAvailable !== false) {
+    const data = await hostPost('/claim', {});
+    if (data && data.ok) {
+      hostAvailable = true;
+      const list = Array.isArray(data.reminders)
+        ? data.reminders.map(normalizeReminder).filter((x): x is ScheduledReminder => Boolean(x))
+        : [];
+      return list;
+    }
+    if (hostAvailable === true) {
+      // 曾可用但本次失败：仍尝试本地补投
+      return claimDueSchedules();
+    }
+    await probeScheduleHost();
+    if (hostAvailable) {
+      const retry = await hostPost('/claim', {});
+      if (retry && retry.ok && Array.isArray(retry.reminders)) {
+        return retry.reminders
+          .map(normalizeReminder)
+          .filter((x): x is ScheduledReminder => Boolean(x));
+      }
+    }
+  }
+  return claimDueSchedules();
+}
+
 export async function runScheduleTool(
   name: string,
   argsJson: string,
@@ -266,6 +339,37 @@ export async function runScheduleTool(
   } catch {
     return JSON.stringify({ error: 'invalid JSON arguments' });
   }
+
+  const useHost = hostAvailable ?? (await probeScheduleHost());
+
+  if (useHost) {
+    if (name === 'schedule_create') {
+      const data = await hostPost('/create', { ...args, sessionId });
+      if (data) return JSON.stringify(data, null, 2);
+    } else if (name === 'schedule_list') {
+      try {
+        const q = new URLSearchParams({
+          sessionId,
+          includeDelivered: args.includeDelivered ? '1' : '0',
+        });
+        const res = await fetch(`${API}/list?${q}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) return JSON.stringify(await res.json(), null, 2);
+      } catch {
+        // fall through
+      }
+    } else if (name === 'schedule_update') {
+      const data = await hostPost('/update', { ...args, sessionId });
+      if (data) return JSON.stringify(data, null, 2);
+    } else if (name === 'schedule_cancel') {
+      const data = await hostPost('/cancel', { id: args.id, sessionId });
+      if (data) return JSON.stringify(data, null, 2);
+    } else {
+      return JSON.stringify({ error: `unknown tool: ${name}` });
+    }
+    // host 失败则回退本地
+    hostAvailable = false;
+  }
+
   if (name === 'schedule_create') {
     return JSON.stringify(createSchedule(sessionId, args), null, 2);
   }

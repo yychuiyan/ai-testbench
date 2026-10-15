@@ -1,9 +1,19 @@
 {
   "name": "ai-testbench",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "type": "module",
   "description": "TestBench",
+  "keywords": [
+    "ai",
+    "testbench",
+    "qa",
+    "测试",
+    "测试工作台",
+    "测试用例",
+    "知识库",
+    "用例生成"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yychuiyan/ai-testbench.git"
@@ -27,7 +37,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "astro dev",
+    "dev": "astro dev --host 127.0.0.1 --port 4321",
     "build": "astro build",
     "preview": "astro preview",
     "start": "node cli/ai-testbench.mjs -y",

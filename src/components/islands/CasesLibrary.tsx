@@ -7,11 +7,8 @@ import {
   openDocsFile,
   type DocsEntry,
 } from '../../lib/project-docs';
-import {
-  findChatSessionByCasePath,
-  hydrateSessionStore,
-  loadSessionStore,
-} from '../../lib/sessions';
+import { openDocsInChatSession } from '../../lib/open-docs-in-session';
+import { hydrateSessionStore } from '../../lib/sessions';
 import ConfirmDialog from './ConfirmDialog';
 
 function fmtSize(n?: number) {
@@ -129,28 +126,12 @@ export default function CasesLibrary() {
         : '';
 
   async function openInSession(entry: DocsEntry) {
-    const base = import.meta.env.BASE_URL || '/';
     setBusy(true);
     setError(null);
     try {
-      await hydrateSessionStore().catch(() => null);
-      const store = loadSessionStore();
-      const chat = findChatSessionByCasePath(store, entry.path);
-      if (chat) {
-        const q = new URLSearchParams({
-          session: chat.id,
-          focusRoot: 'cases',
-          focusPath: entry.path,
-        });
-        window.location.href = `${base}?${q.toString()}`;
-        return;
-      }
-      setError(
-        '未找到关联的工作台会话。请在「我的工作台」用「生成测试用例」插件生成并入库后，再从此处跳转。',
-      );
+      await openDocsInChatSession('cases', entry);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setBusy(false);
     }
   }
@@ -185,17 +166,20 @@ export default function CasesLibrary() {
 
   return (
     <div className="rounded-xl border border-stone-200 bg-white min-h-[520px] flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-stone-100 flex items-center gap-3 flex-wrap">
-        <span className="text-sm text-stone-500 flex-1 min-w-0">
-          {docRootLabelPath('cases')} 平铺 · 共 {files.length} 个文件
-        </span>
+      <div className="px-4 py-3 border-b border-stone-100 flex items-center gap-2 flex-wrap">
+        <div className="text-sm text-stone-600 flex-1 min-w-0">
+          共 <span className="font-medium text-stone-800">{files.length}</span> 个文件
+          {selectedPaths.length > 0 ? (
+            <span className="text-stone-400"> · 已选 {selectedPaths.length}</span>
+          ) : null}
+        </div>
         <button
           type="button"
           disabled={busy || selectedPaths.length === 0}
           onClick={() => setDeleteTarget({ kind: 'batch', paths: selectedPaths })}
-          className="h-8 px-3 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-40"
+          className="h-8 px-3 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-40"
         >
-          批量删除{selectedPaths.length ? `（${selectedPaths.length}）` : ''}
+          批量删除
         </button>
       </div>
 

@@ -30,6 +30,7 @@ export interface WorkspaceInfo {
 export const FS_SYSTEM_HINT =
   '你可以使用本地文件工具（侧栏工作区已连接时）：\n' +
   '- 侧栏「工作区」决定当前目录；fs_* 默认相对该工作区\n' +
+  '- working_directory_get / working_directory_set：查看或切换当前工作区（已注册列表内）\n' +
   '- 「仅可查看」「工作区内修改」：用工作区相对路径\n' +
   '- 「完全权限」：还可用本机绝对路径\n' +
   '- 找文件用 fs_glob（如 **/*.ts）；搜内容用 fs_grep（正则）\n' +
@@ -37,12 +38,41 @@ export const FS_SYSTEM_HINT =
   '- 改文件前确认意图；勿动 .git\n' +
   '- 向用户交付已写好的工作区文件时，调用 present（勿只在正文里报路径）';
 
+export const WORKING_DIRECTORY_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'working_directory_get',
+      description: 'Get the current workspace path and list registered workspaces.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'working_directory_set',
+      description:
+        'Switch the active workspace to a registered path or id (must already be in the workspace list).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Absolute path of a registered workspace, or project-root-relative hint',
+          },
+          id: { type: 'string', description: 'Workspace item id from working_directory_get' },
+        },
+      },
+    },
+  },
+];
+
 export const AGENT_INSTRUCTIONS_HINT_PREFIX =
   '【工作区指令 agent-instructions】下列内容来自 AGENTS.md / CLAUDE.md（及 .local 覆盖），供你遵循：';
 
 export interface AgentInstructionsResult {
   text: string;
-  files: Array<{ path: string; name: string }>;
+  files: Array<{ path: string; name: string; abs?: string; label?: string }>;
 }
 
 /** 拉取工作区 AGENTS.md 链；失败或空则返回 null（不打断发送） */
@@ -52,11 +82,12 @@ export async function fetchAgentInstructions(): Promise<AgentInstructionsResult 
     if (!res.ok) return null;
     const data = (await res.json()) as {
       text?: string;
-      files?: Array<{ path: string; name: string }>;
+      files?: Array<{ path: string; name: string; abs?: string; label?: string }>;
     };
     const text = typeof data.text === 'string' ? data.text.trim() : '';
-    if (!text) return null;
-    return { text, files: Array.isArray(data.files) ? data.files : [] };
+    const files = Array.isArray(data.files) ? data.files : [];
+    if (!text && !files.length) return null;
+    return { text, files };
   } catch {
     return null;
   }
@@ -85,7 +116,8 @@ export const PRESENT_TOOL = {
             properties: {
               path: {
                 type: 'string',
-                description: 'Path of an existing regular file (relative to workspace or absolute when allowed).',
+                description:
+                  'Path of an existing regular file (relative to workspace or absolute when allowed).',
               },
               description: {
                 type: 'string',
@@ -142,9 +174,17 @@ export async function runPresentTool(argsJson: string, access: AccessLevel): Pro
   return JSON.stringify({ ok: true, files: out, errors: errors.length ? errors : undefined });
 }
 
-/** 用系统默认应用打开工作区文件 */
-export async function openFsPath(filePath: string, access: AccessLevel): Promise<void> {
-  await postJson('/open', { path: filePath, access });
+/** 用系统默认应用打开工作区文件；可附带 abs 兜底（全局规则等跨根路径） */
+export async function openFsPath(
+  filePath: string,
+  access: AccessLevel,
+  opts?: { abs?: string },
+): Promise<void> {
+  await postJson('/open', {
+    path: filePath,
+    access,
+    ...(opts?.abs ? { abs: opts.abs } : {}),
+  });
 }
 
 export const FS_TOOLS_READONLY = [
@@ -333,6 +373,105 @@ export async function pickDirectory(): Promise<string | null> {
 /** @deprecated 用 selectWorkspace / addWorkspace */
 export async function setWorkspace(path: string): Promise<WorkspaceInfo> {
   return selectWorkspace(path);
+}
+
+function publicWorkspaceSnapshot(info: WorkspaceInfo) {
+  return {
+    ok: true,
+    workspace: info.workspace,
+    projectRoot: info.projectRoot,
+    isProject: Boolean(info.isProject),
+    items: (info.items ?? []).map((it) => ({
+      id: it.id,
+      name: it.name,
+      path: it.path,
+      active: it.path === info.workspace,
+    })),
+  };
+}
+
+/**
+ * tool-working-directory：get / set 当前工作区。
+ * set 仅允许切换到已注册 items（或 projectRoot），不在此新增任意路径。
+ */
+export async function runWorkingDirectoryTool(
+  name: string,
+  argsJson: string,
+): Promise<{ text: string; info?: WorkspaceInfo }> {
+  if (name === 'working_directory_get') {
+    const info = await fetchWorkspace();
+    if (!info) {
+      return {
+        text: JSON.stringify({ ok: false, error: 'workspace unavailable (need local fs service)' }),
+      };
+    }
+    return { text: JSON.stringify(publicWorkspaceSnapshot(info), null, 2), info };
+  }
+  if (name === 'working_directory_set') {
+    let args: { path?: unknown; id?: unknown } = {};
+    try {
+      args = JSON.parse(argsJson || '{}') as typeof args;
+    } catch {
+      return { text: JSON.stringify({ error: 'invalid JSON arguments' }) };
+    }
+    const cur = await fetchWorkspace();
+    if (!cur) {
+      return {
+        text: JSON.stringify({ ok: false, error: 'workspace unavailable (need local fs service)' }),
+      };
+    }
+    const id = String(args.id ?? '').trim();
+    const pathRaw = String(args.path ?? '').trim();
+    let target: string | null = null;
+    if (id) {
+      const hit = cur.items.find((it) => it.id === id);
+      if (!hit) {
+        return {
+          text: JSON.stringify({
+            ok: false,
+            error: `workspace id not found: ${id}`,
+            items: cur.items.map((it) => ({ id: it.id, name: it.name, path: it.path })),
+          }),
+        };
+      }
+      target = hit.path;
+    } else if (pathRaw) {
+      const norm = pathRaw.replace(/\\/g, '/');
+      const hit =
+        cur.items.find((it) => it.path === pathRaw || it.path.replace(/\\/g, '/') === norm) ||
+        cur.items.find((it) => it.name === pathRaw) ||
+        (cur.projectRoot === pathRaw || cur.projectRoot?.replace(/\\/g, '/') === norm
+          ? { path: cur.projectRoot }
+          : null);
+      if (!hit?.path) {
+        return {
+          text: JSON.stringify({
+            ok: false,
+            error: 'path must match a registered workspace; use working_directory_get first',
+            items: cur.items.map((it) => ({ id: it.id, name: it.name, path: it.path })),
+          }),
+        };
+      }
+      target = hit.path;
+    } else {
+      return { text: JSON.stringify({ ok: false, error: 'path or id is required' }) };
+    }
+    try {
+      const info = await selectWorkspace(target);
+      return {
+        text: JSON.stringify({ ...publicWorkspaceSnapshot(info), switched: true }, null, 2),
+        info,
+      };
+    } catch (e) {
+      return {
+        text: JSON.stringify({
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      };
+    }
+  }
+  return { text: JSON.stringify({ error: `unknown tool: ${name}` }) };
 }
 
 async function mutateWorkspace(body: Record<string, string>): Promise<WorkspaceInfo> {

@@ -1,9 +1,11 @@
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -34,17 +36,52 @@ import {
   streamChatWithTools,
   fetchModels,
   MODEL_CONTEXT_WINDOW,
+  sanitizeAssistantContent,
   type ChatMessage,
   type ContentPart,
   type ToolDef,
   type UsageInfo,
 } from '../../lib/llm';
+import {
+  getSessionRun,
+  listSessionRuns,
+  sessionRunsAvailable,
+  startSessionRun,
+  stopSessionRun,
+  watchSessionRun,
+  type ServerRunEvent,
+} from '../../lib/session-runs-client';
+import {
+  firstUserText,
+  generateSessionTitleLlm,
+  shouldGenerateLlmTitle,
+} from '../../lib/session-title-llm';
+import { computeSessionStats, formatSessionStats } from '../../lib/session-stats';
+import { getCachedProjection } from '../../lib/session-projection-cache';
+import {
+  appendDeepseekSessionLogClient,
+  buildDeepseekTurnMessages,
+} from '../../lib/session-log-deepseek';
+import { buildTurnOutline } from '../../lib/session-turn-outline';
+import { resolveSubagentSettings } from '../../lib/subagent-model';
+import {
+  OFFICE_TO_PDF_HINT,
+  OFFICE_TO_PDF_TOOL,
+  runOfficeToPdfTool,
+} from '../../lib/office-to-pdf-tools';
+import {
+  WORKSPACE_DEPS_HINT,
+  WORKSPACE_DEPS_TOOL,
+  runWorkspaceDepsTool,
+} from '../../lib/workspace-deps-tools';
+import { offloadStaleImages } from '../../lib/image-offload';
 import { renderMarkdown } from '../../lib/markdown-client';
 import {
   archiveSession,
   bindSessionWorkspace,
   createSession,
   deleteSession,
+  flushSessionStore,
   hydrateSessionStore,
   isEphemeralEmptySession,
   loadRailOpen,
@@ -56,11 +93,18 @@ import {
   switchSession,
   unbindSessionsFromWorkspace,
   appendSessionMessage,
+  fetchSessionStoreFromFile,
+  mergeScheduleMessagesFromRemote,
   updateActiveMessages,
   updateActiveSessionMeta,
+  updateSessionMessages,
+  updateSessionMeta,
+  settleRunningActivitySteps,
+  settleStoreRunningSteps,
   type ChatSession,
   type SessionStore,
 } from '../../lib/sessions';
+import { sessionHandoffKey } from '../../lib/open-docs-in-session';
 import { caseGenConfigLabel, type CaseGenPluginConfig } from '../../lib/case-gen-config';
 import {
   buildCaseGenSystemPrompt,
@@ -86,6 +130,7 @@ import {
   AGENT_INSTRUCTIONS_HINT_PREFIX,
   FS_SYSTEM_HINT,
   PRESENT_TOOL,
+  WORKING_DIRECTORY_TOOLS,
   addWorkspace,
   fetchAgentInstructions,
   fetchFsHealth,
@@ -98,6 +143,7 @@ import {
   renameWorkspace,
   runFsTool,
   runPresentTool,
+  runWorkingDirectoryTool,
   selectWorkspace,
   shortWorkspaceLabel,
   workspaceDisplayName,
@@ -107,6 +153,15 @@ import {
   type WorkspaceInfo,
   type WorkspaceItem,
 } from '../../lib/fs-tools';
+import { SKILL_SYSTEM_HINT, SKILL_TOOLS, runSkillTool } from '../../lib/skill-tools';
+import { querySessions, querySessionsViaApi } from '../../lib/session-query';
+import {
+  WORKSPACE_CHANGES_HINT,
+  WORKSPACE_CHANGES_TOOLS,
+  parseFsMutationSuccess,
+  recordWorkspaceChange,
+  runWorkspaceChangesTool,
+} from '../../lib/workspace-changes';
 import { formatTimeContext } from '../../lib/session-context';
 import {
   ASK_USER_QUESTION_TOOL,
@@ -143,9 +198,17 @@ import {
   type SessionGoal,
 } from '../../lib/session-goal';
 import {
+  DEFAULT_GOAL_DRIVER_MAX_ROUNDS,
+  goalDriverContinueText,
+  isGoalDriverMessage,
+  shouldDriveGoalRound,
+} from '../../lib/session-goal-driver';
+import { exportSessionDownload } from '../../lib/session-export';
+import {
   SCHEDULE_SYSTEM_HINT,
   SCHEDULE_TOOLS,
-  claimDueSchedules,
+  claimDueSchedulesAsync,
+  reminderMessageContent,
   runScheduleTool,
 } from '../../lib/session-schedule';
 import { SUBAGENT_SYSTEM_HINT, SUBAGENT_TOOLS, runSubagentTool } from '../../lib/session-subagent';
@@ -185,6 +248,7 @@ import {
   BASH_SYSTEM_HINT,
   BASH_TOOL,
   JOB_TOOLS,
+  PWSH_SESSION_TOOLS,
   PWSH_SYSTEM_HINT,
   PWSH_TOOL,
   fetchBashHealth,
@@ -192,6 +256,7 @@ import {
   runBashSessionTool,
   runBashTool,
   runJobTool,
+  runPwshSessionTool,
   runPwshTool,
   type BashHealth,
   type PwshHealth,
@@ -203,6 +268,14 @@ import {
   FILE_MAX_COUNT,
   readLocalAttachFile,
 } from '../../lib/attach-read';
+import {
+  basenamePath,
+  extractClipboardFilePaths,
+  looksLikeBareFilename,
+  resolveNameToPasteDocRef,
+  resolvePathToPasteDocRef,
+  type PasteCatalogEntry,
+} from '../../lib/composer-paste';
 import CaseGenPanel from './CaseGenPanel';
 import PromptGenPanel from './PromptGenPanel';
 import KnowledgeGenPanel from './KnowledgeGenPanel';
@@ -212,9 +285,9 @@ import NamePromptDialog from './NamePromptDialog';
 
 export type SlashDoc = SlashDocItem;
 
-/** 「@」选中的文档引用（项目文档 → kb_read；工作区 → fs_read） */
+/** 「@」/管理页打开的文档引用（项目文档 → kb_read；工作区 → fs_read） */
 interface DocRef {
-  collection: 'knowledge' | 'templates' | 'workspace';
+  collection: 'knowledge' | 'templates' | 'workspace' | 'prompts' | 'cases';
   id: string;
   title: string;
   category: string;
@@ -243,7 +316,9 @@ function buildPluginMessages(
 ): ChatMessage[] {
   let system = systemPrompt;
   if (opts.knowledge) system = `${system}\n\n${KB_SYSTEM_HINT}`;
-  if (opts.fs) system = `${system}\n\n${FS_SYSTEM_HINT}`;
+  if (opts.fs) {
+    system = `${system}\n\n${FS_SYSTEM_HINT}\n\n${SKILL_SYSTEM_HINT}\n\n${WORKSPACE_CHANGES_HINT}\n\n${WORKSPACE_DEPS_HINT}\n\n${OFFICE_TO_PDF_HINT}`;
+  }
   if (opts.bash) system = `${system}\n\n${BASH_SYSTEM_HINT}`;
   if (opts.pwsh) system = `${system}\n\n${PWSH_SYSTEM_HINT}`;
   if (opts.web) system = `${system}\n\n${WEB_SYSTEM_HINT}`;
@@ -286,6 +361,8 @@ interface Attachment {
   name: string;
   size: number;
   content: string;
+  /** 若能解析到工作区/库内路径则展示在胶囊上 */
+  path?: string;
 }
 
 /** 粘贴 / 选取的图片（data URL，本地会话可整图保存） */
@@ -301,10 +378,14 @@ interface ImageAtt {
 interface LocalMessage extends Omit<ChatMessage, 'content'> {
   content: string;
   reasoning?: string;
+  /** 原始 reasoning_content（未 sanitize），下一轮 API 必须原样回传 */
+  reasoningApi?: string;
   /** 思考耗时（秒）：首个 reasoning chunk 到首个正文 chunk 的间隔 */
   reasoningDuration?: number;
   /** 思考块展开状态，默认收起 */
   reasoningOpen?: boolean;
+  /** 主机/会话定时提醒 id（去重） */
+  scheduleId?: string;
   /** 消息时间（ms）：用户为发送时刻，助手为完成时刻 */
   time?: number;
   usage?: UsageInfo;
@@ -314,6 +395,8 @@ interface LocalMessage extends Omit<ChatMessage, 'content'> {
   ttftMs?: number;
   /** 请求发出到流结束的壁钟耗时（ms） */
   llmMs?: number;
+  /** 本轮工具调用累计耗时（ms） */
+  toolMs?: number;
   /** 本轮使用的模型 id（切换模型后历史轮次仍显示当时模型） */
   model?: string;
   attachments?: Attachment[];
@@ -335,6 +418,8 @@ interface LocalMessage extends Omit<ChatMessage, 'content'> {
   /** dsh 风格工具步骤时间线 */
   activitySteps?: ActivityStep[];
   activityOpen?: boolean;
+  /** 本轮状态：服务端续跑 / 手动停止（对齐 dsh「已停止」） */
+  turnStatus?: 'running' | 'stopped' | 'completed';
 }
 
 /** 对齐 dsh 执行轨迹：思考 / 网页 / 本地文件等 */
@@ -357,10 +442,24 @@ function toApiText(m: LocalMessage): string {
     const projectRefs = m.refs.filter((r) => r.collection !== 'workspace');
     const wsRefs = m.refs.filter((r) => r.collection === 'workspace');
     if (projectRefs.length) {
-      const lines = projectRefs.map(
-        (r) => `- ${r.path} 《${r.title}》（${r.category} · ${formatSlashBadge(r.format)}）`,
+      const kbRefs = projectRefs.filter(
+        (r) => r.collection === 'knowledge' || r.collection === 'templates',
       );
-      parts.push(`引用项目文档（请使用 kb_read 读取）：\n${lines.join('\n')}`);
+      const otherRefs = projectRefs.filter(
+        (r) => r.collection === 'prompts' || r.collection === 'cases',
+      );
+      if (kbRefs.length) {
+        const lines = kbRefs.map(
+          (r) => `- ${r.path} 《${r.title}》（${r.category} · ${formatSlashBadge(r.format)}）`,
+        );
+        parts.push(`引用项目文档（请使用 kb_read 读取）：\n${lines.join('\n')}`);
+      }
+      if (otherRefs.length) {
+        const lines = otherRefs.map(
+          (r) => `- ${r.collection}/${r.path} 《${r.title}》（${r.category}）`,
+        );
+        parts.push(`引用管理文档（路径已给出，正文可能已在上文）：\n${lines.join('\n')}`);
+      }
     }
     if (wsRefs.length) {
       const lines = wsRefs.map(
@@ -423,14 +522,6 @@ function composerFileCount(atts: Attachment[], imgs: ImageAtt[]): number {
   return atts.length + imgs.length;
 }
 
-/** 空会话快捷话题：贴合工作区探查 / 用例设计 / 缺陷规范 / 方法组合 */
-const SUGGESTIONS = [
-  '当前工作区里有哪些关键目录和文件？帮我快速摸清项目结构',
-  '为「用户登录」梳理测试点，按 P0/P1 排优先级并标出风险',
-  '支付回调接口要覆盖哪些异常与幂等场景？给出用例大纲',
-  '给我一份可直接套用的缺陷报告字段模板（含复现步骤）',
-];
-
 /** 推理等级（DeepSeek reasoning_effort 有效值 low/high/max） */
 const EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string; desc: string }> = [
   { value: 'low', label: 'Low', desc: '响应更快，适合简单问答' },
@@ -451,7 +542,12 @@ function toolKindLabel(name: string): string {
   if (name === 'ask_user_question') return '向用户提问';
   if (name === 'bash') return 'Bash';
   if (name === 'pwsh') return 'PowerShell';
-  if (name.startsWith('bash_session_')) return '持久终端';
+  if (name.startsWith('bash_session_') || name.startsWith('pwsh_session_')) return '持久终端';
+  if (name.startsWith('working_directory_')) return '工作目录';
+  if (name.startsWith('skill_')) return 'Skill';
+  if (name.startsWith('workspace_changes_')) return '工作区变更';
+  if (name === 'load_workspace_dependencies') return '工作区依赖';
+  if (name === 'office_to_pdf') return 'Office转PDF';
   if (name === 'submit_plan') return '提交计划';
   if (name.startsWith('goal_')) return '会话目标';
   if (name.startsWith('schedule_')) return '定时提醒';
@@ -475,6 +571,29 @@ function toolKindLabel(name: string): string {
   return name;
 }
 
+/** 把服务端/LLM 原始错误收成可读文案 */
+function formatChatError(raw: unknown): string {
+  const s = String(raw ?? '').trim();
+  if (!s) return '请求失败';
+  if (/service_unavailable|too busy|瞬时繁忙|服务繁忙/i.test(s)) {
+    return '模型服务瞬时繁忙，请稍后重试';
+  }
+  try {
+    const j = JSON.parse(s) as { error?: unknown; message?: string };
+    const err = (j?.error ?? j) as { message?: string; code?: string; type?: string };
+    if (err && typeof err === 'object') {
+      const blob = `${err.message || ''} ${err.code || ''} ${err.type || ''}`;
+      if (/service_unavailable|too busy/i.test(blob)) {
+        return '模型服务瞬时繁忙，请稍后重试';
+      }
+      if (typeof err.message === 'string' && err.message.trim()) return err.message.trim();
+    }
+  } catch {
+    // ignore
+  }
+  return s.length > 280 ? `${s.slice(0, 280)}…` : s;
+}
+
 function activityKindForTool(name: string): ActivityStep['kind'] {
   if (name === 'present') return 'fs';
   if (
@@ -483,6 +602,12 @@ function activityKindForTool(name: string): ActivityStep['kind'] {
     name === 'bash' ||
     name === 'pwsh' ||
     name.startsWith('bash_session_') ||
+    name.startsWith('pwsh_session_') ||
+    name.startsWith('working_directory_') ||
+    name.startsWith('skill_') ||
+    name.startsWith('workspace_changes_') ||
+    name === 'load_workspace_dependencies' ||
+    name === 'office_to_pdf' ||
     name === 'submit_plan' ||
     name.startsWith('goal_') ||
     name.startsWith('schedule_') ||
@@ -501,6 +626,64 @@ function activityKindForTool(name: string): ActivityStep['kind'] {
   if (name.startsWith('kb_')) return 'kb';
   if (name.startsWith('memory_')) return 'memory';
   return 'tool';
+}
+
+/** dsh 风格分析进度行图标 */
+function ActivityStepIcon({
+  kind,
+  status,
+}: {
+  kind: ActivityStep['kind'];
+  status: ActivityStep['status'];
+}) {
+  const cls =
+    status === 'error'
+      ? 'w-3.5 h-3.5 shrink-0 text-red-500'
+      : status === 'running'
+        ? 'w-3.5 h-3.5 shrink-0 text-stone-500'
+        : 'w-3.5 h-3.5 shrink-0 text-stone-400';
+  if (status === 'running' && kind === 'thinking') {
+    return (
+      <span className="w-3.5 h-3.5 shrink-0 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
+    );
+  }
+  if (kind === 'thinking') {
+    return (
+      <Svg className={cls}>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </Svg>
+    );
+  }
+  if (kind === 'web_search' || kind === 'web_fetch') {
+    return (
+      <Svg className={cls}>
+        <circle cx="12" cy="12" r="10" />
+        <path d="M2 12h20" />
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+      </Svg>
+    );
+  }
+  if (kind === 'fs' || kind === 'kb') {
+    return (
+      <Svg className={cls}>
+        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+        <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      </Svg>
+    );
+  }
+  if (kind === 'memory') {
+    return (
+      <Svg className={cls}>
+        <path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4Z" />
+      </Svg>
+    );
+  }
+  return (
+    <Svg className={cls}>
+      <path d="m12 3 1.9 5.8H20l-4.9 3.6 1.9 5.8L12 14.6 7.1 18.2l1.9-5.8L4 8.8h6.1Z" />
+    </Svg>
+  );
 }
 
 function toolArgsDetail(name: string, argsJson?: string): string {
@@ -527,11 +710,24 @@ function toolArgsDetail(name: string, argsJson?: string): string {
       const base = cmd.length > 80 ? `${cmd.slice(0, 80)}…` : cmd;
       return `${base}${bg}`;
     }
-    if (name.startsWith('bash_session_')) {
+    if (name.startsWith('bash_session_') || name.startsWith('pwsh_session_')) {
       const sid = typeof a.sessionId === 'string' ? a.sessionId.trim() : '';
       const cmd = typeof a.command === 'string' ? a.command.trim() : '';
       const short = cmd.length > 48 ? `${cmd.slice(0, 48)}…` : cmd;
       return [sid, short].filter(Boolean).join(' · ');
+    }
+    if (name.startsWith('working_directory_')) {
+      const p = typeof a.path === 'string' ? a.path.trim() : '';
+      const id = typeof a.id === 'string' ? a.id.trim() : '';
+      return [id, p].filter(Boolean).join(' · ');
+    }
+    if (name.startsWith('skill_')) {
+      const n = typeof a.name === 'string' ? a.name.trim() : '';
+      const p = typeof a.path === 'string' ? a.path.trim() : '';
+      return [n, p].filter(Boolean).join(' · ');
+    }
+    if (name.startsWith('workspace_changes_')) {
+      return '';
     }
     if (name.startsWith('job_')) {
       const id = typeof a.jobId === 'string' ? a.jobId.trim() : '';
@@ -923,6 +1119,7 @@ function SessionRailRow({
   onToggleMenu,
   onTogglePin,
   onToggleArchive,
+  onExport,
   onRemove,
   onRestore,
 }: {
@@ -936,6 +1133,7 @@ function SessionRailRow({
   onToggleMenu: () => void;
   onTogglePin: () => void;
   onToggleArchive: () => void;
+  onExport: () => void;
   onRemove: () => void;
   onRestore?: () => void;
 }) {
@@ -943,9 +1141,50 @@ function SessionRailRow({
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const titleBtnRef = useRef<HTMLButtonElement>(null);
   const titleInnerRef = useRef<HTMLSpanElement>(null);
+  const previewEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [overflow, setOverflow] = useState(false);
-  const [hover, setHover] = useState(false);
+  /** 悬停标题满 1s 后显示预览气泡 */
+  const [showPreview, setShowPreview] = useState(false);
   const [previewPos, setPreviewPos] = useState<{ top: number; left: number } | null>(null);
+
+  function clearPreviewEnter() {
+    if (previewEnterTimer.current != null) {
+      clearTimeout(previewEnterTimer.current);
+      previewEnterTimer.current = null;
+    }
+  }
+  function clearPreviewLeave() {
+    if (previewLeaveTimer.current != null) {
+      clearTimeout(previewLeaveTimer.current);
+      previewLeaveTimer.current = null;
+    }
+  }
+  function schedulePreviewLeave() {
+    clearPreviewLeave();
+    previewLeaveTimer.current = setTimeout(() => {
+      setShowPreview(false);
+      clearPreviewEnter();
+    }, 180);
+  }
+  function schedulePreviewEnter() {
+    clearPreviewLeave();
+    clearPreviewEnter();
+    previewEnterTimer.current = setTimeout(() => setShowPreview(true), 1000);
+  }
+
+  /** 预览气泡展示完整首条用户消息，不沿用侧栏 24 字截断标题 */
+  const previewFullTitle = (() => {
+    const text = firstUserText(
+      (Array.isArray(s.messages) ? s.messages : []) as Array<{
+        role?: string;
+        content?: unknown;
+      }>,
+    )
+      .trim()
+      .replace(/\s+/g, ' ');
+    return text || s.title || '新对话';
+  })();
 
   useLayoutEffect(() => {
     const btn = titleBtnRef.current;
@@ -976,7 +1215,7 @@ function SessionRailRow({
   }, [s.title]);
 
   useLayoutEffect(() => {
-    if (!hover || menuOpen) {
+    if (!showPreview || menuOpen) {
       setPreviewPos(null);
       return;
     }
@@ -993,7 +1232,15 @@ function SessionRailRow({
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
     };
-  }, [hover, menuOpen, s.title]);
+  }, [showPreview, menuOpen, s.title]);
+
+  useEffect(() => {
+    if (menuOpen) {
+      clearPreviewEnter();
+      clearPreviewLeave();
+      setShowPreview(false);
+    }
+  }, [menuOpen]);
 
   const statusLabel = busy ? '生成中' : '空闲';
   const dimmed = Boolean(s.archived || s.deleted);
@@ -1003,10 +1250,17 @@ function SessionRailRow({
       ref={rowRef}
       className={`tw-session-row relative ${nested ? 'is-nested' : ''} ${
         active ? 'is-selected' : ''
-      } ${menuOpen ? 'is-menu-open' : ''} ${dimmed ? 'opacity-50' : ''}`}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      } ${menuOpen ? 'is-menu-open' : ''} ${busy ? 'is-busy' : ''} ${dimmed ? 'opacity-50' : ''}`}
+      onMouseLeave={() => {
+        clearPreviewEnter();
+        schedulePreviewLeave();
+      }}
     >
+      {busy ? (
+        <span className="tw-session-busy-slot" title="生成中" aria-label="生成中">
+          <span className="tw-session-busy-dot" aria-hidden />
+        </span>
+      ) : null}
       {s.pinned && !dimmed ? (
         <span className="tw-slot" aria-hidden>
           <PinIcon filled className="tw-pin-indicator w-3 h-3" />
@@ -1017,6 +1271,11 @@ function SessionRailRow({
         type="button"
         onClick={onOpen}
         onDoubleClick={onRename}
+        onMouseEnter={() => schedulePreviewEnter()}
+        onMouseLeave={() => {
+          clearPreviewEnter();
+          schedulePreviewLeave();
+        }}
         className={`tw-session-title text-left outline-none focus:outline-none focus-visible:outline-none ${
           overflow ? 'is-overflow' : ''
         }`}
@@ -1092,6 +1351,18 @@ function SessionRailRow({
                   <ArchiveBoxIcon className="w-3.5 h-3.5" />
                   {s.archived ? '取消归档' : '归档会话'}
                 </button>
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] text-stone-700 hover:bg-stone-50"
+                  onClick={onExport}
+                >
+                  <Svg className="w-3.5 h-3.5">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" x2="12" y1="15" y2="3" />
+                  </Svg>
+                  导出会话
+                </button>
                 {/* 仅已归档可删，且为永久删除 */}
                 {s.archived ? (
                   <button
@@ -1132,7 +1403,7 @@ function SessionRailRow({
           </button>
         )}
       </div>
-      {hover && !menuOpen && previewPos && typeof document !== 'undefined'
+      {showPreview && !menuOpen && previewPos && typeof document !== 'undefined'
         ? createPortal(
             <div
               className="tw-session-preview"
@@ -1143,8 +1414,14 @@ function SessionRailRow({
                 left: previewPos.left,
                 transform: 'translateY(-50%)',
               }}
+              onMouseEnter={() => {
+                clearPreviewEnter();
+                clearPreviewLeave();
+                setShowPreview(true);
+              }}
+              onMouseLeave={() => schedulePreviewLeave()}
             >
-              <div className="tw-session-preview-title">{s.title}</div>
+              <div className="tw-session-preview-title">{previewFullTitle}</div>
               <div className="tw-session-preview-meta">{relTimePreviewLabel(s.updatedAt)}</div>
               <div className={`tw-session-preview-status ${busy ? 'is-busy' : ''}`}>
                 {statusLabel}
@@ -1214,6 +1491,16 @@ function uncachedOf(u: UsageInfo): number {
   if (u.uncachedTokens != null) return u.uncachedTokens;
   if (u.cachedTokens != null) return Math.max(0, u.promptTokens - u.cachedTokens);
   return u.promptTokens;
+}
+
+/** 输出 token：优先 completion；缺失时用 total − prompt 兜底（缓存命中回合常见） */
+function completionTokensOf(u: UsageInfo | undefined | null): number {
+  if (!u) return 0;
+  if (typeof u.completionTokens === 'number' && u.completionTokens > 0) return u.completionTokens;
+  if (typeof u.totalTokens === 'number' && typeof u.promptTokens === 'number') {
+    return Math.max(0, u.totalTokens - u.promptTokens);
+  }
+  return typeof u.completionTokens === 'number' ? Math.max(0, u.completionTokens) : 0;
 }
 
 function cacheHitPct(cached: number, prompt: number): number | null {
@@ -1472,6 +1759,133 @@ function DialogPill({
   );
 }
 
+/** 「回合」Tab：列表可展开完整正文（不含思考） */
+function ThreadOutlinePane({
+  messages,
+  busy,
+  onRestoreCheckpoint,
+}: {
+  messages: LocalMessage[];
+  busy?: boolean;
+  /** 截断到该轮末并续写 */
+  onRestoreCheckpoint?: (endMessageIndex: number, turnIndex: number) => void;
+}) {
+  const [openIds, setOpenIds] = useState<Set<number>>(() => new Set());
+  const items = useMemo(
+    () =>
+      buildTurnOutline(
+        messages.map((m) => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content : toApiText(m),
+          time: m.time,
+        })),
+      ),
+    [messages],
+  );
+
+  function toggle(index: number) {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
+
+  if (!items.length) {
+    return (
+      <div className="h-full flex items-center justify-center text-sm text-stone-400">
+        暂无回合（还没有用户/助手对话）
+      </div>
+    );
+  }
+
+  return (
+    <ol className="list-none m-0 p-0 w-full max-w-[min(64rem,100%)] mx-auto space-y-2">
+      {items.map((it) => {
+        const open = openIds.has(it.index);
+        const restoreReady = Boolean(it.assistantText);
+        return (
+          <li
+            key={it.index}
+            className={`rounded-xl border bg-white shadow-sm overflow-hidden ${
+              open ? 'border-[#4176e6]/35' : 'border-stone-200'
+            }`}
+          >
+            <div className="flex items-start gap-1 px-3 py-2.5">
+              <button
+                type="button"
+                onClick={() => toggle(it.index)}
+                aria-expanded={open}
+                className="min-w-0 flex-1 text-left hover:bg-stone-50/80 rounded-lg -mx-1 px-1 py-0.5 transition-colors"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[11px] font-medium text-stone-400 tabular-nums">
+                    第 {it.index} 轮
+                  </span>
+                  <ChevronIcon
+                    className={`w-3.5 h-3.5 text-stone-400 ml-auto shrink-0 transition-transform ${
+                      open ? 'rotate-180' : ''
+                    }`}
+                  />
+                </div>
+                {!open ? (
+                  <div className="space-y-1 text-[13px] leading-5">
+                    <p className="m-0 text-stone-800 truncate">
+                      <span className="text-stone-400 mr-1.5">用户</span>
+                      {it.userPreview}
+                    </p>
+                    <p className="m-0 text-stone-600 truncate">
+                      <span className="text-stone-400 mr-1.5">助手</span>
+                      {it.assistantPreview || '（待回复）'}
+                    </p>
+                  </div>
+                ) : null}
+              </button>
+              {onRestoreCheckpoint ? (
+                <button
+                  type="button"
+                  disabled={busy || !restoreReady}
+                  title={
+                    !restoreReady
+                      ? '待本轮助手回复完成后可从此处继续'
+                      : '截断到本轮末，填入续写并发送'
+                  }
+                  className="shrink-0 mt-0.5 text-[11px] text-[#4176e6] hover:underline disabled:opacity-40 disabled:no-underline px-1 whitespace-nowrap"
+                  onClick={() => onRestoreCheckpoint(it.endMessageIndex, it.index)}
+                >
+                  从此处继续
+                </button>
+              ) : null}
+            </div>
+            {open ? (
+              <div className="px-3 pb-3 space-y-2.5 text-[13px] leading-5 border-t border-stone-100 pt-2.5">
+                <div>
+                  <div className="text-[11px] font-medium text-stone-400 mb-0.5">用户</div>
+                  <div className="whitespace-pre-wrap break-words text-stone-800">
+                    {it.userText || '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium text-stone-400 mb-0.5">助手</div>
+                  {it.assistantText ? (
+                    <div
+                      className="chat-md prose prose-sm prose-stone max-w-none tw-chat-text"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(it.assistantText) }}
+                    />
+                  ) : (
+                    <div className="text-stone-400">（待回复）</div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 /**
  * 输入框下方状态栏（dsh StatsPills）：三枚胶囊均可点击查看详情。
  * 数据全部来自本会话真实请求用量 / 计时，不是写死常量。
@@ -1496,10 +1910,11 @@ function StatusBar({
   const cachedSum = answered.reduce((s, m) => s + (m.usage?.cachedTokens ?? 0), 0);
   const uncachedSum = answered.reduce((s, m) => s + (m.usage ? uncachedOf(m.usage) : 0), 0);
   const cacheWriteSum = answered.reduce((s, m) => s + (m.usage?.cacheWriteTokens ?? 0), 0);
-  const outputSum = answered.reduce((s, m) => s + (m.usage?.completionTokens ?? 0), 0);
+  const outputSum = answered.reduce((s, m) => s + completionTokensOf(m.usage), 0);
   const cacheKnown = answered.some((m) => m.usage?.cachedTokens != null);
   const hit = cacheKnown ? cacheHitPct(cachedSum, promptSum) : null;
   const llmMs = answered.reduce((s, m) => s + (m.llmMs ?? 0), 0);
+  const toolMs = answered.reduce((s, m) => s + (m.toolMs ?? 0), 0);
   const ttftList = answered.map((m) => m.ttftMs).filter((n): n is number => n != null && n > 0);
   const avgTtft = ttftList.length ? ttftList.reduce((a, b) => a + b, 0) / ttftList.length : 0;
   // 会话输出速度：优先用解码时长加权；否则用各轮 tps 均值
@@ -1511,7 +1926,10 @@ function StatusBar({
   const avgTps = tpsSamples.length
     ? tpsSamples.reduce((a, b) => a + b, 0) / tpsSamples.length
     : undefined;
-  const sessionTps = decodeMs > 200 ? outputSum / (decodeMs / 1000) : (avgTps ?? last.tps);
+  const sessionTps =
+    decodeMs > 200 && outputSum > 0
+      ? outputSum / (decodeMs / 1000)
+      : (avgTps ?? (last.tps && last.tps > 0 ? last.tps : undefined));
   const windowSize = model ? MODEL_CONTEXT_WINDOW[model] : undefined;
   const ctxTokens = last.usage?.promptTokens ?? 0;
   const pct = windowSize ? Math.min(100, (ctxTokens / windowSize) * 100) : undefined;
@@ -1533,7 +1951,7 @@ function StatusBar({
         <StatRows
           rows={[
             { label: '模型用时', value: llmMs > 0 ? fmtDuration(llmMs) : '—' },
-            { label: '工具调用用时', value: '—' },
+            { label: '工具调用用时', value: toolMs > 0 ? fmtDuration(toolMs) : '—' },
             {
               label: '首 token 平均 (TTFT)',
               value: ttftList.length ? fmtDuration(avgTtft) : '—',
@@ -1864,7 +2282,15 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [wsDeleteTarget, setWsDeleteTarget] = useState<WorkspaceItem | null>(null);
   const [wsRenameId, setWsRenameId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** 侧栏「生成中」：按会话标记，切换会话不中断后台回合 */
+  const [busySessionIds, setBusySessionIds] = useState<string[]>([]);
+  const [error, setErrorState] = useState<string | null>(null);
+  /** error=警告红；ok=信息绿（如会话统计） */
+  const [errorTone, setErrorTone] = useState<'error' | 'ok'>('error');
+  function setError(text: string | null, tone: 'error' | 'ok' = 'error') {
+    setErrorTone(tone);
+    setErrorState(text);
+  }
   const [access, setAccess] = useState<AccessLevel>('readonly');
   const [showJump, setShowJump] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
@@ -1875,6 +2301,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [memoryHealth, setMemoryHealth] = useState<MemoryHealth | null>(null);
   /** 本地工作区文件 Runner（仅 npm run dev） */
   const [fsHealth, setFsHealth] = useState<FsHealth | null>(null);
+  /** null=探测中，避免刷新时先闪「未就绪」 */
+  const [fsProbed, setFsProbed] = useState(false);
   const [bashHealth, setBashHealth] = useState<BashHealth | null>(null);
   const [pwshHealth, setPwshHealth] = useState<PwshHealth | null>(null);
   const [webHealth, setWebHealth] = useState<WebHealth | null>(null);
@@ -1886,8 +2314,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 会话行「…」菜单当前打开的 session id */
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
-  /** 对话工作台内 Tab：对话 | 记忆（对齐 MemOS 查看入口） */
-  const [chatTab, setChatTab] = useState<'dialog' | 'memory'>('dialog');
+  /** 对话工作台内 Tab：对话 | 回合 | 记忆 */
+  const [chatTab, setChatTab] = useState<'dialog' | 'thread' | 'memory'>('dialog');
   const [generalPrefs, setGeneralPrefs] = useState<GeneralPrefs>(() =>
     typeof window === 'undefined'
       ? {
@@ -1896,6 +2324,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           sessionFontSize: 14,
           toolStepDetail: 'standard',
           busySendBehavior: 'queue',
+          subagentModel: '',
         }
       : loadGeneralPrefs(),
   );
@@ -1905,6 +2334,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   /** 点击别处后暂时隐藏 @ / 插件菜单（输入变化后恢复） */
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pluginMenuDismissed, setPluginMenuDismissed] = useState(false);
+  /** 「+」添加面板（浮在输入框上方，对齐 dsh） */
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  /** 添加面板内「扩展插件」分组展开 */
+  const [addPluginsExpanded, setAddPluginsExpanded] = useState(true);
   /** 繁忙时排队（dsh QueueDock：展示 + 上一轮结束后自动续发） */
   const [sendQueue, setSendQueue] = useState<
     Array<{
@@ -1922,9 +2355,21 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   /** 网页能力已升格为会话内置，不再走扩展插件开关 */
   const webLive = Boolean(webHealth?.ok);
   const fsLive = Boolean(fsHealth?.ok);
+  const fsOffline = fsProbed && !fsLive;
   const bashLive = Boolean(bashHealth?.ok);
   const pwshLive = Boolean(pwshHealth?.ok && pwshHealth.available);
   const abortRef = useRef<AbortController | null>(null);
+  /** 进行中的回合（按会话）；切会话不 abort，便于后台继续 */
+  const liveRunsRef = useRef<Map<string, { abort: AbortController; messages: LocalMessage[] }>>(
+    new Map(),
+  );
+  const runSessionIdRef = useRef<string | null>(null);
+  /** 服务端 SSE 取消 */
+  const sseUnsubRef = useRef<Map<string, () => void>>(new Map());
+  /** 工具 running→done 计时（sessionId:stepId → startMs） */
+  const toolTimingRef = useRef<Map<string, number>>(new Map());
+  /** 服务端回合首 token / 起点（executeSend 写入，SSE 事件读取） */
+  const turnTimingRef = useRef<Map<string, { start: number; firstToken?: number }>>(new Map());
   /** time-context 上次完整注入时间（节流 10 分钟） */
   const timeInjectAtRef = useRef<number | null>(null);
   const streamingRef = useRef(false);
@@ -1939,7 +2384,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   } | null>(null);
   const [sessionTodos, setSessionTodos] = useState<TodoItem[]>([]);
   const [sessionGoal, setSessionGoal] = useState<SessionGoal | null>(null);
+  const sessionGoalRef = useRef<SessionGoal | null>(null);
+  /** 当前活跃目标驱动周期内已自动续轮次数 */
+  const goalDriverRoundsRef = useRef(0);
+  /** 已用 LLM 起过标题的会话，避免重复请求 */
+  const llmTitledSessionIdsRef = useRef(new Set<string>());
   const [planPhase, setPlanPhase] = useState<PlanPhase>('off');
+  /** 输入区模式胶囊：目标设定 / 计划模式（中文标签 + 可关闭） */
+  const [composerChip, setComposerChip] = useState<null | 'goal' | 'plan'>(null);
   const [planProposal, setPlanProposal] = useState<PlanProposal | null>(null);
   const [askUserPrompt, setAskUserPrompt] = useState<AskUserQuestion[] | null>(null);
   const [askUserDraft, setAskUserDraft] = useState<
@@ -1971,6 +2423,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
   const pluginMenuRef = useRef<HTMLDivElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const noticeRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   /** 各会话输入草稿（切换会话时保留） */
   const composerDraftsRef = useRef<
@@ -2061,13 +2515,43 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setPluginOn(loadPluginEnabled());
       setRailOpen(loadRailOpen());
 
-      const loaded = await hydrateSessionStore();
-      if (cancelled) return;
-      let store = loaded;
       const params = new URLSearchParams(window.location.search);
       const sid = params.get('session');
+      const loaded = await hydrateSessionStore({ preferSessionId: sid });
+      if (cancelled) return;
+      let store = loaded;
+      // 「在会话中打开」跳转：若写盘竞态丢掉新会话，从 sessionStorage 手递恢复
+      if (sid && !store.sessions.some((s) => s.id === sid)) {
+        try {
+          const raw = sessionStorage.getItem(sessionHandoffKey(sid));
+          if (raw) {
+            const parsed = JSON.parse(raw) as { session?: ChatSession };
+            const orphan = parsed?.session;
+            if (orphan && orphan.id === sid) {
+              store = {
+                ...store,
+                sessions: [orphan, ...store.sessions.filter((s) => s.id !== sid)],
+                activeId: sid,
+              };
+              await flushSessionStore(store);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (sid) {
+        try {
+          sessionStorage.removeItem(sessionHandoffKey(sid));
+        } catch {
+          // ignore
+        }
+      }
       const focusRoot = params.get('focusRoot');
       const focusPathRaw = params.get('focusPath');
+      const attachRootRaw = params.get('attachRoot');
+      const attachPathRaw = params.get('attachPath');
+      const attachNameRaw = params.get('attachName');
       let focusKey: string | null = null;
       if (focusRoot && focusPathRaw) {
         try {
@@ -2082,30 +2566,111 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         saveSessionStore(store);
       }
       if (focusKey) setPendingFocusDoc(focusKey);
+      // 管理页打开：作曲区挂 Cursor 式路径 chip
+      if (attachRootRaw && attachPathRaw) {
+        const root = attachRootRaw as DocRef['collection'];
+        if (
+          root === 'cases' ||
+          root === 'prompts' ||
+          root === 'knowledge' ||
+          root === 'templates'
+        ) {
+          let path = attachPathRaw;
+          let name = attachNameRaw || '';
+          try {
+            path = decodeURIComponent(attachPathRaw).replace(/\\/g, '/').replace(/^\/+/, '');
+            if (attachNameRaw) name = decodeURIComponent(attachNameRaw);
+          } catch {
+            // keep raw
+          }
+          if (!name) name = path.split('/').pop() || path;
+          const ext = (name.split('.').pop() || 'md').toLowerCase();
+          const category =
+            root === 'cases'
+              ? '用例'
+              : root === 'prompts'
+                ? '提示词'
+                : root === 'knowledge'
+                  ? '知识库'
+                  : '模板';
+          setDocRefs([
+            {
+              collection: root,
+              id: `${root}:${path}`,
+              title: name,
+              category,
+              path,
+              format: ext,
+            },
+          ]);
+        }
+      }
       // 清掉 query，避免刷新反复切会话 / 重复滚动
       try {
         const u = new URL(window.location.href);
         u.searchParams.delete('session');
         u.searchParams.delete('focusRoot');
         u.searchParams.delete('focusPath');
+        u.searchParams.delete('attachRoot');
+        u.searchParams.delete('attachPath');
+        u.searchParams.delete('attachName');
         window.history.replaceState({}, '', u.pathname + u.search + u.hash);
       } catch {
         // ignore
       }
+      // 服务端仍在跑的会话不要结算步骤；其余残留 running 标 done
+      let serverBusyIds: string[] = [];
+      try {
+        serverBusyIds = (await listSessionRuns()).map((r) => r.sessionId);
+      } catch {
+        serverBusyIds = [];
+      }
+      const busySet = new Set(serverBusyIds);
+      if (busySet.size) {
+        store = {
+          ...store,
+          sessions: store.sessions.map((s) => {
+            if (busySet.has(s.id)) return s;
+            const msgs = settleRunningActivitySteps(s.messages);
+            return msgs === s.messages ? s : { ...s, messages: msgs };
+          }),
+        };
+      } else {
+        store = settleStoreRunningSteps(store);
+      }
       storeRef.current = store;
       setStore(store);
+      saveSessionStore(store);
       const active = store.sessions.find((s) => s.id === store.activeId);
       setMessages((active?.messages as LocalMessage[]) ?? []);
       setCaseGenConfig(active?.caseGen?.active ? active.caseGen : null);
       setPromptGenConfig(active?.promptGen?.active ? active.promptGen : null);
       setKnowledgeGenConfig(active?.knowledgeGen?.active ? active.knowledgeGen : null);
       setSessionTodos(normalizeTodos(active?.todos));
-      setSessionGoal(normalizeGoal(active?.goal));
+      {
+        const g = normalizeGoal(active?.goal);
+        sessionGoalRef.current = g;
+        setSessionGoal(g);
+      }
       if (active?.workspacePath) {
         setWsExpanded((prev) => ({ ...prev, [active.workspacePath!]: true }));
       }
       setChatTab('dialog');
+      setBusySessionIds(serverBusyIds);
       setReady(true);
+      // 重连放在 ready 之后下一帧，避免闭包未就绪
+      if (serverBusyIds.length) {
+        queueMicrotask(() => {
+          for (const id of serverBusyIds) {
+            setSessionBusy(id, true);
+            if (id === storeRef.current?.activeId) {
+              streamingRef.current = true;
+              setStreaming(true);
+              attachServerRun(id, 0);
+            }
+          }
+        });
+      }
 
       try {
         const u = new URL(window.location.href);
@@ -2113,6 +2678,31 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         if (pluginQ === 'promptGen' || pluginQ === 'knowledgeGen' || pluginQ === 'caseGen') {
           const id = pluginQ as PluginId;
           if (loadPluginEnabled()[id]) {
+            // 库页「生成*」跳入：先落一个空「新对话」，确认配置复用该会话
+            const cur = storeRef.current?.sessions.find((x) => x.id === storeRef.current?.activeId);
+            const needFresh =
+              !cur ||
+              cur.archived ||
+              cur.deleted ||
+              (Array.isArray(cur.messages) && cur.messages.length > 0) ||
+              Boolean(cur.caseGen?.active || cur.promptGen?.active || cur.knowledgeGen?.active);
+            if (needFresh && storeRef.current) {
+              const leavingId = storeRef.current.activeId;
+              const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
+              const ws = workspaceInfo?.workspace?.trim() || undefined;
+              const next = createSession(base, ws ? { workspacePath: ws } : undefined);
+              storeRef.current = next;
+              setStore(next);
+              saveSessionStore(next);
+              setMessages([]);
+              setCaseGenConfig(null);
+              setPromptGenConfig(null);
+              setKnowledgeGenConfig(null);
+              setSessionTodos([]);
+              sessionGoalRef.current = null;
+              setSessionGoal(null);
+              setPlanPhase('off');
+            }
             if (id === 'promptGen') setPromptGenPanelOpen(true);
             else if (id === 'knowledgeGen') setKnowledgeGenPanelOpen(true);
             else setCaseGenPanelOpen(true);
@@ -2137,7 +2727,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         }
       })();
       void fetchMemoryHealth().then((m) => setMemoryHealth(m));
-      void fetchFsHealth().then((h) => setFsHealth(h));
+      void fetchFsHealth().then((h) => {
+        setFsHealth(h);
+        setFsProbed(true);
+      });
       void fetchBashHealth().then((h) => setBashHealth(h));
       void fetchPwshHealth().then((h) => setPwshHealth(h));
       void fetchWebHealth().then((h) => setWebHealth(h));
@@ -2163,22 +2756,34 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!pluginOn.memory && chatTab === 'memory') setChatTab('dialog');
   }, [pluginOn.memory, chatTab]);
 
-  /** tool-schedule：页面打开时轮询到期提醒并投递回原会话 */
+  /** tool-schedule：轮询到期提醒；主机在线时 claim 会写入 sessions.json */
   useEffect(() => {
     if (!ready) return;
-    const deliver = () => {
-      const due = claimDueSchedules();
-      if (!due.length || !storeRef.current) return;
+    let cancelled = false;
+    const deliver = async () => {
+      if (!storeRef.current) return;
+      const due = await claimDueSchedulesAsync();
+      if (cancelled || !storeRef.current) return;
       let next = storeRef.current;
       let activeTouched = false;
       for (const r of due) {
-        const msg: LocalMessage = {
-          role: 'assistant',
-          content: `⏰ 定时提醒：${r.text}`,
-          time: Date.now(),
-        };
-        next = appendSessionMessage(next, r.sessionId, msg);
-        if (r.sessionId === next.activeId) activeTouched = true;
+        const sess = next.sessions.find((s) => s.id === r.sessionId);
+        const msgs = (sess?.messages as LocalMessage[] | undefined) ?? [];
+        const marker = `<!--tb-schedule:${r.id}-->`;
+        const exists = msgs.some(
+          (m) =>
+            m.scheduleId === r.id || (typeof m.content === 'string' && m.content.includes(marker)),
+        );
+        if (!exists) {
+          const msg: LocalMessage = {
+            role: 'assistant',
+            content: reminderMessageContent(r.text, r.id),
+            time: Date.now(),
+            scheduleId: r.id,
+          };
+          next = appendSessionMessage(next, r.sessionId, msg);
+          if (r.sessionId === next.activeId) activeTouched = true;
+        }
         try {
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             new Notification('TestBench 定时提醒', { body: r.text });
@@ -2187,15 +2792,31 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           // ignore
         }
       }
-      commitStore(next);
+      const remote = await fetchSessionStoreFromFile();
+      if (cancelled || !storeRef.current) return;
+      if (remote) {
+        const merged = mergeScheduleMessagesFromRemote(next, remote);
+        if (merged !== next) {
+          next = merged;
+          if (next.activeId) activeTouched = true;
+        }
+      }
+      if (next !== storeRef.current || due.length) {
+        commitStore(next);
+      }
       if (activeTouched) {
         const active = next.sessions.find((s) => s.id === next.activeId);
         setMessages((active?.messages as LocalMessage[]) ?? []);
       }
     };
-    deliver();
-    const timer = window.setInterval(deliver, 10_000);
-    return () => window.clearInterval(timer);
+    void deliver();
+    const timer = window.setInterval(() => {
+      void deliver();
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [ready]);
 
   /** 当前会话切换时，输入栏 / FS 跟会话归属工作区对齐 */
@@ -2272,20 +2893,40 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     el?.scrollIntoView({ block: 'nearest' });
   }, [pluginIndex, pluginMenuOpen, pluginMenuItems.length]);
 
-  /** 点击检索列表与输入框以外：关闭 @ / 插件浮层 */
+  /** 点击检索列表与输入框以外：关闭 @ / 插件 / 添加浮层 */
   useEffect(() => {
-    if (!atOpen && !pluginMenuOpen) return;
+    if (!atOpen && !pluginMenuOpen && !addMenuOpen) return;
     function onPointerDown(e: PointerEvent) {
       const t = e.target as Node;
       if (mentionListRef.current?.contains(t)) return;
       if (pluginMenuRef.current?.contains(t)) return;
+      if (addMenuRef.current?.contains(t)) return;
       if (textareaRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-add-menu-btn]')) return;
       setMentionDismissed(true);
       setPluginMenuDismissed(true);
+      setAddMenuOpen(false);
     }
     document.addEventListener('pointerdown', onPointerDown, true);
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
-  }, [atOpen, pluginMenuOpen]);
+  }, [atOpen, pluginMenuOpen, addMenuOpen]);
+
+  /** 会话统计等绿色提示条：点击外部收起 */
+  useEffect(() => {
+    if (!error || errorTone !== 'ok') return;
+    function onPointerDown(e: PointerEvent) {
+      const t = e.target as Node;
+      if (noticeRef.current?.contains(t)) return;
+      setError(null);
+    }
+    const timer = window.setTimeout(() => {
+      document.addEventListener('pointerdown', onPointerDown, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [error, errorTone]);
 
   /** 点击会话/工作区菜单以外：关闭「…」菜单 */
   useEffect(() => {
@@ -2303,7 +2944,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
   function refreshPluginRuntime() {
     void fetchMemoryHealth().then((m) => setMemoryHealth(m));
-    void fetchFsHealth().then((h) => setFsHealth(h));
+    void fetchFsHealth().then((h) => {
+      setFsHealth(h);
+      setFsProbed(true);
+    });
     void fetchBashHealth().then((h) => setBashHealth(h));
     void fetchPwshHealth().then((h) => setPwshHealth(h));
     void fetchWebHealth().then((h) => setWebHealth(h));
@@ -2443,11 +3087,21 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
   }
 
-  /** 离开空「新对话」时丢弃，不进已删除 */
+  /** 离开空会话时丢弃（无消息且输入区无草稿）；不进已删除 */
   function pruneEphemeralSession(id: string | undefined | null): SessionStore | null {
     if (!id || !storeRef.current) return storeRef.current;
     const s = storeRef.current.sessions.find((x) => x.id === id);
     if (!s || !isEphemeralEmptySession(s)) return storeRef.current;
+    const draft = composerDraftsRef.current[id];
+    if (
+      draft &&
+      (Boolean(draft.input?.trim()) ||
+        (draft.attachments?.length ?? 0) > 0 ||
+        (draft.images?.length ?? 0) > 0 ||
+        (draft.docRefs?.length ?? 0) > 0)
+    ) {
+      return storeRef.current;
+    }
     delete composerDraftsRef.current[id];
     const next = deleteSession(storeRef.current, id);
     return next;
@@ -2511,6 +3165,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setChatTab('memory');
       return true;
     }
+    if (id === 'knowledge') {
+      const base = input.replace(/\s+$/, '');
+      setInput(base ? `${base} @` : '@');
+      setMentionDismissed(false);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return true;
+    }
     return false;
   }
 
@@ -2559,12 +3220,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
   }, [messages, ready]);
 
-  // 输入框随内容自动长高（上限 200px，超出内部滚动）
+  // 离开页面前落盘即可；服务端回合继续跑，勿把 running 步骤结算成 done
+  useEffect(() => {
+    const flush = () => {
+      if (!storeRef.current) return;
+      saveSessionStore(storeRef.current);
+    };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, []);
+
+  // 输入框随内容自动长高（上限 280px，超出内部滚动）
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, 280)}px`;
   }, [input]);
 
   // 管理页「在会话中打开」：滚到对应入库文件卡并短暂高亮
@@ -2586,12 +3257,322 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     return () => window.clearTimeout(t);
   }, [ready, pendingFocusDoc, messages]);
 
+  function setSessionBusy(sessionId: string, busy: boolean) {
+    setBusySessionIds((prev) => {
+      const has = prev.includes(sessionId);
+      if (busy && !has) return [...prev, sessionId];
+      if (!busy && has) return prev.filter((id) => id !== sessionId);
+      return prev;
+    });
+    if (storeRef.current?.activeId === sessionId) {
+      streamingRef.current = busy;
+      setStreaming(busy);
+    }
+  }
+
+  function abortSessionRun(sessionId: string | null | undefined) {
+    if (!sessionId) return;
+    liveRunsRef.current.get(sessionId)?.abort.abort();
+    sseUnsubRef.current.get(sessionId)?.();
+    sseUnsubRef.current.delete(sessionId);
+    void stopSessionRun(sessionId);
+  }
+
+  function applyServerRunEvent(sessionId: string, ev: ServerRunEvent) {
+    if (ev.type === 'reasoning' && ev.delta) {
+      applySessionMessages(sessionId, (prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== 'assistant') return prev;
+        const reasoning = sanitizeAssistantContent((last.reasoning ?? '') + ev.delta);
+        const steps = [...(last.activitySteps ?? [])];
+        const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
+        const detail = latestParagraphFirstLine(reasoning).replaceAll('**', '').slice(0, 80);
+        const thinkStep: ActivityStep = {
+          id: 'thinking',
+          kind: 'thinking',
+          title: '思考',
+          detail: detail || undefined,
+          status: 'running',
+        };
+        if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], ...thinkStep };
+        else steps.unshift(thinkStep);
+        const copy = prev.slice();
+        const timing = turnTimingRef.current.get(sessionId);
+        let ttftMs = last.ttftMs;
+        if (timing && timing.firstToken == null) {
+          timing.firstToken = Date.now();
+          ttftMs = Math.max(0, timing.firstToken - timing.start);
+        }
+        copy[copy.length - 1] = {
+          ...last,
+          reasoning,
+          activitySteps: steps,
+          turnStatus: 'running',
+          ttftMs,
+        };
+        return copy;
+      });
+      return;
+    }
+    if (ev.type === 'content' && ev.delta) {
+      applySessionMessages(sessionId, (prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== 'assistant') return prev;
+        const steps = (last.activitySteps ?? []).map((s) =>
+          s.kind === 'thinking' && s.status === 'running' ? { ...s, status: 'done' as const } : s,
+        );
+        const copy = prev.slice();
+        const timing = turnTimingRef.current.get(sessionId);
+        let ttftMs = last.ttftMs;
+        if (timing && timing.firstToken == null) {
+          timing.firstToken = Date.now();
+          ttftMs = Math.max(0, timing.firstToken - timing.start);
+        }
+        copy[copy.length - 1] = {
+          ...last,
+          // 二次闸门：吃掉空格变体 `< | | DSML | |` 等泄漏
+          content: sanitizeAssistantContent((last.content ?? '') + ev.delta!),
+          activitySteps: steps,
+          turnStatus: 'running',
+          ttftMs,
+        };
+        return copy;
+      });
+      return;
+    }
+    if (ev.type === 'tool' && ev.name) {
+      const kind = toolKindLabel(ev.name);
+      const detail = toolArgsDetail(ev.name, ev.args);
+      const stepId = `tool_${ev.name}_${ev.args?.slice(0, 24) ?? ''}`;
+      noteToolTiming(sessionId, stepId, ev.status);
+      const toolFailed =
+        ev.status === 'done' &&
+        typeof ev.result === 'string' &&
+        /^\s*\{\s*"error"\s*:/.test(ev.result);
+      applySessionMessages(sessionId, (prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== 'assistant') return prev;
+        const steps = [...(last.activitySteps ?? [])];
+        const idx = steps.findIndex(
+          (s) =>
+            s.id === stepId || (s.detail === detail && s.title === kind && s.status === 'running'),
+        );
+        const next: ActivityStep = {
+          id: stepId,
+          kind: activityKindForTool(ev.name!),
+          title: kind,
+          detail: detail || undefined,
+          status: ev.status === 'running' ? 'running' : toolFailed ? 'error' : 'done',
+        };
+        if (idx >= 0) steps[idx] = { ...steps[idx], ...next };
+        else steps.push(next);
+        const copy = prev.slice();
+        copy[copy.length - 1] = { ...last, activitySteps: steps, turnStatus: 'running' };
+        return copy;
+      });
+      if (storeRef.current?.activeId === sessionId) {
+        setToolHint(
+          toolStepHint(
+            loadGeneralPrefs().toolStepDetail,
+            kind,
+            ev.name,
+            ev.status === 'running' ? 'running' : 'done',
+          ),
+        );
+      }
+      return;
+    }
+    if (ev.type === 'usage' && ev.usage) {
+      applySessionMessages(sessionId, (prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== 'assistant') return prev;
+        const copy = prev.slice();
+        copy[copy.length - 1] = { ...last, usage: ev.usage as UsageInfo };
+        return copy;
+      });
+      return;
+    }
+    if (ev.type === 'status') {
+      const st = ev.status;
+      if (st === 'completed' || st === 'stopped' || st === 'error') {
+        applySessionMessages(sessionId, (prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role !== 'assistant') return prev;
+          const fromServer = ev.assistant;
+          const copy = prev.slice();
+          const serverToolMs =
+            typeof fromServer?.toolMs === 'number' ? fromServer.toolMs : undefined;
+          const serverLlmMs = typeof fromServer?.llmMs === 'number' ? fromServer.llmMs : undefined;
+          const serverTtftMs =
+            typeof fromServer?.ttftMs === 'number' ? fromServer.ttftMs : undefined;
+          const serverTps = typeof fromServer?.tps === 'number' ? fromServer.tps : undefined;
+          copy[copy.length - 1] = {
+            ...last,
+            content: typeof fromServer?.content === 'string' ? fromServer.content : last.content,
+            reasoning:
+              typeof fromServer?.reasoning === 'string' ? fromServer.reasoning : last.reasoning,
+            reasoningApi:
+              typeof fromServer?.reasoningApi === 'string'
+                ? fromServer.reasoningApi
+                : last.reasoningApi,
+            activitySteps: (
+              (fromServer?.activitySteps as ActivityStep[] | undefined) ??
+              last.activitySteps ??
+              []
+            ).map((s) => (s.status === 'running' ? { ...s, status: 'done' as const } : s)),
+            turnStatus: st === 'completed' ? 'completed' : 'stopped',
+            time: Date.now(),
+            usage: (fromServer?.usage as UsageInfo | undefined) ?? last.usage,
+            model: typeof fromServer?.model === 'string' ? fromServer.model : last.model,
+            toolMs: serverToolMs != null ? Math.max(serverToolMs, last.toolMs ?? 0) : last.toolMs,
+            llmMs: serverLlmMs ?? last.llmMs,
+            ttftMs: serverTtftMs ?? last.ttftMs,
+            tps: serverTps ?? last.tps,
+          };
+          return copy;
+        });
+        if (st === 'error' && ev.error && storeRef.current?.activeId === sessionId) {
+          setError(formatChatError(ev.error));
+        }
+        // 订阅生命周期由 watchSessionRun / executeSend 管理，这里只结算 UI 状态
+        liveRunsRef.current.delete(sessionId);
+        if (runSessionIdRef.current === sessionId) runSessionIdRef.current = null;
+        setSessionBusy(sessionId, false);
+        if (storeRef.current?.activeId === sessionId) setToolHint(null);
+      }
+    }
+  }
+
+  function attachServerRun(sessionId: string, afterSeq = 0) {
+    sseUnsubRef.current.get(sessionId)?.();
+    setSessionBusy(sessionId, true);
+    void (async () => {
+      // 先拉快照覆盖本地，再从 seq 之后订阅，避免重放增量叠字
+      const snap = await getSessionRun(sessionId);
+      let fromSeq = afterSeq;
+      if (snap?.ok && snap.assistant) {
+        fromSeq = Math.max(fromSeq, snap.seq ?? 0);
+        applySessionMessages(sessionId, (prev) => {
+          const last = prev[prev.length - 1];
+          const base =
+            last?.role === 'assistant'
+              ? last
+              : ({ role: 'assistant', content: '', turnStatus: 'running' } as LocalMessage);
+          const sa = snap.assistant as LocalMessage & {
+            llmMs?: number;
+            ttftMs?: number;
+            toolMs?: number;
+            tps?: number;
+            usage?: UsageInfo;
+            model?: string;
+          };
+          const nextMsg: LocalMessage = {
+            ...base,
+            content: typeof sa?.content === 'string' ? sa.content : base.content,
+            reasoning: typeof sa?.reasoning === 'string' ? sa.reasoning : base.reasoning,
+            reasoningApi:
+              typeof (sa as { reasoningApi?: string })?.reasoningApi === 'string'
+                ? (sa as { reasoningApi?: string }).reasoningApi
+                : base.reasoningApi,
+            activitySteps: (sa?.activitySteps as ActivityStep[] | undefined) ?? base.activitySteps,
+            turnStatus:
+              snap.status === 'completed'
+                ? 'completed'
+                : snap.status === 'stopped' || snap.status === 'error'
+                  ? 'stopped'
+                  : 'running',
+            usage: sa?.usage ?? base.usage,
+            model: typeof sa?.model === 'string' ? sa.model : base.model,
+            llmMs: typeof sa?.llmMs === 'number' ? sa.llmMs : base.llmMs,
+            ttftMs: typeof sa?.ttftMs === 'number' ? sa.ttftMs : base.ttftMs,
+            toolMs:
+              typeof sa?.toolMs === 'number' ? Math.max(sa.toolMs, base.toolMs ?? 0) : base.toolMs,
+            tps: typeof sa?.tps === 'number' ? sa.tps : base.tps,
+          };
+          if (last?.role === 'assistant') {
+            const copy = prev.slice();
+            copy[copy.length - 1] = nextMsg;
+            return copy;
+          }
+          return [...prev, nextMsg];
+        });
+        if (snap.status && snap.status !== 'running' && snap.status !== 'waiting_user') {
+          setSessionBusy(sessionId, false);
+          return;
+        }
+      }
+      const unsub = watchSessionRun(sessionId, fromSeq, {
+        onEvent: (ev) => applyServerRunEvent(sessionId, ev),
+        onGaveUp: (err) => {
+          if (storeRef.current?.activeId === sessionId) {
+            setError(err.message || '与服务端回合断开');
+          }
+          setSessionBusy(sessionId, false);
+        },
+      });
+      sseUnsubRef.current.set(sessionId, unsub);
+    })();
+  }
+
+  /** 把消息写入指定会话（后台回合也走这里）；当前会话同步 React state */
+  function applySessionMessages(
+    sessionId: string,
+    next: LocalMessage[] | ((prev: LocalMessage[]) => LocalMessage[]),
+    opts?: { touchUpdatedAt?: boolean },
+  ) {
+    const run = liveRunsRef.current.get(sessionId);
+    const fromStore =
+      (storeRef.current?.sessions.find((s) => s.id === sessionId)?.messages as
+        LocalMessage[] | undefined) ?? [];
+    const prev =
+      run?.messages ?? (storeRef.current?.activeId === sessionId ? messagesRef.current : fromStore);
+    const msgs = typeof next === 'function' ? next(prev) : next;
+    if (run) run.messages = msgs;
+    if (storeRef.current?.activeId === sessionId) {
+      messagesRef.current = msgs;
+      setMessages(msgs);
+    }
+    if (storeRef.current) {
+      commitStore(
+        updateSessionMessages(storeRef.current, sessionId, msgs, {
+          touchUpdatedAt: opts?.touchUpdatedAt !== false,
+        }),
+      );
+    }
+  }
+
   function updateLastAssistant(fn: (m: LocalMessage) => LocalMessage) {
-    setMessages((prev) => {
+    const sid = runSessionIdRef.current ?? storeRef.current?.activeId;
+    if (!sid) return;
+    applySessionMessages(sid, (prev) => {
       const last = prev[prev.length - 1];
       if (last?.role !== 'assistant') return prev;
       const copy = prev.slice();
       copy[copy.length - 1] = fn(last);
+      return copy;
+    });
+  }
+
+  function noteToolTiming(
+    sessionId: string,
+    stepId: string,
+    status: 'running' | 'done' | string | undefined,
+  ) {
+    const key = `${sessionId}:${stepId}`;
+    if (status === 'running') {
+      toolTimingRef.current.set(key, Date.now());
+      return;
+    }
+    if (status !== 'done' && status !== 'error') return;
+    const t0 = toolTimingRef.current.get(key);
+    toolTimingRef.current.delete(key);
+    if (t0 == null) return;
+    const dt = Math.max(0, Date.now() - t0);
+    applySessionMessages(sessionId, (prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role !== 'assistant') return prev;
+      const copy = prev.slice();
+      copy[copy.length - 1] = { ...last, toolMs: (last.toolMs ?? 0) + dt };
       return copy;
     });
   }
@@ -2625,6 +3606,25 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setDocRefs([]);
     setMentionDismissed(false);
     setPluginMenuDismissed(false);
+  }
+
+  function dismissComposerChip() {
+    if (composerChip === 'plan') {
+      settlePlanCanceled();
+      setPlanPhase('off');
+    }
+    setComposerChip(null);
+  }
+
+  function activateGoalChip() {
+    setComposerChip('goal');
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  function activatePlanChip() {
+    setPlanPhase((cur) => (cur === 'off' ? 'planning' : cur));
+    setComposerChip('plan');
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   function toCompactable(list: LocalMessage[]): CompactableMessage[] {
@@ -2704,6 +3704,33 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       return;
     }
 
+    // 目标胶囊：输入正文后发送即设定会话目标
+    if (
+      composerChip === 'goal' &&
+      content &&
+      !files.length &&
+      !refs.length &&
+      !imgs.length &&
+      !isGoalCommand(content) &&
+      !isCompactCommand(content)
+    ) {
+      if (fromComposer) clearComposer();
+      const nextGoal: SessionGoal = {
+        text: content.slice(0, 500),
+        status: 'active',
+        updatedAt: Date.now(),
+      };
+      sessionGoalRef.current = nextGoal;
+      setSessionGoal(nextGoal);
+      goalDriverRoundsRef.current = 0;
+      if (storeRef.current) {
+        commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+      }
+      setComposerChip(null);
+      setError(`已设定目标：${nextGoal.text}`);
+      return;
+    }
+
     // command-goal：/goal [set …|clear|done]
     if (isGoalCommand(content) && !files.length && !refs.length && !imgs.length) {
       const cmd = parseGoalCommand(content);
@@ -2719,7 +3746,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         return;
       }
       if (cmd.kind === 'clear') {
+        sessionGoalRef.current = null;
         setSessionGoal(null);
+        goalDriverRoundsRef.current = 0;
         if (storeRef.current) {
           commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
         }
@@ -2736,7 +3765,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           status: 'done',
           updatedAt: Date.now(),
         };
+        sessionGoalRef.current = nextGoal;
         setSessionGoal(nextGoal);
+        goalDriverRoundsRef.current = 0;
         if (storeRef.current) {
           commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
         }
@@ -2749,7 +3780,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           status: 'active',
           updatedAt: Date.now(),
         };
+        sessionGoalRef.current = nextGoal;
         setSessionGoal(nextGoal);
+        goalDriverRoundsRef.current = 0;
         if (storeRef.current) {
           commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
         }
@@ -2778,7 +3811,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       // 插话：中断当前轮，结束后立刻发这条，其后仍按队列自主续发
       interruptPayloadRef.current = prepared;
       if (fromComposer) clearComposer();
-      abortRef.current?.abort();
+      abortSessionRun(storeRef.current?.activeId);
       return;
     }
 
@@ -2786,8 +3819,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   }
 
   async function executeSend(prepared: PendingSend) {
-    if (!settings || streamingRef.current) return;
+    const sid = storeRef.current?.activeId;
+    if (!settings || !sid || liveRunsRef.current.has(sid)) return;
     const { content, files, refs, imgs } = prepared;
+    // 人类新发言（非 driver 续轮）重置目标驱动计数
+    if (!isGoalDriverMessage(content)) {
+      goalDriverRoundsRef.current = 0;
+    }
     setError(null);
     const now = Date.now();
     const userMsg: LocalMessage = { role: 'user', content, time: now };
@@ -2833,26 +3871,36 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setToolHint(null);
     }
 
-    const withAssistant: LocalMessage[] = [...next, { role: 'assistant', content: '', time: now }];
+    const withAssistant: LocalMessage[] = [
+      ...next,
+      { role: 'assistant', content: '', time: now, turnStatus: 'running' },
+    ];
     messagesRef.current = withAssistant;
     setMessages(withAssistant);
     clearComposer();
-    streamingRef.current = true;
-    setStreaming(true);
+    const ctrl = new AbortController();
+    runSessionIdRef.current = sid;
+    liveRunsRef.current.set(sid, { abort: ctrl, messages: withAssistant });
+    abortRef.current = ctrl;
+    setSessionBusy(sid, true);
     followRef.current = true; // 发送新消息：强制回到跟随态
     setShowJump(false);
 
     // role+content；有图时 content 为多模态数组；助手思考内容须按 DeepSeek 要求回传
-    const apiMessages: ChatMessage[] = next.map((m) => {
-      const msg: ChatMessage = {
-        role: m.role,
-        content: toApiMessageContent(m),
-      };
-      if (m.role === 'assistant' && m.reasoning?.trim()) {
-        msg.reasoning_content = m.reasoning;
-      }
-      return msg;
-    });
+    const apiMessages: ChatMessage[] = offloadStaleImages(
+      next.map((m) => {
+        const msg: ChatMessage = {
+          role: m.role,
+          content: toApiMessageContent(m),
+        };
+        const reasoningEcho = (m.reasoningApi ?? m.reasoning)?.trim();
+        if (m.role === 'assistant' && reasoningEcho) {
+          msg.reasoning_content = reasoningEcho;
+        }
+        return msg;
+      }),
+      { keepRecentImageMessages: 1 },
+    );
     const useMemory = memoryLive;
     const useKnowledge = knowledgeOn;
     const useFs = fsLive;
@@ -2883,9 +3931,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       baseSystem = buildKnowledgeGenSystemPrompt(knowledgeGenCfg);
     } else if (caseCfg) {
       if (!caseCfg.promptBody?.trim()) {
-        setError('生成测试用例已启用，但未选择提示词。请打开插件重新「确认使用」。');
-        streamingRef.current = false;
-        setStreaming(false);
+        setError('生成测试用例已启用，但未选择提示词。请打开插件重新「确认」。');
+        liveRunsRef.current.delete(sid);
+        runSessionIdRef.current = null;
+        abortRef.current = null;
+        setSessionBusy(sid, false);
         setMessages((prev) =>
           prev[prev.length - 1]?.role === 'assistant' && !prev[prev.length - 1]?.content
             ? prev.slice(0, -1)
@@ -2903,8 +3953,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-        streamingRef.current = false;
-        setStreaming(false);
+        liveRunsRef.current.delete(sid);
+        runSessionIdRef.current = null;
+        abortRef.current = null;
+        setSessionBusy(sid, false);
         return;
       }
     }
@@ -2971,13 +4023,23 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       if (useKnowledge) tools.push(...(KB_TOOLS as unknown as ToolDef[]));
       if (useFs) {
         tools.push(...(fsToolsForAccess(effectiveAccess) as unknown as ToolDef[]));
-        if (!planGatesWrites) tools.push(PRESENT_TOOL as unknown as ToolDef);
+        tools.push(...(WORKING_DIRECTORY_TOOLS as unknown as ToolDef[]));
+        tools.push(...(SKILL_TOOLS as unknown as ToolDef[]));
+        tools.push(...(WORKSPACE_CHANGES_TOOLS as unknown as ToolDef[]));
+        tools.push(WORKSPACE_DEPS_TOOL as unknown as ToolDef);
+        if (!planGatesWrites) {
+          tools.push(OFFICE_TO_PDF_TOOL as unknown as ToolDef);
+          tools.push(PRESENT_TOOL as unknown as ToolDef);
+        }
       }
       if (useBash) {
         tools.push(BASH_TOOL as unknown as ToolDef);
         tools.push(...(BASH_SESSION_TOOLS as unknown as ToolDef[]));
       }
-      if (usePwsh) tools.push(PWSH_TOOL as unknown as ToolDef);
+      if (usePwsh) {
+        tools.push(PWSH_TOOL as unknown as ToolDef);
+        tools.push(...(PWSH_SESSION_TOOLS as unknown as ToolDef[]));
+      }
       if (useBash || usePwsh) tools.push(...(JOB_TOOLS as unknown as ToolDef[]));
       if (useWeb) tools.push(...(WEB_TOOLS as unknown as ToolDef[]));
       if (useMemory) tools.push(...(MEMORY_TOOLS as unknown as ToolDef[]));
@@ -2992,12 +4054,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       }
     }
 
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
     const requestStartTs = Date.now();
     let firstTokenTs = 0;
+    turnTimingRef.current.set(sid, { start: requestStartTs });
     let reasoningStartTs = 0;
     let reasoningSettled = false;
+    /** 原始思考缓冲：sanitize 后再写入 UI，避免 DSML 半截/整段泄漏 */
+    let reasoningRaw = '';
     let turnOk = false;
     let progressTimer: number | undefined;
     const structuredGen = Boolean(promptCfg || knowledgeGenCfg || caseCfg);
@@ -3011,6 +4074,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       if (knowledgeGenCfg) return '正在编写知识库…';
       return '正在编写用例…';
     }
+    // 须在 try 外声明，finally 要据此判断是否误标 stopped
+    let usedServerRun = false;
     try {
       let caseRaw = '';
       let promptRaw = '';
@@ -3024,436 +4089,677 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         paint();
         progressTimer = window.setInterval(paint, 1000);
       }
-      const stream = streamChatWithTools(settings, payload, ctrl.signal, {
-        tools: tools.length ? tools : undefined,
-        runTool: tools.length
-          ? async (name, args) => {
-              setToolBusy(true);
-              const kind = toolKindLabel(name);
-              setToolHint(toolStepHint(loadGeneralPrefs().toolStepDetail, kind, name, 'running'));
-              try {
-                if (name.startsWith('kb_')) {
-                  return await runKnowledgeTool(name, args, { base, docs: slashDocs });
+
+      // 服务端回合：刷新/切页可重连；结构化生成仍走浏览器流
+      if (!structuredGen && (await sessionRunsAvailable(ctrl.signal))) {
+        const serverTools = tools.filter((t) => {
+          const n = t.function?.name ?? '';
+          if (!n) return false;
+          if (n === 'ask_user_question' || n === 'submit_plan' || n === 'workflow') return false;
+          if (n === 'spawn_subagent' || n === 'fork_subagent' || n === 'list_agents') return false;
+          if (n.startsWith('subagent_')) return false;
+          return true;
+        });
+        const started = await startSessionRun({
+          sessionId: sid,
+          messages: payload,
+          settings: {
+            baseURL: settings.baseURL,
+            apiKey: settings.apiKey,
+            model: settings.model,
+            reasoningEffort: settings.reasoningEffort,
+          },
+          tools: serverTools,
+          thinking: true,
+          workspace: effectiveFsRoot || '',
+          access: effectiveAccess,
+          maxToolRounds: 8,
+        });
+        if (started.ok) {
+          usedServerRun = true;
+          await new Promise<void>((resolve) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              resolve();
+            };
+            const onAbort = () => {
+              void stopSessionRun(sid);
+            };
+            ctrl.signal.addEventListener('abort', onAbort);
+            sseUnsubRef.current.get(sid)?.();
+            const unsub = watchSessionRun(sid, 0, {
+              signal: ctrl.signal,
+              onEvent: (ev) => applyServerRunEvent(sid, ev),
+              onTerminal: (ev) => {
+                turnOk = ev.status === 'completed';
+                ctrl.signal.removeEventListener('abort', onAbort);
+                sseUnsubRef.current.delete(sid);
+                finish();
+              },
+              onGaveUp: (err) => {
+                if (storeRef.current?.activeId === sid) {
+                  setError(err.message || '与服务端回合断开');
                 }
-                if (name.startsWith('fs_')) return await runFsTool(name, args, effectiveAccess);
-                if (name === 'present') {
-                  if (planGatesWrites) {
-                    return JSON.stringify({ error: '计划模式探查中：请先 submit_plan 并等待批准' });
+                applySessionMessages(sid, (prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last?.role !== 'assistant') return prev;
+                  const copy = prev.slice();
+                  copy[copy.length - 1] = {
+                    ...last,
+                    turnStatus: 'stopped',
+                    activitySteps: (last.activitySteps ?? []).map((s) =>
+                      s.status === 'running' ? { ...s, status: 'done' as const } : s,
+                    ),
+                  };
+                  return copy;
+                });
+                ctrl.signal.removeEventListener('abort', onAbort);
+                sseUnsubRef.current.delete(sid);
+                finish();
+              },
+            });
+            sseUnsubRef.current.set(sid, () => {
+              unsub();
+              finish();
+            });
+          });
+        }
+      }
+
+      if (usedServerRun) {
+        // 服务端路径已消费完 SSE；后面的浏览器流跳过
+      } else {
+        const stream = streamChatWithTools(settings, payload, ctrl.signal, {
+          tools: tools.length ? tools : undefined,
+          runTool: tools.length
+            ? async (name, args) => {
+                setToolBusy(true);
+                const kind = toolKindLabel(name);
+                setToolHint(toolStepHint(loadGeneralPrefs().toolStepDetail, kind, name, 'running'));
+                const toolT0 = Date.now();
+                try {
+                  if (name.startsWith('kb_')) {
+                    return await runKnowledgeTool(name, args, { base, docs: slashDocs });
                   }
-                  const raw = await runPresentTool(args, effectiveAccess);
-                  try {
-                    const parsed = JSON.parse(raw) as {
-                      ok?: boolean;
-                      files?: PresentFile[];
-                    };
-                    if (parsed.ok && parsed.files?.length) {
-                      updateLastAssistant((m) => {
-                        const prev = m.presentFiles ?? [];
-                        const byPath = new Map(prev.map((f) => [f.path, f]));
-                        for (const f of parsed.files!) byPath.set(f.path, f);
-                        return { ...m, presentFiles: [...byPath.values()] };
+                  if (name.startsWith('fs_')) {
+                    const text = await runFsTool(name, args, effectiveAccess);
+                    const mut = parseFsMutationSuccess(name, text);
+                    if (mut && storeRef.current) {
+                      const cur = storeRef.current.sessions.find((s) => s.id === sid);
+                      const nextList = recordWorkspaceChange(cur?.workspaceChanges, mut);
+                      commitStore(
+                        updateSessionMeta(storeRef.current, sid, { workspaceChanges: nextList }),
+                      );
+                    }
+                    return text;
+                  }
+                  if (name.startsWith('skill_')) return await runSkillTool(name, args);
+                  if (name === 'load_workspace_dependencies') {
+                    return await runWorkspaceDepsTool(name);
+                  }
+                  if (name === 'office_to_pdf') {
+                    if (planGatesWrites) {
+                      return JSON.stringify({
+                        error: '计划模式探查中：请先 submit_plan 并等待批准',
                       });
                     }
-                  } catch {
-                    // ignore parse for UI; tool result still returned to model
+                    return await runOfficeToPdfTool(name, args, effectiveAccess);
                   }
-                  return raw;
-                }
-                if (name === 'todo_write') {
-                  let rawTodos: unknown;
-                  try {
-                    rawTodos = (JSON.parse(args || '{}') as { todos?: unknown }).todos;
-                  } catch {
-                    return JSON.stringify({ error: 'invalid JSON arguments' });
+                  if (name.startsWith('workspace_changes_')) {
+                    const cur = storeRef.current?.sessions.find((s) => s.id === sid);
+                    const { text, next } = runWorkspaceChangesTool(name, cur?.workspaceChanges);
+                    if (next && storeRef.current) {
+                      commitStore(
+                        updateSessionMeta(storeRef.current, sid, { workspaceChanges: next }),
+                      );
+                    }
+                    return text;
                   }
-                  const todos = normalizeTodos(rawTodos);
-                  setSessionTodos(todos);
-                  if (storeRef.current) {
-                    commitStore(updateActiveSessionMeta(storeRef.current, { todos }));
+                  if (name.startsWith('working_directory_')) {
+                    const { text, info } = await runWorkingDirectoryTool(name, args);
+                    if (info) {
+                      syncWorkspaceInfo(info);
+                      if (name === 'working_directory_set' && storeRef.current) {
+                        commitStore(
+                          updateSessionMeta(storeRef.current, sid, {
+                            workspacePath: info.workspace,
+                          }),
+                        );
+                      }
+                    }
+                    return text;
                   }
-                  return JSON.stringify({ ok: true, count: todos.length, todos });
-                }
-                if (name.startsWith('goal_')) {
-                  if (name === 'goal_get') {
-                    return formatGoalForModel(sessionGoal);
-                  }
-                  if (name === 'goal_set') {
-                    let text = '';
+                  if (name === 'present') {
+                    if (planGatesWrites) {
+                      return JSON.stringify({
+                        error: '计划模式探查中：请先 submit_plan 并等待批准',
+                      });
+                    }
+                    const raw = await runPresentTool(args, effectiveAccess);
                     try {
-                      text = String(
-                        (JSON.parse(args || '{}') as { text?: unknown }).text ?? '',
-                      ).trim();
+                      const parsed = JSON.parse(raw) as {
+                        ok?: boolean;
+                        files?: PresentFile[];
+                      };
+                      if (parsed.ok && parsed.files?.length) {
+                        updateLastAssistant((m) => {
+                          const prev = m.presentFiles ?? [];
+                          const byPath = new Map(prev.map((f) => [f.path, f]));
+                          for (const f of parsed.files!) byPath.set(f.path, f);
+                          return { ...m, presentFiles: [...byPath.values()] };
+                        });
+                      }
+                    } catch {
+                      // ignore parse for UI; tool result still returned to model
+                    }
+                    return raw;
+                  }
+                  if (name === 'todo_write') {
+                    let rawTodos: unknown;
+                    try {
+                      rawTodos = (JSON.parse(args || '{}') as { todos?: unknown }).todos;
                     } catch {
                       return JSON.stringify({ error: 'invalid JSON arguments' });
                     }
-                    if (!text) return JSON.stringify({ error: 'text is required' });
-                    const nextGoal: SessionGoal = {
-                      text: text.slice(0, 500),
-                      status: 'active',
-                      updatedAt: Date.now(),
-                    };
-                    setSessionGoal(nextGoal);
+                    const todos = normalizeTodos(rawTodos);
+                    if (storeRef.current?.activeId === sid) setSessionTodos(todos);
                     if (storeRef.current) {
-                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+                      commitStore(updateSessionMeta(storeRef.current, sid, { todos }));
                     }
-                    return formatGoalForModel(nextGoal);
+                    return JSON.stringify({ ok: true, count: todos.length, todos });
                   }
-                  if (name === 'goal_done') {
-                    if (!sessionGoal?.text) {
-                      return JSON.stringify({ ok: false, error: 'no goal to complete' });
+                  if (name.startsWith('goal_')) {
+                    if (name === 'goal_get') {
+                      const g =
+                        storeRef.current?.activeId === sid
+                          ? sessionGoalRef.current
+                          : normalizeGoal(
+                              storeRef.current?.sessions.find((s) => s.id === sid)?.goal,
+                            );
+                      return formatGoalForModel(g);
                     }
-                    const nextGoal: SessionGoal = {
-                      ...sessionGoal,
-                      status: 'done',
-                      updatedAt: Date.now(),
-                    };
-                    setSessionGoal(nextGoal);
-                    if (storeRef.current) {
-                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: nextGoal }));
+                    if (name === 'goal_set') {
+                      let text = '';
+                      try {
+                        text = String(
+                          (JSON.parse(args || '{}') as { text?: unknown }).text ?? '',
+                        ).trim();
+                      } catch {
+                        return JSON.stringify({ error: 'invalid JSON arguments' });
+                      }
+                      if (!text) return JSON.stringify({ error: 'text is required' });
+                      const nextGoal: SessionGoal = {
+                        text: text.slice(0, 500),
+                        status: 'active',
+                        updatedAt: Date.now(),
+                      };
+                      if (storeRef.current?.activeId === sid) {
+                        sessionGoalRef.current = nextGoal;
+                        setSessionGoal(nextGoal);
+                        goalDriverRoundsRef.current = 0;
+                      }
+                      if (storeRef.current) {
+                        commitStore(updateSessionMeta(storeRef.current, sid, { goal: nextGoal }));
+                      }
+                      return formatGoalForModel(nextGoal);
                     }
-                    return formatGoalForModel(nextGoal);
+                    if (name === 'goal_done') {
+                      const cur =
+                        storeRef.current?.activeId === sid
+                          ? sessionGoalRef.current
+                          : normalizeGoal(
+                              storeRef.current?.sessions.find((s) => s.id === sid)?.goal,
+                            );
+                      if (!cur?.text) {
+                        return JSON.stringify({ ok: false, error: 'no goal to complete' });
+                      }
+                      const nextGoal: SessionGoal = {
+                        ...cur,
+                        status: 'done',
+                        updatedAt: Date.now(),
+                      };
+                      if (storeRef.current?.activeId === sid) {
+                        sessionGoalRef.current = nextGoal;
+                        setSessionGoal(nextGoal);
+                        goalDriverRoundsRef.current = 0;
+                      }
+                      if (storeRef.current) {
+                        commitStore(updateSessionMeta(storeRef.current, sid, { goal: nextGoal }));
+                      }
+                      return formatGoalForModel(nextGoal);
+                    }
+                    if (name === 'goal_clear') {
+                      if (storeRef.current?.activeId === sid) {
+                        sessionGoalRef.current = null;
+                        setSessionGoal(null);
+                        goalDriverRoundsRef.current = 0;
+                      }
+                      if (storeRef.current) {
+                        commitStore(updateSessionMeta(storeRef.current, sid, { goal: undefined }));
+                      }
+                      return JSON.stringify({ ok: true, goal: null });
+                    }
+                    return JSON.stringify({ error: `unknown tool: ${name}` });
                   }
-                  if (name === 'goal_clear') {
-                    setSessionGoal(null);
-                    if (storeRef.current) {
-                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
-                    }
-                    return JSON.stringify({ ok: true, goal: null });
+                  if (name.startsWith('schedule_')) {
+                    return await runScheduleTool(name, args, sid);
                   }
+                  if (
+                    name === 'list_agents' ||
+                    name === 'spawn_subagent' ||
+                    name === 'fork_subagent' ||
+                    name.startsWith('subagent_')
+                  ) {
+                    return await runSubagentTool(name, args, {
+                      settings: resolveSubagentSettings(settings, loadGeneralPrefs().subagentModel),
+                      parentSignal: ctrl.signal,
+                      access: effectiveAccess,
+                      fsEnabled: useFs,
+                      webEnabled: useWeb,
+                      parentMessages: apiMessages,
+                      onHint: (text) => setToolHint(text),
+                      runFs: (n, a, acc) => runFsTool(n, a, acc),
+                      runWeb: (n, a) => runWebTool(n, a),
+                    });
+                  }
+                  if (name === 'workflow') {
+                    return await runWorkflowTool(name, args, {
+                      settings,
+                      parentSignal: ctrl.signal,
+                      access: effectiveAccess,
+                      fsEnabled: useFs,
+                      webEnabled: useWeb,
+                      parentMessages: apiMessages,
+                      onHint: (text) => setToolHint(text),
+                      runFs: (n, a, acc) => runFsTool(n, a, acc),
+                      runWeb: (n, a) => runWebTool(n, a),
+                    });
+                  }
+                  if (name === 'ask_user_question') {
+                    const questions = parseAskUserArgs(args);
+                    if (!questions.length) {
+                      return JSON.stringify({ error: 'questions is required' });
+                    }
+                    const draft: Record<string, { selected: string[]; text: string }> = {};
+                    for (const q of questions) draft[q.id] = { selected: [], text: '' };
+                    setAskUserDraft(draft);
+                    setAskUserPrompt(questions);
+                    return await new Promise<string>((resolve, reject) => {
+                      askUserWaitRef.current = { resolve, reject };
+                      const ac = abortRef.current;
+                      const onAbort = () => {
+                        ac?.signal.removeEventListener('abort', onAbort);
+                        settleAskUserCanceled();
+                      };
+                      ac?.signal.addEventListener('abort', onAbort);
+                    });
+                  }
+                  if (name === 'submit_plan') {
+                    const plan = parseSubmitPlanArgs(args);
+                    if (!plan) {
+                      return JSON.stringify({ error: 'title and steps are required' });
+                    }
+                    setPlanProposal(plan);
+                    return await new Promise<string>((resolve, reject) => {
+                      planWaitRef.current = { resolve, reject };
+                      const ac = abortRef.current;
+                      const onAbort = () => {
+                        ac?.signal.removeEventListener('abort', onAbort);
+                        settlePlanCanceled();
+                      };
+                      ac?.signal.addEventListener('abort', onAbort);
+                    });
+                  }
+                  if (name === 'bash') return await runBashTool(args, effectiveAccess);
+                  if (name === 'pwsh') return await runPwshTool(args, effectiveAccess);
+                  if (name.startsWith('bash_session_')) {
+                    return await runBashSessionTool(name, args, effectiveAccess);
+                  }
+                  if (name.startsWith('pwsh_session_')) {
+                    return await runPwshSessionTool(name, args, effectiveAccess);
+                  }
+                  if (name.startsWith('job_')) return await runJobTool(name, args, effectiveAccess);
+                  if (name.startsWith('web_')) return await runWebTool(name, args);
+                  if (name.startsWith('memory_')) return await runMemoryTool(name, args, memCwd);
                   return JSON.stringify({ error: `unknown tool: ${name}` });
+                } finally {
+                  const dt = Math.max(0, Date.now() - toolT0);
+                  updateLastAssistant((m) => ({ ...m, toolMs: (m.toolMs ?? 0) + dt }));
+                  setToolBusy(false);
+                  refreshPluginRuntime();
                 }
-                if (name.startsWith('schedule_')) {
-                  const sid = storeRef.current?.activeId ?? '';
-                  return await runScheduleTool(name, args, sid);
-                }
-                if (
-                  name === 'list_agents' ||
-                  name === 'spawn_subagent' ||
-                  name === 'fork_subagent' ||
-                  name.startsWith('subagent_')
-                ) {
-                  return await runSubagentTool(name, args, {
-                    settings,
-                    parentSignal: ctrl.signal,
-                    access: effectiveAccess,
-                    fsEnabled: useFs,
-                    webEnabled: useWeb,
-                    parentMessages: apiMessages,
-                    onHint: (text) => setToolHint(text),
-                    runFs: (n, a, acc) => runFsTool(n, a, acc),
-                    runWeb: (n, a) => runWebTool(n, a),
-                  });
-                }
-                if (name === 'workflow') {
-                  return await runWorkflowTool(name, args, {
-                    settings,
-                    parentSignal: ctrl.signal,
-                    access: effectiveAccess,
-                    fsEnabled: useFs,
-                    webEnabled: useWeb,
-                    parentMessages: apiMessages,
-                    onHint: (text) => setToolHint(text),
-                    runFs: (n, a, acc) => runFsTool(n, a, acc),
-                    runWeb: (n, a) => runWebTool(n, a),
-                  });
-                }
-                if (name === 'ask_user_question') {
-                  const questions = parseAskUserArgs(args);
-                  if (!questions.length) {
-                    return JSON.stringify({ error: 'questions is required' });
-                  }
-                  const draft: Record<string, { selected: string[]; text: string }> = {};
-                  for (const q of questions) draft[q.id] = { selected: [], text: '' };
-                  setAskUserDraft(draft);
-                  setAskUserPrompt(questions);
-                  return await new Promise<string>((resolve, reject) => {
-                    askUserWaitRef.current = { resolve, reject };
-                    const ac = abortRef.current;
-                    const onAbort = () => {
-                      ac?.signal.removeEventListener('abort', onAbort);
-                      settleAskUserCanceled();
-                    };
-                    ac?.signal.addEventListener('abort', onAbort);
-                  });
-                }
-                if (name === 'submit_plan') {
-                  const plan = parseSubmitPlanArgs(args);
-                  if (!plan) {
-                    return JSON.stringify({ error: 'title and steps are required' });
-                  }
-                  setPlanProposal(plan);
-                  return await new Promise<string>((resolve, reject) => {
-                    planWaitRef.current = { resolve, reject };
-                    const ac = abortRef.current;
-                    const onAbort = () => {
-                      ac?.signal.removeEventListener('abort', onAbort);
-                      settlePlanCanceled();
-                    };
-                    ac?.signal.addEventListener('abort', onAbort);
-                  });
-                }
-                if (name === 'bash') return await runBashTool(args, effectiveAccess);
-                if (name === 'pwsh') return await runPwshTool(args, effectiveAccess);
-                if (name.startsWith('bash_session_')) {
-                  return await runBashSessionTool(name, args, effectiveAccess);
-                }
-                if (name.startsWith('job_')) return await runJobTool(name, args, effectiveAccess);
-                if (name.startsWith('web_')) return await runWebTool(name, args);
-                if (name.startsWith('memory_')) return await runMemoryTool(name, args, memCwd);
-                return JSON.stringify({ error: `unknown tool: ${name}` });
-              } finally {
-                setToolBusy(false);
-                refreshPluginRuntime();
               }
-            }
-          : undefined,
-      });
-      for await (const chunk of stream) {
-        if (chunk.type === 'tool') {
-          const kind = toolKindLabel(chunk.name);
-          setToolHint(
-            toolStepHint(
-              loadGeneralPrefs().toolStepDetail,
-              kind,
-              chunk.name,
-              chunk.status === 'running' ? 'running' : 'done',
-            ),
-          );
-          const detail = toolArgsDetail(chunk.name, chunk.args);
-          const stepId = `tool_${chunk.name}_${chunk.args?.slice(0, 24) ?? ''}`;
-          updateLastAssistant((m) => {
-            const steps = [...(m.activitySteps ?? [])];
-            const idx = steps.findIndex(
-              (s) =>
-                s.id === stepId ||
-                (s.detail === detail && s.title === kind && s.status === 'running'),
+            : undefined,
+        });
+        for await (const chunk of stream) {
+          if (chunk.type === 'tool') {
+            const kind = toolKindLabel(chunk.name);
+            setToolHint(
+              toolStepHint(
+                loadGeneralPrefs().toolStepDetail,
+                kind,
+                chunk.name,
+                chunk.status === 'running' ? 'running' : 'done',
+              ),
             );
-            const next: ActivityStep = {
-              id: stepId,
-              kind: activityKindForTool(chunk.name),
-              title: kind,
-              detail: detail || undefined,
-              status: chunk.status === 'running' ? 'running' : 'done',
-            };
-            if (idx >= 0) steps[idx] = { ...steps[idx], ...next };
-            else steps.push(next);
-            return { ...m, activitySteps: steps };
-          });
-          continue;
-        }
-        if (chunk.type === 'usage') {
-          const nowTs = Date.now();
-          const decodeSecs = firstTokenTs ? (nowTs - firstTokenTs) / 1000 : 0;
-          const tps = decodeSecs > 0.2 ? chunk.usage.completionTokens / decodeSecs : undefined;
-          updateLastAssistant((m) => ({
-            ...m,
-            usage: chunk.usage,
-            tps,
-            model: settings.model,
-            ttftMs: firstTokenTs ? firstTokenTs - requestStartTs : m.ttftMs,
-            llmMs: nowTs - requestStartTs,
-          }));
-          continue;
-        }
-        if (firstTokenTs === 0) {
-          firstTokenTs = Date.now();
-          updateLastAssistant((m) => ({
-            ...m,
-            ttftMs: firstTokenTs - requestStartTs,
-            model: settings.model,
-          }));
-        }
-        if (chunk.type === 'reasoning' && reasoningStartTs === 0) reasoningStartTs = Date.now();
-        // 首个正文 chunk 到达 = 思考结束，结算耗时
-        const settle = chunk.type === 'content' && reasoningStartTs > 0 && !reasoningSettled;
-        if (settle) reasoningSettled = true;
-        if (structuredGen) {
-          if (chunk.type === 'content') {
-            if (promptCfg) promptRaw += chunk.delta;
-            else if (knowledgeGenCfg) knowledgeGenRaw += chunk.delta;
-            else caseRaw += chunk.delta;
-          }
-          const elapsed = Math.max(0, Math.floor((Date.now() - requestStartTs) / 1000));
-          const progress = structuredProgress(elapsed);
-          if (chunk.type === 'reasoning') {
-            updateLastAssistant((last) => {
-              const nextMsg = {
-                ...last,
-                reasoning: (last.reasoning ?? '') + chunk.delta,
-                content: progress,
+            const detail = toolArgsDetail(chunk.name, chunk.args);
+            const stepId = `tool_${chunk.name}_${chunk.args?.slice(0, 24) ?? ''}`;
+            const toolFailed =
+              chunk.status === 'done' &&
+              typeof chunk.result === 'string' &&
+              /^\s*\{\s*"error"\s*:/.test(chunk.result);
+            updateLastAssistant((m) => {
+              const steps = [...(m.activitySteps ?? [])];
+              const idx = steps.findIndex(
+                (s) =>
+                  s.id === stepId ||
+                  (s.detail === detail && s.title === kind && s.status === 'running'),
+              );
+              const next: ActivityStep = {
+                id: stepId,
+                kind: activityKindForTool(chunk.name),
+                title: kind,
+                detail: detail || undefined,
+                status: chunk.status === 'running' ? 'running' : toolFailed ? 'error' : 'done',
               };
-              if (settle) {
-                nextMsg.reasoningDuration = Math.max(
-                  1,
-                  Math.round((Date.now() - reasoningStartTs) / 1000),
-                );
-              }
-              return nextMsg;
+              if (idx >= 0) steps[idx] = { ...steps[idx], ...next };
+              else steps.push(next);
+              return { ...m, activitySteps: steps };
             });
-          } else if (settle) {
-            updateLastAssistant((last) => ({
-              ...last,
-              content: progress,
-              reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000)),
+            continue;
+          }
+          if (chunk.type === 'usage') {
+            const nowTs = Date.now();
+            const decodeSecs = firstTokenTs ? (nowTs - firstTokenTs) / 1000 : 0;
+            const outTok = completionTokensOf(chunk.usage);
+            const tps = decodeSecs > 0.2 && outTok > 0 ? outTok / decodeSecs : undefined;
+            updateLastAssistant((m) => ({
+              ...m,
+              usage: chunk.usage,
+              tps,
+              model: settings.model,
+              ttftMs: firstTokenTs ? firstTokenTs - requestStartTs : m.ttftMs,
+              llmMs: nowTs - requestStartTs,
+            }));
+            continue;
+          }
+          if (firstTokenTs === 0) {
+            firstTokenTs = Date.now();
+            updateLastAssistant((m) => ({
+              ...m,
+              ttftMs: firstTokenTs - requestStartTs,
+              model: settings.model,
             }));
           }
-          continue;
-        }
-        updateLastAssistant((last) => {
-          const nextMsg: LocalMessage =
-            chunk.type === 'reasoning'
-              ? { ...last, reasoning: (last.reasoning ?? '') + chunk.delta }
-              : { ...last, content: last.content + chunk.delta };
+          if (chunk.type === 'reasoning_api') {
+            updateLastAssistant((last) => ({ ...last, reasoningApi: chunk.content }));
+            continue;
+          }
+          if (chunk.type === 'reasoning' && reasoningStartTs === 0) reasoningStartTs = Date.now();
+          // 首个正文 chunk 到达 = 思考结束，结算耗时
+          const settle = chunk.type === 'content' && reasoningStartTs > 0 && !reasoningSettled;
+          if (settle) reasoningSettled = true;
+          if (structuredGen) {
+            if (chunk.type === 'content') {
+              if (promptCfg) promptRaw += chunk.delta;
+              else if (knowledgeGenCfg) knowledgeGenRaw += chunk.delta;
+              else caseRaw += chunk.delta;
+            }
+            const elapsed = Math.max(0, Math.floor((Date.now() - requestStartTs) / 1000));
+            const progress = structuredProgress(elapsed);
+            if (chunk.type === 'reasoning') {
+              reasoningRaw += chunk.delta;
+              const safeReasoning = sanitizeAssistantContent(reasoningRaw);
+              updateLastAssistant((last) => {
+                const nextMsg = {
+                  ...last,
+                  reasoning: safeReasoning,
+                  content: progress,
+                };
+                if (settle) {
+                  nextMsg.reasoningDuration = Math.max(
+                    1,
+                    Math.round((Date.now() - reasoningStartTs) / 1000),
+                  );
+                }
+                return nextMsg;
+              });
+            } else if (settle) {
+              updateLastAssistant((last) => ({
+                ...last,
+                content: progress,
+                reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000)),
+              }));
+            }
+            continue;
+          }
           if (chunk.type === 'reasoning') {
-            const steps = [...(nextMsg.activitySteps ?? [])];
-            const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
-            const thinkStep: ActivityStep = {
-              id: 'thinking',
-              kind: 'thinking',
-              title: '思考',
-              status: 'running',
-            };
-            if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], ...thinkStep };
-            else steps.unshift(thinkStep);
-            nextMsg.activitySteps = steps;
+            reasoningRaw += chunk.delta;
           }
-          if (settle) {
-            nextMsg.reasoningDuration = Math.max(
-              1,
-              Math.round((Date.now() - reasoningStartTs) / 1000),
+          updateLastAssistant((last) => {
+            const nextMsg: LocalMessage =
+              chunk.type === 'reasoning'
+                ? { ...last, reasoning: sanitizeAssistantContent(reasoningRaw) }
+                : {
+                    ...last,
+                    content: sanitizeAssistantContent(last.content + chunk.delta),
+                  };
+            if (chunk.type === 'reasoning') {
+              const steps = [...(nextMsg.activitySteps ?? [])];
+              const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
+              const detail = latestParagraphFirstLine(nextMsg.reasoning ?? '')
+                .replaceAll('**', '')
+                .slice(0, 80);
+              const thinkStep: ActivityStep = {
+                id: 'thinking',
+                kind: 'thinking',
+                title: '思考',
+                detail: detail || undefined,
+                status: 'running',
+              };
+              if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], ...thinkStep };
+              else steps.unshift(thinkStep);
+              nextMsg.activitySteps = steps;
+            }
+            if (settle) {
+              nextMsg.reasoningDuration = Math.max(
+                1,
+                Math.round((Date.now() - reasoningStartTs) / 1000),
+              );
+              const steps = [...(nextMsg.activitySteps ?? [])];
+              const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
+              if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], status: 'done' };
+              nextMsg.activitySteps = steps;
+            }
+            return nextMsg;
+          });
+        }
+        turnOk = true;
+        // 流结束：结算思考耗时，并把 thinking 步骤标为 done
+        {
+          const duration =
+            reasoningStartTs > 0 && !reasoningSettled
+              ? Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000))
+              : null;
+          updateLastAssistant((m) => {
+            const steps = (m.activitySteps ?? []).map((s) =>
+              s.kind === 'thinking' && s.status === 'running'
+                ? { ...s, status: 'done' as const }
+                : s,
             );
-            const steps = [...(nextMsg.activitySteps ?? [])];
-            const thinkIdx = steps.findIndex((s) => s.kind === 'thinking');
-            if (thinkIdx >= 0) steps[thinkIdx] = { ...steps[thinkIdx], status: 'done' };
-            nextMsg.activitySteps = steps;
+            const next: LocalMessage = { ...m, activitySteps: steps };
+            if (duration != null && m.reasoning && m.reasoningDuration == null) {
+              next.reasoningDuration = duration;
+            }
+            return next;
+          });
+        }
+        if (progressTimer != null) {
+          window.clearInterval(progressTimer);
+          progressTimer = undefined;
+        }
+        if (promptCfg) {
+          setToolHint('正在质检并入库…');
+          const finished = await tryFinishPromptGenFromAssistant(promptRaw, promptCfg);
+          updateLastAssistant((m) => ({
+            ...m,
+            content: finished.summary,
+            docsFile: finished.ok
+              ? {
+                  root: 'prompts',
+                  path: finished.path,
+                  name: finished.path.split('/').pop() || finished.title || finished.path,
+                }
+              : undefined,
+          }));
+          if (finished.ok && storeRef.current) {
+            const nextCfg: PromptGenPluginConfig = {
+              ...promptCfg,
+              linkedPromptPath: finished.path,
+            };
+            setPromptGenConfig(nextCfg);
+            promptGenConfigRef.current = nextCfg;
+            commitStore(updateActiveSessionMeta(storeRef.current, { promptGen: nextCfg }));
           }
-          return nextMsg;
-        });
-      }
-      turnOk = true;
-      // 流结束：结算思考耗时，并把 thinking 步骤标为 done
-      {
-        const duration =
-          reasoningStartTs > 0 && !reasoningSettled
-            ? Math.max(1, Math.round((Date.now() - reasoningStartTs) / 1000))
-            : null;
-        updateLastAssistant((m) => {
-          const steps = (m.activitySteps ?? []).map((s) =>
-            s.kind === 'thinking' && s.status === 'running' ? { ...s, status: 'done' as const } : s,
+        } else if (knowledgeGenCfg) {
+          setToolHint('正在质检并入库…');
+          const finished = await tryFinishKnowledgeGenFromAssistant(
+            knowledgeGenRaw,
+            knowledgeGenCfg,
           );
-          const next: LocalMessage = { ...m, activitySteps: steps };
-          if (duration != null && m.reasoning && m.reasoningDuration == null) {
-            next.reasoningDuration = duration;
+          updateLastAssistant((m) => ({
+            ...m,
+            content: finished.summary,
+            docsFile: finished.ok
+              ? {
+                  root: 'knowledge',
+                  path: finished.path,
+                  name: finished.path.split('/').pop() || finished.title || finished.path,
+                  note: finished.category,
+                }
+              : undefined,
+          }));
+          if (finished.ok && storeRef.current) {
+            const nextCfg: KnowledgeGenPluginConfig = {
+              ...knowledgeGenCfg,
+              linkedKnowledgePath: finished.path,
+            };
+            setKnowledgeGenConfig(nextCfg);
+            knowledgeGenConfigRef.current = nextCfg;
+            commitStore(updateActiveSessionMeta(storeRef.current, { knowledgeGen: nextCfg }));
           }
-          return next;
-        });
-      }
-      if (progressTimer != null) {
-        window.clearInterval(progressTimer);
-        progressTimer = undefined;
-      }
-      if (promptCfg) {
-        setToolHint('正在质检并入库…');
-        const finished = await tryFinishPromptGenFromAssistant(promptRaw, promptCfg);
+        } else if (caseCfg) {
+          setToolHint('正在检测覆盖并入库…');
+          const hint =
+            caseCfg.reqPath
+              ?.split('/')
+              .pop()
+              ?.replace(/\.[^.]+$/, '') || content.slice(0, 24);
+          const finished = await tryFinishCaseGenFromAssistant(caseRaw, caseCfg, hint);
+          updateLastAssistant((m) => ({
+            ...m,
+            content: finished.summary,
+            caseFile: finished.ok
+              ? {
+                  path: finished.path,
+                  name: finished.path.split('/').pop() || finished.path,
+                  count: finished.count,
+                }
+              : undefined,
+          }));
+          if (finished.ok && storeRef.current) {
+            const nextCfg: CaseGenPluginConfig = {
+              ...caseCfg,
+              linkedCasePath: finished.path,
+            };
+            setCaseGenConfig(nextCfg);
+            caseGenConfigRef.current = nextCfg;
+            commitStore(updateActiveSessionMeta(storeRef.current, { caseGen: nextCfg }));
+          }
+        }
+      } // end browser stream path
+      if (usedServerRun && turnOk) {
         updateLastAssistant((m) => ({
           ...m,
-          content: finished.summary,
-          docsFile: finished.ok
-            ? {
-                root: 'prompts',
-                path: finished.path,
-                name: finished.path.split('/').pop() || finished.title || finished.path,
-              }
-            : undefined,
+          turnStatus: m.turnStatus === 'stopped' ? 'stopped' : 'completed',
+          activitySteps: (m.activitySteps ?? []).map((s) =>
+            s.status === 'running' ? { ...s, status: 'done' as const } : s,
+          ),
         }));
-        if (finished.ok && storeRef.current) {
-          const nextCfg: PromptGenPluginConfig = {
-            ...promptCfg,
-            linkedPromptPath: finished.path,
-          };
-          setPromptGenConfig(nextCfg);
-          promptGenConfigRef.current = nextCfg;
-          commitStore(updateActiveSessionMeta(storeRef.current, { promptGen: nextCfg }));
-        }
-      } else if (knowledgeGenCfg) {
-        setToolHint('正在质检并入库…');
-        const finished = await tryFinishKnowledgeGenFromAssistant(knowledgeGenRaw, knowledgeGenCfg);
-        updateLastAssistant((m) => ({
-          ...m,
-          content: finished.summary,
-          docsFile: finished.ok
-            ? {
-                root: 'knowledge',
-                path: finished.path,
-                name: finished.path.split('/').pop() || finished.title || finished.path,
-                note: finished.category,
-              }
-            : undefined,
-        }));
-        if (finished.ok && storeRef.current) {
-          const nextCfg: KnowledgeGenPluginConfig = {
-            ...knowledgeGenCfg,
-            linkedKnowledgePath: finished.path,
-          };
-          setKnowledgeGenConfig(nextCfg);
-          knowledgeGenConfigRef.current = nextCfg;
-          commitStore(updateActiveSessionMeta(storeRef.current, { knowledgeGen: nextCfg }));
-        }
-      } else if (caseCfg) {
-        setToolHint('正在检测覆盖并入库…');
-        const hint =
-          caseCfg.reqPath
-            ?.split('/')
-            .pop()
-            ?.replace(/\.[^.]+$/, '') || content.slice(0, 24);
-        const finished = await tryFinishCaseGenFromAssistant(caseRaw, caseCfg, hint);
-        updateLastAssistant((m) => ({
-          ...m,
-          content: finished.summary,
-          caseFile: finished.ok
-            ? {
-                path: finished.path,
-                name: finished.path.split('/').pop() || finished.path,
-                count: finished.count,
-              }
-            : undefined,
-        }));
-        if (finished.ok && storeRef.current) {
-          const nextCfg: CaseGenPluginConfig = {
-            ...caseCfg,
-            linkedCasePath: finished.path,
-          };
-          setCaseGenConfig(nextCfg);
-          caseGenConfigRef.current = nextCfg;
-          commitStore(updateActiveSessionMeta(storeRef.current, { caseGen: nextCfg }));
-        }
       }
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (storeRef.current?.activeId === sid) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
       }
-      // 移除未产生内容的空 assistant 消息
-      setMessages((prev) =>
-        prev[prev.length - 1]?.role === 'assistant' && prev[prev.length - 1]?.content === ''
-          ? prev.slice(0, -1)
-          : prev,
-      );
+      // 移除未产生内容的空 assistant 消息；否则结算未完成步骤
+      applySessionMessages(sid, (prev) => {
+        const last = prev[prev.length - 1];
+        if (
+          last?.role === 'assistant' &&
+          !last.content &&
+          !last.reasoning &&
+          !last.activitySteps?.length
+        ) {
+          return prev.slice(0, -1);
+        }
+        if (last?.role !== 'assistant') return prev;
+        const copy = prev.slice();
+        copy[copy.length - 1] = {
+          ...last,
+          activitySteps: (last.activitySteps ?? []).map((s) =>
+            s.status === 'running' ? { ...s, status: 'done' as const } : s,
+          ),
+        };
+        return copy;
+      });
     } finally {
       if (progressTimer != null) {
         window.clearInterval(progressTimer);
         progressTimer = undefined;
       }
       const nowTs = Date.now();
-      updateLastAssistant((m) => ({
-        ...m,
-        time: nowTs,
-        model: m.model ?? settings.model,
-        llmMs: m.llmMs ?? nowTs - requestStartTs,
-        ttftMs: m.ttftMs ?? (firstTokenTs ? firstTokenTs - requestStartTs : undefined),
-      }));
-      streamingRef.current = false;
-      setStreaming(false);
-      abortRef.current = null;
+      const timing = turnTimingRef.current.get(sid);
+      const resolvedFirst = firstTokenTs || timing?.firstToken || 0;
+      updateLastAssistant((m) => {
+        const llmMs = m.llmMs ?? nowTs - requestStartTs;
+        const ttftMs = m.ttftMs ?? (resolvedFirst ? resolvedFirst - requestStartTs : undefined);
+        const decodeSecs = ttftMs != null ? Math.max(0, (llmMs - ttftMs) / 1000) : 0;
+        const outTok = completionTokensOf(m.usage);
+        const tps = m.tps ?? (decodeSecs > 0.2 && outTok > 0 ? outTok / decodeSecs : undefined);
+        return {
+          ...m,
+          time: nowTs,
+          model: m.model ?? settings.model,
+          llmMs,
+          ttftMs,
+          tps,
+          turnStatus:
+            m.turnStatus === 'stopped' || m.turnStatus === 'completed'
+              ? m.turnStatus
+              : turnOk
+                ? 'completed'
+                : // 服务端回合：仅手动 abort 才标 stopped；SSE 抖动不应误杀
+                  ctrl.signal.aborted || !usedServerRun
+                  ? m.turnStatus === 'running'
+                    ? 'stopped'
+                    : m.turnStatus
+                  : m.turnStatus,
+          activitySteps: (m.activitySteps ?? []).map((s) =>
+            s.status === 'running' ? { ...s, status: 'done' as const } : s,
+          ),
+        };
+      });
+      turnTimingRef.current.delete(sid);
+      liveRunsRef.current.delete(sid);
+      sseUnsubRef.current.get(sid)?.();
+      sseUnsubRef.current.delete(sid);
+      if (runSessionIdRef.current === sid) runSessionIdRef.current = null;
+      if (abortRef.current === ctrl) abortRef.current = null;
+      setSessionBusy(sid, false);
       {
         const detail = loadGeneralPrefs().toolStepDetail;
         // concise/standard：立即清；detailed 稍留；full 多留一会便于阅读
@@ -3466,18 +4772,96 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         }
       }
       // 后台沉淀（不阻塞下一轮）；明确「记住」类话术才写入
+      // 服务端回合也可能 memory_suggest，结束后统一刷新待确认角标
       if (turnOk && useMemory) {
-        void maybeCaptureMemory(content, memCwd).then((wrote) => {
-          if (wrote) refreshPluginRuntime();
+        void maybeCaptureMemory(content, memCwd).finally(() => {
+          refreshPluginRuntime();
         });
       }
 
-      // dsh：当前轮结束后自主取下一条（插话优先，否则队列头）
-      let followUp = interruptPayloadRef.current;
-      interruptPayloadRef.current = null;
-      if (!followUp && sendQueueRef.current.length) {
-        followUp = sendQueueRef.current[0];
-        syncSendQueue(sendQueueRef.current.slice(1));
+      // session-log-deepseek：本机追加回合 JSONL（含 reasoning_content；失败静默）
+      if (turnOk && storeRef.current) {
+        const sessMsgs =
+          (storeRef.current.sessions.find((x) => x.id === sid)?.messages as LocalMessage[]) ?? [];
+        const lastA = [...sessMsgs].reverse().find((m) => m.role === 'assistant');
+        const logMsgs = buildDeepseekTurnMessages({
+          userContent: content,
+          assistantContent: typeof lastA?.content === 'string' ? lastA.content : '',
+          reasoning: lastA?.reasoning,
+        });
+        if (logMsgs.length) {
+          void appendDeepseekSessionLogClient({
+            sessionId: sid,
+            model: lastA?.model ?? settings.model,
+            messages: logMsgs,
+          });
+        }
+      }
+
+      // session-title-llm：首轮结束后用 LLM 起短标题（失败静默）
+      if (turnOk && settings && !ctrl.signal.aborted && storeRef.current) {
+        const sess = storeRef.current.sessions.find((x) => x.id === sid);
+        const msgs = (sess?.messages as Array<{ role?: string; content?: unknown }>) ?? [];
+        if (
+          sess &&
+          !llmTitledSessionIdsRef.current.has(sid) &&
+          shouldGenerateLlmTitle(sess.title, msgs)
+        ) {
+          const userText = firstUserText(msgs);
+          if (userText) {
+            llmTitledSessionIdsRef.current.add(sid);
+            void generateSessionTitleLlm(settings, userText).then((title) => {
+              if (!title || !storeRef.current) return;
+              const cur = storeRef.current.sessions.find((x) => x.id === sid);
+              if (
+                !cur ||
+                !shouldGenerateLlmTitle(
+                  cur.title,
+                  cur.messages as Array<{ role?: string; content?: unknown }>,
+                )
+              ) {
+                return;
+              }
+              commitStore(renameSession(storeRef.current, sid, title));
+            });
+          }
+        }
+      }
+
+      // dsh：当前轮结束后自主取下一条（仅仍停留在本会话时续发，避免串到其他会话）
+      const stillOnRunSession = storeRef.current?.activeId === sid;
+      let followUp: PendingSend | null = null;
+      if (stillOnRunSession) {
+        followUp = interruptPayloadRef.current;
+        interruptPayloadRef.current = null;
+        if (!followUp && sendQueueRef.current.length) {
+          followUp = sendQueueRef.current[0];
+          syncSendQueue(sendQueueRef.current.slice(1));
+        }
+        const goalText = activeGoalText(sessionGoalRef.current);
+        if (
+          !followUp &&
+          !structuredPlugin &&
+          shouldDriveGoalRound({
+            goalActive: Boolean(goalText),
+            turnOk,
+            aborted: ctrl.signal.aborted,
+            hasFollowUp: false,
+            askUserPending: Boolean(askUserWaitRef.current),
+            roundsUsed: goalDriverRoundsRef.current,
+            maxRounds: DEFAULT_GOAL_DRIVER_MAX_ROUNDS,
+          })
+        ) {
+          const nextRound = goalDriverRoundsRef.current + 1;
+          goalDriverRoundsRef.current = nextRound;
+          followUp = {
+            id: `goal_drv_${Date.now().toString(36)}`,
+            content: goalDriverContinueText(goalText!, nextRound, DEFAULT_GOAL_DRIVER_MAX_ROUNDS),
+            files: [],
+            refs: [],
+            imgs: [],
+          };
+        }
       }
       if (followUp) {
         window.setTimeout(() => {
@@ -3491,7 +4875,24 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     // 手动停止：清空插话与排队，不自动续发
     interruptPayloadRef.current = null;
     syncSendQueue([]);
-    abortRef.current?.abort();
+    goalDriverRoundsRef.current = 0;
+    const sid = storeRef.current?.activeId;
+    if (sid) {
+      applySessionMessages(sid, (prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== 'assistant') return prev;
+        const copy = prev.slice();
+        copy[copy.length - 1] = {
+          ...last,
+          turnStatus: 'stopped',
+          activitySteps: (last.activitySteps ?? []).map((s) =>
+            s.status === 'running' ? { ...s, status: 'done' as const } : s,
+          ),
+        };
+        return copy;
+      });
+    }
+    abortSessionRun(sid);
   }
 
   function removeQueued(id: string) {
@@ -3519,7 +4920,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       return;
     }
     interruptPayloadRef.current = item;
-    abortRef.current?.abort();
+    abortSessionRun(storeRef.current?.activeId);
   }
 
   /** Cmd/Ctrl+Enter：插话发送；其余排队在本轮结束后自主续发 */
@@ -3533,7 +4934,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       return;
     }
     interruptPayloadRef.current = head;
-    abortRef.current?.abort();
+    abortSessionRun(storeRef.current?.activeId);
   }
 
   function toggleReasoning(index: number, e: ReactMouseEvent<HTMLButtonElement>) {
@@ -3574,8 +4975,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setDocRefs(d?.docRefs ?? []);
   }
 
-  function resetComposer(opts?: { clearDraft?: boolean }) {
-    abortRef.current?.abort();
+  function resetComposer(opts?: { clearDraft?: boolean; abortRun?: boolean }) {
+    if (opts?.abortRun !== false) {
+      abortSessionRun(storeRef.current?.activeId);
+    }
+    streamingRef.current = false;
     setStreaming(false);
     setAttachments([]);
     setImages([]);
@@ -3589,16 +4993,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
   }
 
-  function pluginSessionTitle(kind: 'caseGen' | 'promptGen' | 'knowledgeGen'): string {
-    const d = new Date();
-    const p = (n: number) => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-    const label =
-      kind === 'caseGen' ? '生成测试用例' : kind === 'promptGen' ? '生成提示词' : '生成知识库';
-    return `${label} · ${stamp}`;
-  }
-
-  /** 确认启用插件时：新建会话（带 id），再挂插件配置，避免同一会话混多个生成任务 */
+  /** 确认启用插件：空会话则复用并挂配置，否则新建；标题保持「新对话」，首次发送后再更新 */
   function beginPluginSession(
     kind: 'caseGen' | 'promptGen' | 'knowledgeGen',
     cfg: CaseGenPluginConfig | PromptGenPluginConfig | KnowledgeGenPluginConfig,
@@ -3606,29 +5001,43 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!storeRef.current) return;
     setChatTab('dialog');
     const leavingId = storeRef.current.activeId;
-    saveComposerDraft(leavingId);
-    resetComposer({ clearDraft: true });
-    const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
-    // dsh：插件新会话也归入当前 picker 工作区
-    const ws = workspaceInfo?.workspace?.trim() || undefined;
-    let next = createSession(base, ws ? { workspacePath: ws } : undefined);
-    const title = pluginSessionTitle(kind);
-    const activeId = next.activeId;
-    next = {
-      ...next,
-      sessions: next.sessions.map((s) =>
-        s.id === activeId
-          ? {
-              ...s,
-              title,
-              caseGen: kind === 'caseGen' ? (cfg as CaseGenPluginConfig) : undefined,
-              promptGen: kind === 'promptGen' ? (cfg as PromptGenPluginConfig) : undefined,
-              knowledgeGen: kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : undefined,
-              updatedAt: Date.now(),
-            }
-          : s,
-      ),
-    };
+    const leaving = storeRef.current.sessions.find((x) => x.id === leavingId);
+    const reuseEmpty =
+      Boolean(leaving) &&
+      !leaving!.archived &&
+      !leaving!.deleted &&
+      (!Array.isArray(leaving!.messages) || leaving!.messages.length === 0);
+
+    const patchSession = (s: ChatSession): ChatSession => ({
+      ...s,
+      // 确认后仍显示「新对话」；有消息提交时由 updateSessionMessages / LLM 起名
+      title: s.title?.trim() || '新对话',
+      caseGen: kind === 'caseGen' ? (cfg as CaseGenPluginConfig) : undefined,
+      promptGen: kind === 'promptGen' ? (cfg as PromptGenPluginConfig) : undefined,
+      knowledgeGen: kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : undefined,
+      updatedAt: Date.now(),
+    });
+
+    let next: SessionStore;
+    if (reuseEmpty && leavingId) {
+      resetComposer({ clearDraft: true, abortRun: false });
+      next = {
+        ...storeRef.current,
+        activeId: leavingId,
+        sessions: storeRef.current.sessions.map((s) => (s.id === leavingId ? patchSession(s) : s)),
+      };
+    } else {
+      saveComposerDraft(leavingId);
+      resetComposer({ clearDraft: true, abortRun: false });
+      const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
+      const ws = workspaceInfo?.workspace?.trim() || undefined;
+      next = createSession(base, ws ? { workspacePath: ws } : undefined);
+      const activeId = next.activeId;
+      next = {
+        ...next,
+        sessions: next.sessions.map((s) => (s.id === activeId ? patchSession(s) : s)),
+      };
+    }
     commitStore(next);
     setMessages([]);
     setCaseGenConfig(kind === 'caseGen' ? (cfg as CaseGenPluginConfig) : null);
@@ -3638,7 +5047,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setKnowledgeGenConfig(kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : null);
     knowledgeGenConfigRef.current =
       kind === 'knowledgeGen' ? (cfg as KnowledgeGenPluginConfig) : null;
-    const expandPath = ws || workspaceInfo?.projectRoot;
+    const expandPath =
+      next.sessions.find((x) => x.id === next.activeId)?.workspacePath ||
+      workspaceInfo?.workspace?.trim() ||
+      workspaceInfo?.projectRoot;
     if (expandPath) setWsExpanded((prev) => ({ ...prev, [expandPath]: true }));
     void syncFsWorkspaceForSession(next.sessions.find((x) => x.id === next.activeId));
   }
@@ -3681,7 +5093,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setChatTab('dialog');
     const leavingId = storeRef.current.activeId;
     saveComposerDraft(leavingId);
-    resetComposer({ clearDraft: true });
+    // 新建会话不打断旧会话后台生成
+    resetComposer({ clearDraft: true, abortRun: false });
     let base = pruneEphemeralSession(leavingId) ?? storeRef.current;
     // dsh：新会话归入「当前工作区」（显式传入 path 优先，否则用 picker 选中项）
     const ws = workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
@@ -3692,7 +5105,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setPromptGenConfig(null);
     setKnowledgeGenConfig(null);
     setSessionTodos([]);
+    sessionGoalRef.current = null;
     setSessionGoal(null);
+    goalDriverRoundsRef.current = 0;
     setPlanPhase('off');
     settleAskUserCanceled();
     settlePlanCanceled();
@@ -3740,8 +5155,12 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
   function togglePlanMode() {
     setPlanPhase((cur) => {
-      if (cur === 'off') return 'planning';
+      if (cur === 'off') {
+        setComposerChip('plan');
+        return 'planning';
+      }
       settlePlanCanceled();
+      setComposerChip((chip) => (chip === 'plan' ? null : chip));
       return 'off';
     });
   }
@@ -3783,11 +5202,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (id === storeRef.current.activeId) return;
     const leavingId = storeRef.current.activeId;
     saveComposerDraft(leavingId);
-    abortRef.current?.abort();
+    // 切会话不中断后台回合（与 dsh 一致）；仅取消当前会话的人工等待
     settleAskUserCanceled();
     settlePlanCanceled();
     setPlanPhase('off');
-    setStreaming(false);
     setError(null);
     setShowJump(false);
     followRef.current = true;
@@ -3796,12 +5214,27 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!base.sessions.some((x) => x.id === id)) base = storeRef.current;
     const next = switchSession(base, id);
     const s = next.sessions.find((x) => x.id === id);
-    setMessages((s?.messages as LocalMessage[]) ?? []);
+    const live = liveRunsRef.current.get(id)?.messages;
+    const msgs = live ?? (s?.messages as LocalMessage[]) ?? [];
+    messagesRef.current = msgs;
+    setMessages(msgs);
+    const busy = liveRunsRef.current.has(id) || busySessionIds.includes(id);
+    streamingRef.current = busy;
+    setStreaming(busy);
+    abortRef.current = liveRunsRef.current.get(id)?.abort ?? null;
+    if (busy && !sseUnsubRef.current.has(id)) {
+      attachServerRun(id, 0);
+    }
     setCaseGenConfig(s?.caseGen?.active ? s.caseGen : null);
     setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
     setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
     setSessionTodos(normalizeTodos(s?.todos));
-    setSessionGoal(normalizeGoal(s?.goal));
+    {
+      const g = normalizeGoal(s?.goal);
+      sessionGoalRef.current = g;
+      setSessionGoal(g);
+      goalDriverRoundsRef.current = 0;
+    }
     restoreComposerDraft(id);
     commitStore(next);
     void syncFsWorkspaceForSession(s);
@@ -3856,8 +5289,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setRenameSessionId(id);
   }
 
+  function showActiveSessionStats() {
+    const sid = storeRef.current?.activeId;
+    const s = storeRef.current?.sessions.find((x) => x.id === sid);
+    if (!s) {
+      setError('无活跃会话可统计');
+      return;
+    }
+    const text = getCachedProjection('stats', s.id, s.updatedAt, () =>
+      formatSessionStats(computeSessionStats(s)),
+    );
+    setError(text, 'ok');
+  }
+
   function confirmRenameSession(name: string) {
     if (!storeRef.current || !renameSessionId) return;
+    llmTitledSessionIdsRef.current.add(renameSessionId);
     commitStore(renameSession(storeRef.current, renameSessionId, name));
     setRenameSessionId(null);
   }
@@ -3873,6 +5320,41 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   async function onPickFiles(e: ChangeEvent<HTMLInputElement>) {
     const list = Array.from(e.target.files ?? []);
     e.target.value = '';
+    await ingestLocalFiles(list);
+  }
+
+  function pasteDocCatalog(): PasteCatalogEntry[] {
+    const fromSlash: PasteCatalogEntry[] = slashDocs.map((d) => ({
+      collection: d.collection,
+      path: d.path,
+      title: d.title,
+      category: d.category,
+      format: String(d.format),
+    }));
+    const fromWs: PasteCatalogEntry[] = wsAtEntries.map((e) => ({
+      collection: 'workspace' as const,
+      path: e.path,
+      title: e.name,
+      category: shortWorkspaceLabel(workspaceInfo?.workspace, workspaceInfo?.projectRoot),
+      format: e.type === 'dir' ? 'dir' : 'file',
+    }));
+    return [...fromSlash, ...fromWs];
+  }
+
+  function addPasteDocRefs(refs: DocRef[]) {
+    if (!refs.length) return;
+    setDocRefs((prev) => {
+      const next = [...prev];
+      for (const r of refs) {
+        if (next.length >= REF_MAX_COUNT) break;
+        if (next.some((x) => x.collection === r.collection && x.path === r.path)) continue;
+        next.push(r);
+      }
+      return next;
+    });
+  }
+
+  async function ingestLocalFiles(list: File[], pathByName?: Map<string, string>) {
     const nextAtt: Attachment[] = [];
     const nextImg: ImageAtt[] = [];
     const rejected: string[] = [];
@@ -3887,7 +5369,12 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         if (read.kind === 'image') {
           nextImg.push(await fileToImageAtt(read.file));
         } else {
-          nextAtt.push({ name: read.name, size: read.size, content: read.content });
+          nextAtt.push({
+            name: read.name,
+            size: read.size,
+            content: read.content,
+            path: pathByName?.get(f.name) || pathByName?.get(read.name),
+          });
         }
         used += 1;
       } catch (err) {
@@ -3897,6 +5384,90 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (nextAtt.length) setAttachments((prev) => [...prev, ...nextAtt]);
     if (nextImg.length) setImages((prev) => [...prev, ...nextImg]);
     setError(rejected.length ? `以下文件未添加：${rejected.join('、')}` : null);
+    textareaRef.current?.focus();
+  }
+
+  /** 粘贴本地文件 / 路径 → 路径胶囊或附件胶囊（避免只出现纯文本文件名） */
+  function onComposerPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    const items = Array.from(cd.items ?? []);
+    const imageFiles = items
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => Boolean(f));
+    const otherFiles = items
+      .filter((it) => it.kind === 'file' && !it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => Boolean(f));
+    // DataTransfer.files 有时比 items 更全（Finder 拖贴）
+    for (const f of Array.from(cd.files ?? [])) {
+      if (f.type.startsWith('image/')) {
+        if (!imageFiles.some((x) => x.name === f.name && x.size === f.size)) imageFiles.push(f);
+      } else if (!otherFiles.some((x) => x.name === f.name && x.size === f.size)) {
+        otherFiles.push(f);
+      }
+    }
+
+    const clipPaths = extractClipboardFilePaths(cd);
+    const plain = (cd.getData('text/plain') || '').trim();
+    const catalog = pasteDocCatalog();
+    const wsLabel = shortWorkspaceLabel(workspaceInfo?.workspace, workspaceInfo?.projectRoot);
+    const pathOpts = {
+      projectRoot: workspaceInfo?.projectRoot,
+      workspace: workspaceInfo?.workspace,
+      workspaceLabel: wsLabel,
+    };
+
+    const resolvedRefs: DocRef[] = [];
+    const pathByName = new Map<string, string>();
+    for (const p of clipPaths) {
+      const ref = resolvePathToPasteDocRef(p, pathOpts);
+      if (ref) {
+        resolvedRefs.push(ref);
+        pathByName.set(basenamePath(p), ref.path);
+      } else {
+        pathByName.set(basenamePath(p), p);
+      }
+    }
+
+    // Finder 常见：剪贴板只有文件名文本
+    let bareNameRef: DocRef | null = null;
+    if (
+      !imageFiles.length &&
+      !otherFiles.length &&
+      !clipPaths.length &&
+      looksLikeBareFilename(plain)
+    ) {
+      bareNameRef = resolveNameToPasteDocRef(plain, catalog);
+    }
+
+    // 有 File 时优先用文件名在目录中唯一匹配 → 路径胶囊（不读入正文）
+    const fileNameRefs: DocRef[] = [];
+    const filesAsAttach: File[] = [];
+    for (const f of otherFiles) {
+      const byPath = pathByName.get(f.name);
+      const ref =
+        (byPath ? resolvePathToPasteDocRef(byPath, pathOpts) : null) ||
+        resolveNameToPasteDocRef(f.name, catalog);
+      if (ref) fileNameRefs.push(ref);
+      else filesAsAttach.push(f);
+    }
+
+    const willChip =
+      resolvedRefs.length > 0 ||
+      fileNameRefs.length > 0 ||
+      Boolean(bareNameRef) ||
+      imageFiles.length > 0 ||
+      filesAsAttach.length > 0;
+    if (!willChip) return;
+
+    e.preventDefault();
+    setError(null);
+    addPasteDocRefs([...resolvedRefs, ...fileNameRefs, ...(bareNameRef ? [bareNameRef] : [])]);
+    if (imageFiles.length) void addImages(imageFiles);
+    if (filesAsAttach.length) void ingestLocalFiles(filesAsAttach, pathByName);
     textareaRef.current?.focus();
   }
 
@@ -3929,7 +5500,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity';
   const accessOpt = ACCESS_OPTIONS.find((o) => o.value === access) ?? ACCESS_OPTIONS[0];
   const activeSessions = (store?.sessions ?? []).filter((s) => !s.archived && !s.deleted);
-  const archivedSessions = (store?.sessions ?? []).filter((s) => s.archived && !s.deleted);
+  const archivedSessionsAll = (store?.sessions ?? []).filter((s) => s.archived && !s.deleted);
   const wsItems = workspaceInfo?.items ?? [];
   const wsPaths = new Set(wsItems.map((it) => it.path));
   const wsActivePath = workspaceInfo?.workspace ?? '';
@@ -3946,6 +5517,33 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       ? shortWorkspaceLabel(composerWsPath, projectRootPath)
       : '工作区';
   const qNorm = wsQuery.trim().toLowerCase();
+  /** session-query：先本地 JSON，有服务时用 sqlite FTS 覆盖 */
+  const localSessionQueryIds = useMemo(() => {
+    if (!qNorm) return null;
+    return new Set(
+      querySessions(store, wsQuery, { limit: 50, includeArchived: true }).map((h) => h.sessionId),
+    );
+  }, [qNorm, store, wsQuery]);
+  const [sqliteSessionQueryIds, setSqliteSessionQueryIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!qNorm) {
+      setSqliteSessionQueryIds(null);
+      return;
+    }
+    let cancelled = false;
+    setSqliteSessionQueryIds(null);
+    void querySessionsViaApi(wsQuery, { limit: 50, includeArchived: true }).then((r) => {
+      if (cancelled || !r?.hits) return;
+      setSqliteSessionQueryIds(new Set(r.hits.map((h) => h.sessionId)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [qNorm, wsQuery]);
+  const sessionQueryIds = sqliteSessionQueryIds ?? localSessionQueryIds;
+  const archivedSessions = sessionQueryIds
+    ? archivedSessionsAll.filter((s) => sessionQueryIds.has(s.id))
+    : archivedSessionsAll;
   /** 无归属或路径已不在列表中 → 归入项目根工作区（不再有「未分组」） */
   function sessionsForWorkspace(item: WorkspaceItem): ChatSession[] {
     const isProjectRoot = item.id === 'ws_project' || item.path === projectRootPath;
@@ -3956,7 +5554,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           if (isProjectRoot && (!s.workspacePath || !wsPaths.has(s.workspacePath))) return true;
           return false;
         })
-        .filter((s) => !qNorm || s.title.toLowerCase().includes(qNorm)),
+        .filter((s) => !sessionQueryIds || sessionQueryIds.has(s.id)),
     );
   }
 
@@ -3971,7 +5569,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   function SessionRow({ s, nested = false }: { s: ChatSession; nested?: boolean }) {
     const active = s.id === store?.activeId;
     const menuOpen = sessionMenuId === s.id;
-    const busy = Boolean(streaming && active);
+    const busy = busySessionIds.includes(s.id);
     return (
       <SessionRailRow
         s={s}
@@ -3987,6 +5585,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         }}
         onTogglePin={() => togglePin(s.id)}
         onToggleArchive={() => toggleArchive(s.id, !s.archived)}
+        onExport={() => {
+          setSessionMenuId(null);
+          const result = exportSessionDownload(s, 'json');
+          setError(result.ok ? `已导出 ${result.filename}` : result.error);
+        }}
         onRemove={() => {
           // 先关菜单，避免确认框底下仍挂着「…」弹层
           setSessionMenuId(null);
@@ -4128,12 +5731,12 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               <input
                 value={wsQuery}
                 onChange={(e) => setWsQuery(e.target.value)}
-                placeholder="搜索工作区或会话"
+                placeholder="搜索工作区 / 会话标题 / 消息"
                 className="w-full mb-2 px-2.5 py-1.5 text-[12px] rounded-lg border border-stone-200 bg-white text-stone-700 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-[#4176e6]/40"
               />
             )}
 
-            {!fsLive && (
+            {fsOffline && (
               <div className="px-1.5 py-2 text-[11px] text-amber-700/80">
                 本地文件服务未就绪，工作区暂不可用
               </div>
@@ -4274,123 +5877,157 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* dsh 风格：会话标题 + Tab（对话 | 会话记忆） */}
-        <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
-          <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
-            <button
-              type="button"
-              title="点击重命名"
-              onClick={() => {
-                const id = store?.activeId;
-                if (id) renameSessionTitle(id);
-              }}
-              className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-[color:var(--tw-label-primary)] truncate hover:text-[#4176e6] transition-colors"
-            >
-              {store?.sessions.find((x) => x.id === store.activeId)?.title || '新对话'}
-            </button>
-          </div>
-          <div className="flex items-center gap-6 px-6">
-            <button
-              type="button"
-              onClick={() => setChatTab('dialog')}
-              className={`relative h-10 text-sm transition-colors ${
-                chatTab !== 'memory' || !pluginOn.memory
-                  ? 'text-[#4176e6] font-medium'
-                  : 'text-stone-500 hover:text-stone-700'
-              }`}
-            >
-              对话
-              {(chatTab !== 'memory' || !pluginOn.memory) && (
-                <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
-              )}
-            </button>
-            {pluginOn.memory && (
+        {/* 空会话隐藏标题/Tab；有消息时入场 */}
+        {!empty ? (
+          <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
+            <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
               <button
                 type="button"
-                onClick={() => setChatTab('memory')}
+                title="点击重命名"
+                onClick={() => {
+                  const id = store?.activeId;
+                  if (id) renameSessionTitle(id);
+                }}
+                className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-[color:var(--tw-label-primary)] truncate hover:text-[#4176e6] transition-colors"
+              >
+                {store?.sessions.find((x) => x.id === store.activeId)?.title || '新对话'}
+              </button>
+            </div>
+            <div className="flex items-center gap-6 px-6">
+              <button
+                type="button"
+                onClick={() => setChatTab('dialog')}
                 className={`relative h-10 text-sm transition-colors ${
-                  chatTab === 'memory'
+                  chatTab === 'dialog'
                     ? 'text-[#4176e6] font-medium'
                     : 'text-stone-500 hover:text-stone-700'
                 }`}
               >
-                记忆
-                {chatTab === 'memory' && (
+                对话
+                {chatTab === 'dialog' && (
                   <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
                 )}
               </button>
-            )}
-          </div>
-          {sessionGoal && sessionGoal.status !== 'cleared' && chatTab !== 'memory' ? (
-            <div className="px-6 pb-2">
-              <div className="rounded-xl border border-[#4176e6]/25 bg-[#f5f8ff] px-3 py-2 flex items-start gap-2">
-                <span className="text-[11px] font-medium text-[#4176e6] shrink-0 pt-0.5">
-                  目标{sessionGoal.status === 'done' ? '·完成' : ''}
-                </span>
-                <span
-                  className={`flex-1 min-w-0 text-[12px] leading-5 ${
-                    sessionGoal.status === 'done' ? 'text-stone-400 line-through' : 'text-stone-800'
-                  }`}
-                >
-                  {sessionGoal.text}
-                </span>
+              <button
+                type="button"
+                onClick={() => setChatTab('thread')}
+                className={`relative h-10 text-sm transition-colors ${
+                  chatTab === 'thread'
+                    ? 'text-[#4176e6] font-medium'
+                    : 'text-stone-500 hover:text-stone-700'
+                }`}
+              >
+                回合
+                {chatTab === 'thread' && (
+                  <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
+                )}
+              </button>
+              {pluginOn.memory && (
                 <button
                   type="button"
-                  title="清除目标"
-                  className="text-[11px] text-stone-400 hover:text-stone-600 shrink-0"
-                  onClick={() => {
-                    setSessionGoal(null);
-                    if (storeRef.current) {
-                      commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
-                    }
-                  }}
+                  onClick={() => setChatTab('memory')}
+                  className={`relative h-10 text-sm transition-colors ${
+                    chatTab === 'memory'
+                      ? 'text-[#4176e6] font-medium'
+                      : 'text-stone-500 hover:text-stone-700'
+                  }`}
                 >
-                  清除
+                  <span className="inline-flex items-center gap-1.5">
+                    记忆
+                    {(memoryHealth?.suggestionCount ?? 0) > 0 ? (
+                      <span
+                        className="min-w-[1.125rem] h-[1.125rem] px-1 inline-flex items-center justify-center rounded-full bg-red-500 text-[10px] font-medium text-white tabular-nums leading-none"
+                        title={`${memoryHealth?.suggestionCount} 条待确认`}
+                      >
+                        {memoryHealth!.suggestionCount! > 99
+                          ? '99+'
+                          : memoryHealth!.suggestionCount}
+                      </span>
+                    ) : null}
+                  </span>
+                  {chatTab === 'memory' && (
+                    <span className="absolute left-0 right-0 -bottom-px h-0.5 bg-[#4176e6] rounded-full" />
+                  )}
                 </button>
-              </div>
+              )}
             </div>
-          ) : null}
-          {sessionTodos.length > 0 && chatTab !== 'memory' ? (
-            <div className="px-6 pb-3">
-              <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5">
-                <div className="text-[11px] font-medium text-stone-500 mb-1.5">
-                  待办 · {sessionTodos.filter((x) => x.status === 'completed').length}/
-                  {sessionTodos.length}
+            {sessionGoal && sessionGoal.status !== 'cleared' && chatTab === 'dialog' ? (
+              <div className="px-6 pb-2">
+                <div className="rounded-xl border border-[#4176e6]/25 bg-[#f5f8ff] px-3 py-2 flex items-start gap-2">
+                  <span className="text-[11px] font-medium text-[#4176e6] shrink-0 pt-0.5">
+                    目标{sessionGoal.status === 'done' ? '·完成' : ''}
+                  </span>
+                  <span
+                    className={`flex-1 min-w-0 text-[12px] leading-5 ${
+                      sessionGoal.status === 'done'
+                        ? 'text-stone-400 line-through'
+                        : 'text-stone-800'
+                    }`}
+                  >
+                    {sessionGoal.text}
+                  </span>
+                  <button
+                    type="button"
+                    title="清除目标"
+                    className="text-[11px] text-stone-400 hover:text-stone-600 shrink-0"
+                    onClick={() => {
+                      sessionGoalRef.current = null;
+                      setSessionGoal(null);
+                      goalDriverRoundsRef.current = 0;
+                      if (storeRef.current) {
+                        commitStore(updateActiveSessionMeta(storeRef.current, { goal: undefined }));
+                      }
+                    }}
+                  >
+                    清除
+                  </button>
                 </div>
-                <ul className="space-y-1 max-h-28 overflow-y-auto">
-                  {sessionTodos.map((item, idx) => (
-                    <li
-                      key={`${idx}-${item.content}`}
-                      className="flex items-start gap-2 text-[12px] text-stone-700"
-                    >
-                      <span
-                        className={`mt-0.5 w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center text-[9px] ${
-                          item.status === 'completed'
-                            ? 'bg-emerald-500 border-emerald-500 text-white'
-                            : item.status === 'in_progress'
-                              ? 'border-[#4176e6] text-[#4176e6]'
-                              : 'border-stone-300 text-transparent'
-                        }`}
-                        aria-hidden
-                      >
-                        {item.status === 'completed'
-                          ? '✓'
-                          : item.status === 'in_progress'
-                            ? '…'
-                            : ''}
-                      </span>
-                      <span
-                        className={item.status === 'completed' ? 'line-through text-stone-400' : ''}
-                      >
-                        {item.content}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
               </div>
-            </div>
-          ) : null}
-        </div>
+            ) : null}
+            {sessionTodos.length > 0 && chatTab === 'dialog' ? (
+              <div className="px-6 pb-3">
+                <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5">
+                  <div className="text-[11px] font-medium text-stone-500 mb-1.5">
+                    待办 · {sessionTodos.filter((x) => x.status === 'completed').length}/
+                    {sessionTodos.length}
+                  </div>
+                  <ul className="space-y-1 max-h-28 overflow-y-auto">
+                    {sessionTodos.map((item, idx) => (
+                      <li
+                        key={`${idx}-${item.content}`}
+                        className="flex items-start gap-2 text-[12px] text-stone-700"
+                      >
+                        <span
+                          className={`mt-0.5 w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center text-[9px] ${
+                            item.status === 'completed'
+                              ? 'bg-emerald-500 border-emerald-500 text-white'
+                              : item.status === 'in_progress'
+                                ? 'border-[#4176e6] text-[#4176e6]'
+                                : 'border-stone-300 text-transparent'
+                          }`}
+                          aria-hidden
+                        >
+                          {item.status === 'completed'
+                            ? '✓'
+                            : item.status === 'in_progress'
+                              ? '…'
+                              : ''}
+                        </span>
+                        <span
+                          className={
+                            item.status === 'completed' ? 'line-through text-stone-400' : ''
+                          }
+                        >
+                          {item.content}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {chatTab === 'memory' && pluginOn.memory ? (
           <div
@@ -4407,66 +6044,82 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               }
             />
           </div>
-        ) : (
+        ) : chatTab === 'thread' ? (
           <div
-            key={`dialog-${store?.activeId ?? ''}`}
-            className="flex-1 min-h-0 flex flex-col tw-pane-enter"
+            key={`thread-${store?.activeId ?? ''}`}
+            className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter overflow-y-auto px-12 sm:px-16 lg:px-20 py-6"
           >
-            {/* 消息区（字号跟通用设置） */}
-            <div className="relative flex-1 min-h-0">
-              <div
-                ref={scrollRef}
-                onScroll={handleScroll}
-                className="h-full overflow-y-auto px-6 py-6"
-                style={{
-                  fontSize: `var(--tw-session-font-size, ${generalPrefs.sessionFontSize}px)`,
-                }}
-              >
-                {empty ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center">
-                    <img
-                      src={`${base}brand-mark.png`}
-                      alt=""
-                      width={52}
-                      height={52}
-                      className="w-[52px] h-[52px] rounded-[12px] object-contain"
-                    />
-                    <h2 className="mt-4 text-base font-medium text-stone-800">
-                      {t('chat.emptyTitle', undefined, generalPrefs.language)}
-                    </h2>
-                    <p className="mt-2 text-sm text-stone-600 max-w-lg leading-relaxed">
-                      {t('chat.emptyBenefits', undefined, generalPrefs.language)}
+            <ThreadOutlinePane
+              messages={messages}
+              busy={Boolean(store?.activeId && busySessionIds.includes(store.activeId))}
+              onRestoreCheckpoint={(endMessageIndex, turnIndex) => {
+                const sid = storeRef.current?.activeId;
+                if (!sid) return;
+                if (busySessionIds.includes(sid) || streaming) {
+                  setError('请等待当前回复结束后再从此处继续');
+                  return;
+                }
+                const end = Math.max(0, Math.min(endMessageIndex, messagesRef.current.length - 1));
+                const next = messagesRef.current.slice(0, end + 1);
+                messagesRef.current = next;
+                setMessages(next);
+                if (storeRef.current) {
+                  commitStore(
+                    updateActiveMessages(storeRef.current, next, { touchUpdatedAt: true }),
+                  );
+                }
+                const prompt = `请从第 ${turnIndex} 轮继续`;
+                setChatTab('dialog');
+                setInput(prompt);
+                setErrorTone('ok');
+                setError(`已回到第 ${turnIndex} 轮，正在继续…`);
+                window.setTimeout(() => {
+                  void send(prompt);
+                }, 0);
+              }}
+            />
+          </div>
+        ) : (
+          <div className={`relative flex-1 min-h-0 flex flex-col${empty ? ' justify-center' : ''}`}>
+            {empty ? (
+              <div className="shrink-0 flex flex-col items-center text-center px-8 sm:px-10 lg:px-12 pb-8">
+                <img
+                  src={`${base}brand-mark.png`}
+                  alt=""
+                  width={64}
+                  height={64}
+                  className="w-16 h-16 rounded-[14px] object-contain"
+                />
+                <h2 className="mt-5 text-[22px] leading-8 font-semibold tracking-tight text-stone-800">
+                  {t('chat.emptyTitle', undefined, generalPrefs.language)}
+                </h2>
+                {!settings ? (
+                  <>
+                    <p className="mt-2 text-sm text-stone-500 max-w-md">
+                      {t('chat.emptyNoModel', undefined, generalPrefs.language)}
                     </p>
-                    {!settings && (
-                      <>
-                        <p className="mt-2 text-sm text-stone-500 max-w-md">
-                          {t('chat.emptyNoModel', undefined, generalPrefs.language)}
-                        </p>
-                        <button
-                          onClick={() => openSettings('model')}
-                          className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
-                        >
-                          {t('chat.configureModel', undefined, generalPrefs.language)}
-                        </button>
-                      </>
-                    )}
-                    {settings && (
-                      <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-xl w-full">
-                        {SUGGESTIONS.map((s) => (
-                          <button
-                            key={s}
-                            onClick={() => send(s)}
-                            className="px-4 py-3 text-left text-sm text-stone-600 bg-white border border-stone-200 rounded-xl hover:border-[#4176e6] hover:text-[#4176e6] transition-colors"
-                          >
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : (
+                    <button
+                      onClick={() => openSettings('model')}
+                      className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
+                    >
+                      {t('chat.configureModel', undefined, generalPrefs.language)}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {!empty ? (
+              <div key={`dialog-${store?.activeId ?? ''}`} className="relative flex-1 min-h-0">
+                <div
+                  ref={scrollRef}
+                  onScroll={handleScroll}
+                  className="h-full overflow-y-auto px-8 sm:px-10 lg:px-12 py-6"
+                  style={{
+                    fontSize: `var(--tw-session-font-size, ${generalPrefs.sessionFontSize}px)`,
+                  }}
+                >
                   <div
-                    className="max-w-[748px] mx-auto flex flex-col gap-4"
+                    className="w-full max-w-[min(64rem,100%)] mx-auto flex flex-col gap-4"
                     onClick={onTranscriptClick}
                   >
                     {messages.map((m, i) =>
@@ -4531,21 +6184,35 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       ) : (
                         // dsh AssistantMarkdown：助手无气泡、全宽排版，下方「复制 · 用量 · 时间」
                         <div key={i} className="group">
+                          {m.turnStatus === 'stopped' ? (
+                            <div className="mb-2">
+                              <div className="text-[13px] text-stone-500 py-1">已停止</div>
+                              <div className="border-t border-stone-200/80" />
+                            </div>
+                          ) : null}
                           {(() => {
-                            // 思考块：仿 DeepSeek Harness ReasoningRow——默认收起、整行点击展开、
-                            // 思考中 shimmer 标题 + 流式摘要，完成后显示耗时
-                            const waiting =
-                              i === messages.length - 1 && streaming && m.content === '';
-                            const showThink = waiting || !!m.reasoning;
+                            // dsh：流式/仍有 running 步骤时始终展示进度；全部结束后才标「思考完成」
+                            const allSteps = m.activitySteps ?? [];
+                            const stepsRunning = allSteps.some((s) => s.status === 'running');
+                            const isLive =
+                              i === messages.length - 1 &&
+                              m.turnStatus !== 'stopped' &&
+                              (streaming || stepsRunning);
+                            const waiting = isLive && !m.content;
+                            const toolSteps = allSteps.filter((s) => s.kind !== 'thinking');
+                            const showThink =
+                              waiting ||
+                              !!m.reasoning ||
+                              toolSteps.length > 0 ||
+                              allSteps.length > 0;
                             if (!showThink) return null;
                             const open = m.reasoningOpen ?? false;
+                            const showTimeline = isLive || open || stepsRunning;
+                            // 时间线已展开时，摘要只在下方「思考」步骤里显示，避免与标题行重复
                             const summary =
-                              waiting && !open && m.reasoning
+                              waiting && !open && !showTimeline && m.reasoning
                                 ? latestParagraphFirstLine(m.reasoning).replaceAll('**', '')
                                 : '';
-                            const toolSteps = (m.activitySteps ?? []).filter(
-                              (s) => s.kind !== 'thinking',
-                            );
                             return (
                               <div className="mb-2">
                                 <button
@@ -4553,7 +6220,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   onClick={(e) => toggleReasoning(i, e)}
                                   className="flex w-full items-center gap-2 py-1 text-left select-none"
                                 >
-                                  {waiting ? (
+                                  {waiting || (isLive && !m.content) ? (
                                     <span className="w-3.5 h-3.5 shrink-0 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
                                   ) : (
                                     <Svg className="w-3.5 h-3.5 shrink-0 text-stone-400">
@@ -4563,11 +6230,23 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                     </Svg>
                                   )}
                                   <span
-                                    className={`text-[13px] font-medium shrink-0 ${waiting ? 'text-shimmer' : 'text-shimmer-static'}`}
+                                    className={`text-[13px] font-medium shrink-0 ${
+                                      isLive && !m.content ? 'text-shimmer' : 'text-shimmer-static'
+                                    }`}
                                   >
-                                    {waiting ? '思考中…' : '思考完成'}
+                                    {isLive && !m.content
+                                      ? allSteps.some(
+                                          (s) => s.kind !== 'thinking' && s.status === 'running',
+                                        )
+                                        ? '正在分析请求'
+                                        : '思考中…'
+                                      : isLive
+                                        ? '正在生成…'
+                                        : m.turnStatus === 'stopped'
+                                          ? '已完成分析'
+                                          : '思考完成'}
                                   </span>
-                                  {!waiting && m.reasoningDuration != null && (
+                                  {!isLive && m.reasoningDuration != null && (
                                     <span className="text-xs text-stone-400 shrink-0">
                                       用时 {m.reasoningDuration}s
                                     </span>
@@ -4581,30 +6260,65 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                     </span>
                                   ) : null}
                                 </button>
+                                {showTimeline && allSteps.length > 0 ? (
+                                  <ul className="mt-1.5 mb-1 pl-[22px] space-y-1.5">
+                                    {allSteps.map((s) => (
+                                      <li
+                                        key={s.id}
+                                        className={`text-[12px] flex items-start gap-2 min-w-0 ${
+                                          s.status === 'error'
+                                            ? 'text-red-600'
+                                            : s.status === 'running'
+                                              ? 'text-stone-600'
+                                              : 'text-stone-500'
+                                        }`}
+                                      >
+                                        <ActivityStepIcon kind={s.kind} status={s.status} />
+                                        <span className="min-w-0 flex-1 leading-5">
+                                          <span
+                                            className={`font-medium ${
+                                              s.status === 'running' ? 'text-shimmer' : ''
+                                            }`}
+                                          >
+                                            {s.title}
+                                          </span>
+                                          {s.detail ? (
+                                            <span className="text-stone-400">
+                                              {' · '}
+                                              <span
+                                                className={
+                                                  s.status === 'error'
+                                                    ? 'text-red-600'
+                                                    : s.status === 'running'
+                                                      ? 'text-shimmer-muted'
+                                                      : ''
+                                                }
+                                                title={s.detail}
+                                              >
+                                                {s.detail.length > 72
+                                                  ? `${s.detail.slice(0, 72)}…`
+                                                  : s.detail}
+                                              </span>
+                                            </span>
+                                          ) : s.status === 'running' ? (
+                                            <span className="text-stone-400 text-shimmer-muted">
+                                              {' · '}…
+                                            </span>
+                                          ) : null}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
                                 {open && m.reasoning ? (
                                   <div className="mt-1.5 mb-2 pl-[22px] text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
                                     {m.reasoning}
                                   </div>
                                 ) : null}
-                                {open && toolSteps.length > 0 ? (
-                                  <ul className="mt-1 mb-1 pl-[22px] space-y-1">
-                                    {toolSteps.map((s) => (
-                                      <li
-                                        key={s.id}
-                                        className="text-[12px] text-stone-500 flex items-baseline gap-2 min-w-0"
-                                      >
-                                        <span className="shrink-0 text-stone-400">·</span>
-                                        <span className="font-medium text-stone-600 shrink-0">
-                                          {s.title}
-                                        </span>
-                                        {s.detail ? (
-                                          <span className="truncate" title={s.detail}>
-                                            {s.detail}
-                                          </span>
-                                        ) : null}
-                                      </li>
-                                    ))}
-                                  </ul>
+                                {m.turnStatus === 'stopped' ? (
+                                  <div className="mt-1.5 pl-[22px]">
+                                    <span className="tw-turn-stopped-pill">已停止</span>
+                                  </div>
                                 ) : null}
                               </div>
                             );
@@ -4614,9 +6328,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                               className="chat-md prose prose-sm prose-stone max-w-none tw-chat-text"
                               dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
                             />
-                          ) : i === messages.length - 1 && streaming ? null : (
-                            <span className="inline-block w-2 h-4 bg-[#4176e6] animate-pulse" />
-                          )}
+                          ) : null}
                           {m.caseFile ? (
                             <button
                               type="button"
@@ -4726,28 +6438,43 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       ),
                     )}
                   </div>
+                </div>
+
+                {/* 回到底部（离开贴底位置时出现） */}
+                {showJump && (
+                  <button
+                    type="button"
+                    onClick={jumpToBottom}
+                    title="回到底部"
+                    className="absolute bottom-3 right-8 sm:right-10 lg:right-12 w-8 h-8 rounded-full bg-white border border-stone-200 shadow-md flex items-center justify-center text-stone-500 hover:text-stone-800 transition-colors"
+                  >
+                    <ChevronIcon className="w-4 h-4" />
+                  </button>
                 )}
               </div>
+            ) : null}
 
-              {/* 回到底部（离开贴底位置时出现） */}
-              {showJump && !empty && (
-                <button
-                  type="button"
-                  onClick={jumpToBottom}
-                  title="回到底部"
-                  className="absolute bottom-3 right-[max(1.5rem,calc(50%-374px))] w-8 h-8 rounded-full bg-white border border-stone-200 shadow-md flex items-center justify-center text-stone-500 hover:text-stone-800 transition-colors"
-                >
-                  <ChevronIcon className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            {/* 错误提示 */}
+            {/* 提示条：错误红 / 信息绿 */}
             {error && (
-              <div className="shrink-0 px-6 pb-2">
-                <div className="max-w-[764px] mx-auto flex items-start gap-3 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
-                  <span className="mt-0.5 w-5 h-5 shrink-0 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs font-semibold">
-                    !
+              <div className="shrink-0 px-8 sm:px-10 lg:px-12 pb-2">
+                <div
+                  ref={noticeRef}
+                  className={`w-full max-w-[min(64rem,100%)] mx-auto flex items-start gap-3 px-4 py-3 rounded-xl text-sm border ${
+                    errorTone === 'ok' ? 'tw-notice-anim' : ''
+                  } ${
+                    errorTone === 'ok'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : 'bg-red-50 border-red-200 text-red-800'
+                  }`}
+                >
+                  <span
+                    className={`mt-0.5 w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold ${
+                      errorTone === 'ok'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-red-100 text-red-600'
+                    }`}
+                  >
+                    {errorTone === 'ok' ? 'i' : '!'}
                   </span>
                   <pre className="flex-1 min-w-0 m-0 font-sans text-[13px] leading-5 whitespace-pre-wrap break-words">
                     {error
@@ -4758,7 +6485,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   <button
                     type="button"
                     onClick={() => setError(null)}
-                    className="shrink-0 text-red-400 hover:text-red-600 text-xs"
+                    className={`shrink-0 text-xs ${
+                      errorTone === 'ok'
+                        ? 'text-emerald-500 hover:text-emerald-700'
+                        : 'text-red-400 hover:text-red-600'
+                    }`}
                   >
                     关闭
                   </button>
@@ -4767,8 +6498,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
             )}
 
             {/* 输入区：dsh composer——白色圆角卡片，左「+ / 权限」，右「模型·推理 / 发送」 */}
-            <div className="shrink-0 px-6 pb-3">
-              <div className="max-w-[764px] mx-auto">
+            <div className="shrink-0 px-8 sm:px-10 lg:px-12 pb-3">
+              <div className="w-full max-w-[min(64rem,100%)] mx-auto">
                 {promptGenConfig?.active && pluginOn.promptGen ? (
                   <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl border border-[#4176e6]/30 bg-[#edf3fe] text-xs text-[#3565c7]">
                     <span className="flex-1 min-w-0 truncate">
@@ -5011,7 +6742,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       <button
                         type="button"
                         onClick={() => {
-                          abortRef.current?.abort();
+                          abortSessionRun(storeRef.current?.activeId);
                           settleAskUserCanceled();
                         }}
                         className="h-8 px-3 rounded-lg text-[12px] text-stone-600 hover:bg-stone-100"
@@ -5038,13 +6769,21 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         <span
                           key={`${r.collection}:${r.path}`}
                           className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
-                          title={r.path}
+                          title={
+                            r.collection === 'workspace' ? r.path : `${r.collection}/${r.path}`
+                          }
                         >
                           <FileIcon className="w-3.5 h-3.5" />
                           <span className="text-[10px] text-[#4176e6]/80 shrink-0">
-                            {r.collection === 'workspace' ? '工作区' : formatSlashBadge(r.format)}
+                            {r.collection === 'workspace'
+                              ? '工作区'
+                              : r.collection === 'prompts' ||
+                                  r.collection === 'cases' ||
+                                  r.collection === 'knowledge'
+                                ? r.category
+                                : formatSlashBadge(r.format)}
                           </span>
-                          <span className="max-w-40 truncate">{r.title}</span>
+                          <span className="max-w-48 truncate">{r.title}</span>
                           <button
                             type="button"
                             title="移除引用"
@@ -5067,18 +6806,19 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       {attachments.map((a, idx) => (
                         <span
                           key={`${a.name}-${idx}`}
-                          className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg"
+                          className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
+                          title={a.path || a.name}
                         >
-                          <FileIcon className="w-3.5 h-3.5 text-[#4176e6]" />
+                          <FileIcon className="w-3.5 h-3.5" />
+                          <span className="text-[10px] text-[#4176e6]/80 shrink-0">文件</span>
                           <span className="max-w-48 truncate">{a.name}</span>
-                          <span className="text-stone-400">{fmtSize(a.size)}</span>
                           <button
                             type="button"
                             title="移除"
                             onClick={() =>
                               setAttachments((prev) => prev.filter((_, j) => j !== idx))
                             }
-                            className="w-5 h-5 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200"
+                            className="w-5 h-5 flex items-center justify-center rounded text-[#4176e6]/70 hover:text-[#4176e6] hover:bg-white/80"
                           >
                             <Svg className="w-3 h-3">
                               <path d="M18 6 6 18" />
@@ -5114,6 +6854,228 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     </div>
                   )}
                   <div className="relative">
+                    {addMenuOpen && !pluginMenuOpen && !atOpen && (
+                      <div
+                        ref={addMenuRef}
+                        className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-3 z-40 h-[min(70vh,20rem)] overflow-hidden rounded-xl border border-stone-200 py-2.5 shadow-[0_4px_14px_-4px_rgba(15,23,42,0.08)]"
+                      >
+                        <div className="tw-dsh-scroll h-full overflow-y-auto overflow-x-hidden">
+                          <div className="px-3 pt-0.5 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
+                            添加
+                          </div>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddMenuOpen(false);
+                              fileInputRef.current?.click();
+                            }}
+                            className="tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100"
+                          >
+                            <PaperclipIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                            <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                              文件
+                              <span className="ml-1.5 text-stone-400 font-normal">file</span>
+                            </span>
+                            <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                              添加本地附件
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddMenuOpen(false);
+                              activateGoalChip();
+                            }}
+                            className="tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100"
+                          >
+                            <Svg className="w-4 h-4 shrink-0 text-stone-500">
+                              <circle cx="12" cy="12" r="10" />
+                              <circle cx="12" cy="12" r="6" />
+                              <circle cx="12" cy="12" r="2" />
+                            </Svg>
+                            <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                              目标
+                              <span className="ml-1.5 text-stone-400 font-normal">goal</span>
+                            </span>
+                            <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                              设置或查看长期任务目标
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddMenuOpen(false);
+                              if (planPhase === 'off') activatePlanChip();
+                              else togglePlanMode();
+                            }}
+                            className={`tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100 ${
+                              planPhase === 'planning'
+                                ? 'bg-amber-50'
+                                : planPhase === 'approved'
+                                  ? 'bg-emerald-50'
+                                  : ''
+                            }`}
+                          >
+                            <Svg
+                              className={`w-4 h-4 shrink-0 ${
+                                planPhase === 'planning'
+                                  ? 'text-amber-800'
+                                  : planPhase === 'approved'
+                                    ? 'text-emerald-800'
+                                    : 'text-stone-500'
+                              }`}
+                            >
+                              <path d="M8 6h13" />
+                              <path d="M8 12h13" />
+                              <path d="M8 18h13" />
+                              <path d="M3 6h.01" />
+                              <path d="M3 12h.01" />
+                              <path d="M3 18h.01" />
+                            </Svg>
+                            <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                              计划
+                              <span className="ml-1.5 text-stone-400 font-normal">plan</span>
+                            </span>
+                            <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                              进入或退出计划模式
+                            </span>
+                          </button>
+
+                          <div className="my-1 border-t border-stone-100" />
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => setAddPluginsExpanded((v) => !v)}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-50"
+                          >
+                            <span className="flex-1 text-[11px] font-medium text-stone-400 tracking-wide">
+                              扩展插件
+                            </span>
+                            <ChevronIcon
+                              className={`w-3.5 h-3.5 text-stone-400 shrink-0 transition-transform ${
+                                addPluginsExpanded ? 'rotate-180' : ''
+                              }`}
+                            />
+                          </button>
+                          {addPluginsExpanded
+                            ? pluginMenuItems.map((p) => {
+                                const on = Boolean(pluginOn[p.id]);
+                                const en =
+                                  p.id === 'caseGen'
+                                    ? 'case'
+                                    : p.id === 'promptGen'
+                                      ? 'prompt'
+                                      : p.id === 'knowledgeGen'
+                                        ? 'knowledge'
+                                        : '';
+                                const tip =
+                                  p.id === 'caseGen'
+                                    ? '打开配置后生成用例并写入用例库'
+                                    : p.id === 'promptGen'
+                                      ? '对话生成提示词并写入提示词库'
+                                      : p.id === 'knowledgeGen'
+                                        ? '对话生成规范/方法论并写入知识库'
+                                        : '';
+                                return (
+                                  <button
+                                    key={p.id}
+                                    type="button"
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => {
+                                      if (!on) {
+                                        setError(pluginDisabledMessage(p.id));
+                                        return;
+                                      }
+                                      setAddMenuOpen(false);
+                                      pickPluginMenu(p.id);
+                                    }}
+                                    className={`tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100 ${
+                                      on ? '' : 'opacity-55'
+                                    }`}
+                                  >
+                                    <PluginIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                                    <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                                      {p.name}
+                                      {en ? (
+                                        <span className="ml-1.5 text-stone-400 font-normal">
+                                          {en}
+                                        </span>
+                                      ) : null}
+                                      {!on ? (
+                                        <span className="ml-1.5 text-[10px] text-amber-700 font-normal">
+                                          未启用
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                    {tip ? (
+                                      <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                                        {tip}
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                );
+                              })
+                            : null}
+
+                          <div className="my-1 border-t border-stone-100" />
+                          <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
+                            指令
+                          </div>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddMenuOpen(false);
+                              if (streamingRef.current) {
+                                setError('请等待当前回复结束后再压缩');
+                                return;
+                              }
+                              void runSessionCompact({ force: true }).then((ok) => {
+                                if (ok) setError('已压缩上下文');
+                              });
+                            }}
+                            className="tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100"
+                          >
+                            <Svg className="w-4 h-4 shrink-0 text-stone-500">
+                              <circle cx="12" cy="12" r="9" />
+                            </Svg>
+                            <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                              压缩
+                              <span className="ml-1.5 text-stone-400 font-normal">compact</span>
+                            </span>
+                            <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                              压缩以上对话内容
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddMenuOpen(false);
+                              showActiveSessionStats();
+                            }}
+                            className="tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100"
+                          >
+                            <Svg className="w-4 h-4 shrink-0 text-stone-500">
+                              <path d="M3 3v18h18" />
+                              <path d="M7 14v4" />
+                              <path d="M12 10v8" />
+                              <path d="M17 6v12" />
+                            </Svg>
+                            <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                              会话统计
+                              <span className="ml-1.5 text-stone-400 font-normal">stats</span>
+                            </span>
+                            <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                              查看本会话用量摘要
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {pluginMenuOpen && (
                       <div
                         ref={pluginMenuRef}
@@ -5237,208 +7199,199 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         )}
                       </div>
                     )}
-                    <textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onPaste={(e) => {
-                        const items = Array.from(e.clipboardData?.items ?? []);
-                        const imageFiles = items
-                          .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-                          .map((it) => it.getAsFile())
-                          .filter((f): f is File => Boolean(f));
-                        if (!imageFiles.length) return;
-                        e.preventDefault();
-                        void addImages(imageFiles);
-                      }}
-                      onKeyDown={(e) => {
-                        if (pluginMenuOpen && pluginMenuItems.length) {
-                          if (e.key === 'ArrowDown') {
-                            e.preventDefault();
-                            setPluginIndex((i) => (i + 1) % pluginMenuItems.length);
-                            return;
-                          }
-                          if (e.key === 'ArrowUp') {
-                            e.preventDefault();
-                            setPluginIndex(
-                              (i) => (i - 1 + pluginMenuItems.length) % pluginMenuItems.length,
-                            );
-                            return;
-                          }
-                          if (e.key === 'Escape') {
-                            e.preventDefault();
-                            setPluginMenuDismissed(true);
-                            if (pluginSlashState) setInput(input.slice(0, pluginSlashState.from));
-                            return;
-                          }
-                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                            e.preventDefault();
-                            const item = pluginMenuItems[pluginIndex] ?? pluginMenuItems[0];
-                            if (item) pickPluginMenu(item.id);
-                            return;
-                          }
-                        }
-                        if (atOpen && atFlatItems.length) {
-                          if (e.key === 'ArrowDown') {
-                            e.preventDefault();
-                            setMentionIndex((i) => (i + 1) % atFlatItems.length);
-                            return;
-                          }
-                          if (e.key === 'ArrowUp') {
-                            e.preventDefault();
-                            setMentionIndex(
-                              (i) => (i - 1 + atFlatItems.length) % atFlatItems.length,
-                            );
-                            return;
-                          }
-                          if (e.key === 'Escape') {
-                            e.preventDefault();
-                            setMentionDismissed(true);
-                            if (atState) setInput(input.slice(0, atState.from));
-                            return;
-                          }
-                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                            e.preventDefault();
-                            const doc = atFlatItems[mentionIndex]?.doc;
-                            if (doc) pickAtDoc(doc);
-                            return;
-                          }
-                        }
-                        if (e.key === 'Escape' && (atState || pluginSlashState)) {
-                          e.preventDefault();
-                          setMentionDismissed(true);
-                          setPluginMenuDismissed(true);
-                          const from = atState?.from ?? pluginSlashState?.from;
-                          if (from != null) setInput(input.slice(0, from));
-                          return;
-                        }
-                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                          e.preventDefault();
-                          const alt = e.metaKey || e.ctrlKey;
-                          if (streamingRef.current) {
-                            // Cmd/Ctrl+Enter：插话；有队列时带着队列后续自主续发
-                            if (alt) {
-                              const draft = input.trim();
-                              const hasDraft =
-                                Boolean(draft) ||
-                                attachments.length > 0 ||
-                                images.length > 0 ||
-                                docRefs.length > 0;
-                              if (hasDraft) {
-                                const extra: PendingSend = {
-                                  id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                                  content: draft,
-                                  files: [...attachments],
-                                  refs: [...docRefs],
-                                  imgs: [...images],
-                                };
-                                clearComposer();
-                                flushQueueAsInterrupt(extra);
-                              } else if (sendQueueRef.current.length) {
-                                flushQueueAsInterrupt();
-                              }
+                    <div className="flex items-start gap-2 px-3">
+                      {composerChip === 'goal' ? (
+                        <span className="tw-composer-mode-chip is-goal" title="会话目标">
+                          <Svg className="w-3.5 h-3.5 shrink-0">
+                            <circle cx="12" cy="12" r="10" />
+                            <circle cx="12" cy="12" r="6" />
+                            <circle cx="12" cy="12" r="2" />
+                          </Svg>
+                          <span>目标</span>
+                          <button
+                            type="button"
+                            title="取消目标输入"
+                            aria-label="取消目标输入"
+                            onClick={() => setComposerChip(null)}
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ) : null}
+                      {composerChip === 'plan' ? (
+                        <span
+                          className={`tw-composer-mode-chip is-plan${planPhase === 'approved' ? ' is-approved' : ''}`}
+                          title={planPhase === 'approved' ? '计划模式·已批准' : '计划模式·探查中'}
+                        >
+                          <Svg className="w-3.5 h-3.5 shrink-0">
+                            <path d="M8 6h13" />
+                            <path d="M8 12h13" />
+                            <path d="M8 18h13" />
+                            <path d="M3 6h.01" />
+                            <path d="M3 12h.01" />
+                            <path d="M3 18h.01" />
+                          </Svg>
+                          <span>计划</span>
+                          <button
+                            type="button"
+                            title="退出计划模式"
+                            aria-label="退出计划模式"
+                            onClick={() => dismissComposerChip()}
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ) : null}
+                      <textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onPaste={onComposerPaste}
+                        onKeyDown={(e) => {
+                          if (pluginMenuOpen && pluginMenuItems.length) {
+                            if (e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              setPluginIndex((i) => (i + 1) % pluginMenuItems.length);
                               return;
                             }
-                            const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
-                            void send(undefined, { forceBusy: primary });
-                          } else {
-                            void send();
+                            if (e.key === 'ArrowUp') {
+                              e.preventDefault();
+                              setPluginIndex(
+                                (i) => (i - 1 + pluginMenuItems.length) % pluginMenuItems.length,
+                              );
+                              return;
+                            }
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setPluginMenuDismissed(true);
+                              if (pluginSlashState) setInput(input.slice(0, pluginSlashState.from));
+                              return;
+                            }
+                            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                              e.preventDefault();
+                              const item = pluginMenuItems[pluginIndex] ?? pluginMenuItems[0];
+                              if (item) pickPluginMenu(item.id);
+                              return;
+                            }
                           }
+                          if (atOpen && atFlatItems.length) {
+                            if (e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              setMentionIndex((i) => (i + 1) % atFlatItems.length);
+                              return;
+                            }
+                            if (e.key === 'ArrowUp') {
+                              e.preventDefault();
+                              setMentionIndex(
+                                (i) => (i - 1 + atFlatItems.length) % atFlatItems.length,
+                              );
+                              return;
+                            }
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setMentionDismissed(true);
+                              if (atState) setInput(input.slice(0, atState.from));
+                              return;
+                            }
+                            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                              e.preventDefault();
+                              const doc = atFlatItems[mentionIndex]?.doc;
+                              if (doc) pickAtDoc(doc);
+                              return;
+                            }
+                          }
+                          if (e.key === 'Escape' && addMenuOpen) {
+                            e.preventDefault();
+                            setAddMenuOpen(false);
+                            return;
+                          }
+                          if (e.key === 'Escape' && (atState || pluginSlashState)) {
+                            e.preventDefault();
+                            setMentionDismissed(true);
+                            setPluginMenuDismissed(true);
+                            const from = atState?.from ?? pluginSlashState?.from;
+                            if (from != null) setInput(input.slice(0, from));
+                            return;
+                          }
+                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                            e.preventDefault();
+                            const alt = e.metaKey || e.ctrlKey;
+                            if (streamingRef.current) {
+                              // Cmd/Ctrl+Enter：插话；有队列时带着队列后续自主续发
+                              if (alt) {
+                                const draft = input.trim();
+                                const hasDraft =
+                                  Boolean(draft) ||
+                                  attachments.length > 0 ||
+                                  images.length > 0 ||
+                                  docRefs.length > 0;
+                                if (hasDraft) {
+                                  const extra: PendingSend = {
+                                    id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                    content: draft,
+                                    files: [...attachments],
+                                    refs: [...docRefs],
+                                    imgs: [...images],
+                                  };
+                                  clearComposer();
+                                  flushQueueAsInterrupt(extra);
+                                } else if (sendQueueRef.current.length) {
+                                  flushQueueAsInterrupt();
+                                }
+                                return;
+                              }
+                              const primary = loadGeneralPrefs().busySendBehavior ?? 'queue';
+                              void send(undefined, { forceBusy: primary });
+                            } else {
+                              void send();
+                            }
+                          }
+                        }}
+                        rows={1}
+                        placeholder={
+                          !settings
+                            ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
+                            : sendQueue.length > 0 && streaming
+                              ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
+                              : '请输入内容，或用 @ 引用文档'
                         }
-                      }}
-                      rows={1}
-                      placeholder={
-                        !settings
-                          ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
-                          : sendQueue.length > 0 && streaming
-                            ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
-                            : '请输入内容；/goal 目标；/compact 压缩；/ 插件；@ 文档'
-                      }
-                      className="tw-chat-input block w-full min-h-[36px] pl-[14px] pr-2 pt-1 pb-0 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
-                    />
+                        className="tw-chat-input block min-w-0 flex-1 min-h-[52px] pl-0 pr-2 pt-1.5 pb-0.5 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
+                      />
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1.5 px-3 pb-3 pt-3">
-                    {/* 「+」：dsh 风格「添加 → 文件」 */}
-                    <Menu>
-                      <MenuButton
-                        title={
-                          planPhase === 'off'
-                            ? '添加'
-                            : planPhase === 'planning'
-                              ? '添加（计划模式·探查中）'
-                              : '添加（计划模式·已批准）'
-                        }
-                        className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none data-[open]:bg-[color:var(--tw-session-hover-bg)] transition-colors ${
-                          planPhase === 'planning'
-                            ? 'text-amber-700 bg-amber-50'
-                            : planPhase === 'approved'
-                              ? 'text-emerald-700 bg-emerald-50'
-                              : ''
-                        }`}
-                      >
-                        <Svg className="w-4 h-4">
-                          <path d="M5 12h14" />
-                          <path d="M12 5v14" />
-                        </Svg>
-                      </MenuButton>
-                      <MenuItems
-                        transition
-                        anchor={{ to: 'top start', gap: 8 }}
-                        className="tw-select-menu tw-menu-anim z-50 w-[min(100vw-2rem,20rem)] rounded-xl border border-stone-200 py-1.5 shadow-xl focus:outline-none"
-                      >
-                        <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
-                          添加
-                        </div>
-                        <MenuItem>
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
-                          >
-                            <PaperclipIcon className="w-4 h-4 shrink-0 text-stone-500" />
-                            <span className="text-[13px] text-stone-800">
-                              文件
-                              <span className="ml-1.5 text-stone-400 font-normal">file</span>
-                            </span>
-                          </button>
-                        </MenuItem>
-                        <div className="my-1 border-t border-stone-100" />
-                        <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
-                          模式
-                        </div>
-                        <MenuItem>
-                          <button
-                            type="button"
-                            onClick={() => togglePlanMode()}
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-left data-[focus]:bg-stone-100"
-                          >
-                            <span
-                              className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
-                                planPhase === 'off'
-                                  ? 'border-stone-300 text-transparent'
-                                  : planPhase === 'planning'
-                                    ? 'border-amber-500 bg-amber-50 text-amber-700'
-                                    : 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                              }`}
-                              aria-hidden
-                            >
-                              {planPhase !== 'off' ? '✓' : ''}
-                            </span>
-                            <span className="min-w-0 text-[13px] text-stone-800">
-                              计划模式
-                              <span className="ml-1.5 text-stone-400 font-normal">
-                                {planPhase === 'off'
-                                  ? '关闭'
-                                  : planPhase === 'planning'
-                                    ? '探查中'
-                                    : '已批准'}
-                              </span>
-                            </span>
-                          </button>
-                        </MenuItem>
-                      </MenuItems>
-                    </Menu>
+                    {/* 「+」：打开输入框上方添加面板（对齐 dsh） */}
+                    <button
+                      type="button"
+                      data-add-menu-btn
+                      title={
+                        planPhase === 'off'
+                          ? '添加'
+                          : planPhase === 'planning'
+                            ? '添加（计划模式·探查中）'
+                            : '添加（计划模式·已批准）'
+                      }
+                      onClick={() => {
+                        setAddMenuOpen((v) => !v);
+                        setMentionDismissed(true);
+                        setPluginMenuDismissed(true);
+                      }}
+                      className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
+                        addMenuOpen ? 'bg-[color:var(--tw-session-hover-bg)]' : ''
+                      }`}
+                    >
+                      <Svg className="w-4 h-4">
+                        <path d="M5 12h14" />
+                        <path d="M12 5v14" />
+                      </Svg>
+                    </button>
 
                     {/* dsh：输入栏工作区 picker（显式当前目录，可切换 / 添加） */}
                     {fsLive && (

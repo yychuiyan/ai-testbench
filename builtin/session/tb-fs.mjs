@@ -9,6 +9,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import {
+  FS_GLOB_MAX,
+  FS_GREP_MAX,
+  FS_MAX_READ_BYTES,
+  FS_MAX_WRITE_BYTES,
+  FS_SKIP_DIRS,
+  getFsObservationPolicy,
+} from './fs-observation-policy.mjs';
+import { convertOfficeToPdf, probeOfficeToPdf } from './office-to-pdf.mjs';
+import { listWorkspaceSkills, loadWorkspaceSkill } from './skill-fs.mjs';
+import { loadWorkspaceDependencies } from './workspace-deps.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -71,8 +82,8 @@ export async function nativePickDirectory() {
 }
 
 const PREFIX = '/__tb_fs';
-const MAX_READ = 2 * 1024 * 1024;
-const MAX_WRITE = 10 * 1024 * 1024;
+const MAX_READ = FS_MAX_READ_BYTES;
+const MAX_WRITE = FS_MAX_WRITE_BYTES;
 const MAX_LIST = 500;
 
 function sendJson(res, status, body) {
@@ -330,7 +341,9 @@ function buildAgentInstructions(workspace, projectRoot, maxBytes = AGENT_INSTRUC
   function sectionBytes(e, truncatedContent) {
     const body = truncatedContent ?? e.content;
     return (
-      Buffer.byteLength(`Instructions from: ${e.rel}\n\n`, 'utf8') + Buffer.byteLength(body, 'utf8') + 2
+      Buffer.byteLength(`Instructions from: ${e.rel}\n\n`, 'utf8') +
+      Buffer.byteLength(body, 'utf8') +
+      2
     );
   }
 
@@ -372,7 +385,18 @@ function buildAgentInstructions(workspace, projectRoot, maxBytes = AGENT_INSTRUC
     parts.push('');
     parts.push(e.content.trimEnd());
     parts.push('');
-    files.push({ path: e.rel, name: e.name, abs: e.abs });
+    // 打开文件用工作区相对路径；跨工作区时回退绝对路径
+    let openPath = e.abs;
+    try {
+      if (e.abs === ws || e.abs.startsWith(ws + path.sep)) {
+        openPath = path.relative(ws, e.abs).split(path.sep).join('/') || e.name;
+      } else if (e.abs === root || e.abs.startsWith(root + path.sep)) {
+        openPath = path.relative(root, e.abs).split(path.sep).join('/') || e.name;
+      }
+    } catch {
+      openPath = e.abs;
+    }
+    files.push({ path: openPath, name: e.name, abs: e.abs, label: e.rel });
   }
   return { text: parts.join('\n').trim(), files };
 }
@@ -389,19 +413,9 @@ async function openLocalPath(abs) {
   await execFileAsync('xdg-open', [abs], { timeout: 30_000 });
 }
 
-const SEARCH_SKIP_DIRS = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  '.local',
-  '.astro',
-  '.DS_Store',
-  'coverage',
-  '.next',
-  '.turbo',
-]);
-const GLOB_MAX = 100;
-const GREP_MAX = 250;
+const SEARCH_SKIP_DIRS = new Set(FS_SKIP_DIRS);
+const GLOB_MAX = FS_GLOB_MAX;
+const GREP_MAX = FS_GREP_MAX;
 
 /** 无「/」的 pattern 按任意深度匹配 basename（对齐 dsh glob） */
 function normalizeGlobPattern(pattern) {
@@ -597,7 +611,8 @@ async function runFsGrep(workspaceRoot, searchRootAbs, pattern, include) {
   } catch {
     throw new Error(`invalid regex: ${pat}`);
   }
-  const includeRe = include && String(include).trim() ? globToRegExp(normalizeGlobPattern(include)) : null;
+  const includeRe =
+    include && String(include).trim() ? globToRegExp(normalizeGlobPattern(include)) : null;
   const stack = [searchRootAbs];
   let total = 0;
   const searchIsFile = fs.existsSync(searchRootAbs) && fs.statSync(searchRootAbs).isFile();
@@ -674,6 +689,7 @@ export function tbFsPlugin() {
           const workspace = readWorkspace(projectRoot);
 
           if (url === `${PREFIX}/health` && req.method === 'GET') {
+            const obs = getFsObservationPolicy();
             return sendJson(res, 200, {
               ok: true,
               mode: 'workspace',
@@ -682,7 +698,23 @@ export function tbFsPlugin() {
               home: os.homedir(),
               maxReadBytes: MAX_READ,
               maxWriteBytes: MAX_WRITE,
+              observation: obs,
             });
+          }
+
+          if (url === `${PREFIX}/workspace-dependencies` && req.method === 'GET') {
+            const tools = await loadWorkspaceDependencies();
+            return sendJson(res, 200, {
+              ok: true,
+              count: tools.length,
+              tools,
+              platform: process.platform,
+            });
+          }
+
+          if (url === `${PREFIX}/office-to-pdf` && req.method === 'GET') {
+            const probe = await probeOfficeToPdf();
+            return sendJson(res, 200, { ok: true, ...probe });
           }
 
           if (url === `${PREFIX}/agent-instructions` && req.method === 'GET') {
@@ -690,11 +722,21 @@ export function tbFsPlugin() {
             return sendJson(res, 200, {
               ok: true,
               text: packed.text,
-              files: packed.files.map((f) => ({ path: f.path, name: f.name })),
+              files: packed.files.map((f) => ({
+                path: f.path,
+                name: f.name,
+                abs: f.abs,
+                label: f.label,
+              })),
               workspace,
               projectRoot,
               maxBytes: AGENT_INSTRUCTION_MAX_BYTES,
             });
+          }
+
+          if (url === `${PREFIX}/skills` && req.method === 'GET') {
+            const skills = listWorkspaceSkills(workspace, projectRoot);
+            return sendJson(res, 200, { ok: true, count: skills.length, skills });
           }
 
           if (url === `${PREFIX}/workspace` && req.method === 'GET') {
@@ -922,7 +964,41 @@ export function tbFsPlugin() {
               files: packed.files.map((f) => ({ path: f.path, name: f.name })),
               workspace,
               projectRoot,
-              maxBytes: Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : AGENT_INSTRUCTION_MAX_BYTES,
+              maxBytes:
+                Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : AGENT_INSTRUCTION_MAX_BYTES,
+            });
+          }
+
+          if (url === `${PREFIX}/skill-load` && req.method === 'POST') {
+            const name = String(body.name ?? body.path ?? body.id ?? '').trim();
+            return sendJson(res, 200, loadWorkspaceSkill(workspace, name, projectRoot));
+          }
+
+          if (url === `${PREFIX}/office-to-pdf` && req.method === 'POST') {
+            if (access === 'readonly') {
+              return sendJson(res, 403, { error: '当前为「仅可查看」，禁止转换生成 PDF。' });
+            }
+            const { abs, display, inWorkspace } = resolvePath(workspace, body.path, access);
+            if (isBlockedWrite(display, access, inWorkspace)) {
+              return sendJson(res, 403, { error: `权限禁止写入：${display}` });
+            }
+            let outDirAbs = '';
+            if (body.outDir) {
+              const out = resolvePath(workspace, body.outDir, access);
+              outDirAbs = out.abs;
+            } else {
+              outDirAbs = path.dirname(abs);
+            }
+            const result = await convertOfficeToPdf(abs, outDirAbs);
+            if (!result.ok) return sendJson(res, 200, result);
+            return sendJson(res, 200, {
+              ok: true,
+              input: display,
+              output: toWorkspaceRel(workspace, result.output),
+              bytes: result.bytes,
+              binary: result.binary,
+              fallback: result.fallback === true,
+              note: result.note,
             });
           }
 
@@ -945,16 +1021,85 @@ export function tbFsPlugin() {
           }
 
           if (url === `${PREFIX}/open` && req.method === 'POST') {
-            const { abs, display } = resolvePath(workspace, body.path, access);
-            if (!fs.existsSync(abs)) {
-              return sendJson(res, 404, { error: 'not found', path: display });
+            const ws = path.resolve(workspace);
+            const root = path.resolve(projectRoot);
+            const raw = String(body.path ?? '').trim();
+            const absHint = String(body.abs ?? '').trim();
+            /** @type {string[]} */
+            const candidates = [];
+            const pushCand = (p) => {
+              if (!p || typeof p !== 'string') return;
+              const a = path.resolve(expandHome(p));
+              if (!candidates.includes(a)) candidates.push(a);
+            };
+            if (absHint) pushCand(absHint);
+            if (raw) {
+              if (path.isAbsolute(raw) || raw.startsWith('~/') || raw.startsWith('~\\')) {
+                pushCand(raw);
+              }
+              try {
+                pushCand(resolvePath(ws, raw, access).abs);
+              } catch {
+                // ignore
+              }
+              try {
+                pushCand(resolvePath(root, raw, 'full').abs);
+              } catch {
+                // ignore
+              }
+              // 兼容误带目录名：ai-testbench/AGENTS.md → AGENTS.md
+              const cleaned = raw.replace(/\\/g, '/').replace(/^\/+/, '');
+              const wsBase = path.basename(ws);
+              const rootBase = path.basename(root);
+              for (const base of [wsBase, rootBase]) {
+                if (base && cleaned.startsWith(`${base}/`)) {
+                  const stripped = cleaned.slice(base.length + 1);
+                  try {
+                    pushCand(resolvePath(ws, stripped, access).abs);
+                  } catch {
+                    // ignore
+                  }
+                  try {
+                    pushCand(resolvePath(root, stripped, 'full').abs);
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+              // 仅文件名时在工作区 / 项目根各试一次
+              if (!cleaned.includes('/')) {
+                pushCand(path.join(ws, cleaned));
+                pushCand(path.join(root, cleaned));
+              }
             }
-            const st = fs.statSync(abs);
+
+            let hit = '';
+            for (const abs of candidates) {
+              if (!abs || isSystemSensitive(abs)) continue;
+              const underWs = abs === ws || abs.startsWith(ws + path.sep);
+              const underRoot = abs === root || abs.startsWith(root + path.sep);
+              if (!underWs && !underRoot && access !== 'full') continue;
+              if (fs.existsSync(abs)) {
+                hit = abs;
+                break;
+              }
+            }
+            if (!hit) {
+              return sendJson(res, 404, {
+                error: 'not found',
+                path: raw || absHint || '',
+              });
+            }
+            const st = fs.statSync(hit);
             if (!st.isFile() && !st.isDirectory()) {
-              return sendJson(res, 400, { error: '无法打开该路径', path: display });
+              return sendJson(res, 400, { error: '无法打开该路径', path: hit });
             }
-            await openLocalPath(abs);
-            return sendJson(res, 200, { ok: true, path: display });
+            await openLocalPath(hit);
+            const display =
+              hit === ws || hit.startsWith(ws + path.sep)
+                ? path.relative(ws, hit).split(path.sep).join('/') || '.'
+                : hit;
+            return sendJson(res, 200, { ok: true, path: display, abs: hit });
           }
 
           if (url === `${PREFIX}/glob` && req.method === 'POST') {
@@ -962,7 +1107,10 @@ export function tbFsPlugin() {
             if (!pattern) return sendJson(res, 400, { error: 'pattern is required' });
             const { abs, display } = resolvePath(workspace, body.path || '.', access);
             if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
-              return sendJson(res, 400, { error: 'search path must be a directory', path: display });
+              return sendJson(res, 400, {
+                error: 'search path must be a directory',
+                path: display,
+              });
             }
             const result = await runFsGlob(workspace, abs, pattern);
             return sendJson(res, 200, {

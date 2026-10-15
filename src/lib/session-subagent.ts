@@ -61,7 +61,7 @@ export const SUBAGENT_PRESETS: SubagentPreset[] = [
 ];
 
 export const SUBAGENT_SYSTEM_HINT =
-  '你可以使用子代理工具（进程内、同模型）：\n' +
+  '你可以使用子代理工具（进程内；默认与主会话同模型，可在设置里改子代理模型）：\n' +
   '- list_agents：列出可用预设与正在运行/最近完成的子代理\n' +
   '- spawn_subagent：派生子代理执行独立任务（默认等待完成；background=true 则后台跑）\n' +
   '- fork_subagent：带着当前对话上下文 fork 子代理并行干活\n' +

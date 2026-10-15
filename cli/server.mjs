@@ -11,9 +11,13 @@ import sirv from 'sirv';
 import { tbConfigPlugin } from '../tb-plugins/tb-config.mjs';
 import { tbBashPlugin } from '../builtin/session/tb-bash.mjs';
 import { tbFsPlugin } from '../builtin/session/tb-fs.mjs';
+import { tbSchedulePlugin } from '../builtin/session/tb-schedule.mjs';
+import { tbSpillPlugin } from '../builtin/session/tb-spill.mjs';
 import { tbKbPlugin } from '../tb-plugins/tb-kb.mjs';
 import { tbMemoryPlugin } from '../tb-plugins/tb-memory.mjs';
+import { tbResourcesPlugin } from '../tb-plugins/tb-resources.mjs';
 import { tbWebPlugin } from '../builtin/session/tb-web.mjs';
+import { tbSessionRunsPlugin } from '../builtin/session/session-runs.mjs';
 import {
   tbCasesPlugin,
   tbKnowledgePlugin,
@@ -60,11 +64,15 @@ function attachPlugins(app, dataRoot) {
     middlewares: app,
   };
   const plugins = [
+    tbSessionRunsPlugin(),
     tbConfigPlugin(),
+    tbResourcesPlugin(),
     tbMemoryPlugin(),
     tbKbPlugin(),
     tbFsPlugin(),
     tbBashPlugin(),
+    tbSchedulePlugin(),
+    tbSpillPlugin(),
     tbWebPlugin(),
     tbRequirementsPlugin(),
     tbCasesPlugin(),

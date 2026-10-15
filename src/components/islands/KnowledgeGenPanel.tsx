@@ -33,6 +33,7 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
   const [error, setError] = useState<string | null>(null);
   const [catEditor, setCatEditor] = useState<'add' | 'edit' | null>(null);
   const [catDraft, setCatDraft] = useState('');
+  const [deleteCatPending, setDeleteCatPending] = useState(false);
 
   function refreshCats(prefer?: string) {
     const list = listKnowledgeCategories();
@@ -68,6 +69,7 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
     setCategory(initial?.category ?? listKnowledgeCategories()[0] ?? '测试规范');
     setCatEditor(null);
     setCatDraft('');
+    setDeleteCatPending(false);
     setError(null);
     void fetchDocsHealth('knowledge').then(setDocsLive);
   }, [open, initial]);
@@ -96,20 +98,21 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
       title="生成知识库 · 配置"
       closeAriaLabel="关闭生成知识库面板"
       footer={
-        <footer className="shrink-0 p-4 border-t border-stone-100 flex justify-end gap-2">
+        <footer className="shrink-0 p-4 border-t border-stone-100 flex items-center gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="h-9 px-3 text-sm rounded-lg text-stone-600 hover:bg-stone-100"
+            className="h-9 px-3 text-sm text-stone-600 rounded-lg hover:bg-stone-100"
           >
             取消
           </button>
           <button
             type="button"
+            disabled={!docsLive}
             onClick={confirm}
-            className="h-9 px-4 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7]"
+            className="flex-1 h-9 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
           >
-            确认使用
+            确认
           </button>
         </footer>
       }
@@ -121,7 +124,8 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
       ) : null}
 
       <p className="text-xs text-stone-500 leading-5">
-        确认后在主输入框粘贴或描述规范/方法论/环境素材并发送；质检通过后自动写入知识库对应分类，可在「知识库管理」页查看。
+        按所选分类沉淀测试规范、方法论或环境约定：确认后在主输入框粘贴/描述素材并发送，质检通过后写入知识库，可在「知识库管理」中查看与
+        @ 引用。
       </p>
 
       {error ? (
@@ -140,6 +144,7 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
               setCatEditor('add');
               setCatDraft('');
               setError(null);
+              setDeleteCatPending(false);
             }}
           >
             新增
@@ -151,33 +156,62 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
               setCatEditor('edit');
               setCatDraft(category);
               setError(null);
+              setDeleteCatPending(false);
             }}
           >
             编辑
           </button>
-          <button
-            type="button"
-            className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
-            disabled={categories.length <= 1}
-            onClick={() => {
-              try {
-                const next = removeKnowledgeCategory(category);
-                setCategories(next);
-                setCategory(next[0] ?? '');
+          {deleteCatPending ? (
+            <>
+              <span className="text-[11px] text-stone-500 shrink-0">确认删除？</span>
+              <button
+                type="button"
+                className="text-[11px] text-red-600 hover:underline shrink-0"
+                onClick={() => {
+                  setDeleteCatPending(false);
+                  try {
+                    const next = removeKnowledgeCategory(category);
+                    setCategories(next);
+                    setCategory(next[0] ?? '');
+                    setCatEditor(null);
+                    setError(null);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                确认
+              </button>
+              <button
+                type="button"
+                className="text-[11px] text-stone-500 hover:underline shrink-0"
+                onClick={() => setDeleteCatPending(false)}
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="text-[11px] text-red-600 hover:underline disabled:opacity-40"
+              disabled={categories.length <= 1}
+              onClick={() => {
                 setCatEditor(null);
+                setDeleteCatPending(true);
                 setError(null);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            删除
-          </button>
+              }}
+            >
+              删除
+            </button>
+          )}
         </div>
         <SelectDropdown
           options={categories.map((c) => ({ value: c, label: c }))}
           value={category}
-          onChange={setCategory}
+          onChange={(v) => {
+            setCategory(v);
+            setDeleteCatPending(false);
+          }}
         />
         {catEditor ? (
           <div className="mt-2 rounded-lg border border-stone-200 bg-stone-50 p-2 space-y-2">
@@ -225,17 +259,17 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
 
       <div>
         <label className="text-xs font-medium text-stone-500" htmlFor="kg-title">
-          期望标题（可选）
+          期望名称
         </label>
         <input
           id="kg-title"
           value={titleHint}
           onChange={(e) => setTitleHint(e.target.value)}
-          placeholder="如：接口自动化环境约定"
+          placeholder="如：接口自动化环境约定.md"
           className="mt-1 w-full h-9 px-3 text-sm rounded-lg border border-stone-200 focus:outline-none focus:ring-2 focus:ring-[#4176e6]/40"
         />
         <p className="mt-1.5 text-[11px] text-stone-400 leading-4">
-          素材与编写要求在主输入框描述即可。
+          可填期望文件名；留空则由模型自拟。素材与编写要求在主输入框描述。
         </p>
       </div>
     </SlideOverDrawer>

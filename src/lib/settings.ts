@@ -219,6 +219,11 @@ export interface GeneralPrefs {
   sessionFontSize: number;
   toolStepDetail: ToolStepDetail;
   busySendBehavior: BusySendBehavior;
+  /**
+   * 子代理模型：空字符串 = 跟随主会话；否则为当前提供商下的模型 id。
+   * （subagent-model-selection-settings）
+   */
+  subagentModel: string;
 }
 
 const GENERAL_CHANGED = 'tw-general-prefs-changed';

@@ -10,6 +10,7 @@ __pycache__/
 *.log
 *.tgz
 .vite/
+blogs/
 # 本地会话记忆（不提交）
 .local/
 .cursor/

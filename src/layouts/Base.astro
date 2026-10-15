@@ -93,7 +93,7 @@ const navItem = (active: boolean) =>
                   </span>
                 </span>
                 <span class="tw-nav-tagline" data-i18n="nav.tagline">
-                  让测试更高效一点
+                  让测试更高效
                 </span>
               </span>
             </a>
@@ -210,10 +210,7 @@ const navItem = (active: boolean) =>
 
           <details class="tw-nav-details group/docs" open>
             <summary
-              class:list={[
-                'tw-nav-item tw-nav-summary',
-                docsOpen ? 'is-branch-active' : '',
-              ]}
+              class:list={['tw-nav-item tw-nav-summary', docsOpen ? 'is-branch-active' : '']}
               title="文档库"
             >
               <!-- 收起：合上文件夹；展开（details open）：打开文件夹 -->
@@ -225,8 +222,7 @@ const navItem = (active: boolean) =>
                 stroke-width="1.75"
                 aria-hidden="true"
               >
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"
-                ></path>
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
               </svg>
               <svg
                 class="tw-nav-ico tw-nav-ico--open"
@@ -236,9 +232,7 @@ const navItem = (active: boolean) =>
                 stroke-width="1.75"
                 aria-hidden="true"
               >
-                <path
-                  d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
-                ></path>
+                <path d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path>
               </svg>
               <span class="tw-nav-label" data-i18n="nav.docs">
                 文档库
@@ -295,66 +289,80 @@ const navItem = (active: boolean) =>
               <circle cx="12" cy="12" r="9"></circle>
               <path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round"></path>
             </svg>
-            <span class="tw-nav-label" data-i18n="nav.changelogShort">版本日志</span>
+            <span class="tw-nav-label" data-i18n="nav.changelogShort">
+              版本日志
+            </span>
           </a>
         </nav>
 
         <div class="tw-nav-meta">
-        <div class="tw-nav-ext" aria-label="外部链接">
-          <a
-            href="https://github.com/yychuiyan/ai-testbench"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="tw-nav-ext-btn"
-            title="GitHub 仓库"
-            data-i18n-title="nav.repo"
-            aria-label="GitHub 仓库"
-          >
-            <svg class="tw-nav-ext-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path
-                d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.71.5.1.68-.22.68-.48 0-.24-.01-.87-.01-1.7-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 7.1c.85 0 1.71.12 2.51.35 1.9-1.32 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.38-.01 2.48-.01 2.82 0 .26.18.59.69.48A10.05 10.05 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"
-              ></path>
-            </svg>
-            <span class="tw-nav-ext-label" data-i18n="nav.repoShort">仓库</span>
-          </a>
-          <a
-            href="https://www.npmjs.com/package/ai-testbench"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="tw-nav-ext-btn"
-            title="npm 包"
-            data-i18n-title="nav.npm"
-            aria-label="npm 包"
-          >
-            <svg class="tw-nav-ext-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path
-                d="M4 4h16v16H4V4zm2.5 2.5v11H12v-8.5h3.5v8.5H19.5v-11H6.5z"
-              ></path>
-            </svg>
-            <span class="tw-nav-ext-label" data-i18n="nav.npmShort">npm</span>
-          </a>
-          <a
-            href="https://docs.yychuiyan.com/friends/apply/"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="tw-nav-ext-btn"
-            title="留言板"
-            data-i18n-title="nav.board"
-            aria-label="留言板"
-          >
-            <svg
-              class="tw-nav-ext-ico"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.75"
-              aria-hidden="true"
+          <div class="tw-nav-ext" aria-label="外部链接">
+            <a
+              href="https://github.com/yychuiyan/ai-testbench"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="tw-nav-ext-btn"
+              title="GitHub 仓库"
+              data-i18n-title="nav.repo"
+              aria-label="GitHub 仓库"
             >
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-            </svg>
-            <span class="tw-nav-ext-label" data-i18n="nav.boardShort">留言</span>
-          </a>
-        </div>
+              <svg
+                class="tw-nav-ext-ico"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.71.5.1.68-.22.68-.48 0-.24-.01-.87-.01-1.7-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 7.1c.85 0 1.71.12 2.51.35 1.9-1.32 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.38-.01 2.48-.01 2.82 0 .26.18.59.69.48A10.05 10.05 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"></path>
+              </svg>
+              <span class="tw-nav-ext-label" data-i18n="nav.repoShort">
+                仓库
+              </span>
+            </a>
+            <a
+              href="https://www.npmjs.com/package/ai-testbench"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="tw-nav-ext-btn"
+              title="npm 包"
+              data-i18n-title="nav.npm"
+              aria-label="npm 包"
+            >
+              <svg
+                class="tw-nav-ext-ico"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M4 4h16v16H4V4zm2.5 2.5v11H12v-8.5h3.5v8.5H19.5v-11H6.5z"></path>
+              </svg>
+              <span class="tw-nav-ext-label" data-i18n="nav.npmShort">
+                npm
+              </span>
+            </a>
+            <a
+              href="https://docs.yychuiyan.com/friends/apply/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="tw-nav-ext-btn"
+              title="问题与建议"
+              data-i18n-title="nav.board"
+              aria-label="问题与建议"
+            >
+              <svg
+                class="tw-nav-ext-ico"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                aria-hidden="true"
+              >
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
+              <span class="tw-nav-ext-label" data-i18n="nav.boardShort">
+                问题与建议
+              </span>
+            </a>
+          </div>
         </div>
 
         <div class="tw-nav-foot">
@@ -391,7 +399,7 @@ const navItem = (active: boolean) =>
             if (g.language !== 'en') return;
             var en = {
               'nav.brand': 'TestBench',
-              'nav.tagline': 'Make testing a bit more efficient',
+              'nav.tagline': 'Make testing more efficient',
               'nav.home': 'My Workbench',
               'nav.caseManage': 'Test Cases',
               'nav.prompts': 'Prompts',
@@ -409,8 +417,8 @@ const navItem = (active: boolean) =>
               'nav.npmShort': 'npm',
               'nav.site': 'Yycy Docs',
               'nav.siteShort': 'Site',
-              'nav.board': 'Message board',
-              'nav.boardShort': 'Board',
+              'nav.board': 'Questions & suggestions',
+              'nav.boardShort': 'Suggestions',
             };
             document.querySelectorAll('[data-i18n]').forEach(function (el) {
               var key = el.getAttribute('data-i18n');
@@ -450,7 +458,10 @@ const navItem = (active: boolean) =>
 
             summary.addEventListener('click', function (e) {
               e.preventDefault();
-              if (details.classList.contains('is-closing') || details.classList.contains('is-opening')) {
+              if (
+                details.classList.contains('is-closing') ||
+                details.classList.contains('is-opening')
+              ) {
                 return;
               }
               if (details.open) {

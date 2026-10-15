@@ -16,8 +16,8 @@ export { DEFAULT_PROMPT_KINDS, normalizePromptKinds } from './prompt-kind-defs';
 
 export function listPromptKinds(): PromptKindDef[] {
   const fromCfg = getCachedAppConfig().promptKinds;
-  if (fromCfg?.length) return fromCfg.map((x) => ({ ...x }));
-  return DEFAULT_PROMPT_KINDS.map((x) => ({ ...x }));
+  // 走 normalize：纠正常见旧 hint 文案，并保证结构合法
+  return normalizePromptKinds(fromCfg?.length ? fromCfg : DEFAULT_PROMPT_KINDS);
 }
 
 export function promptKindMeta(id: PromptGenKind): PromptKindDef {

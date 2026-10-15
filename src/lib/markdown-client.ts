@@ -22,6 +22,16 @@ const md = new Marked({
         `<pre><code>${body}</code></pre></div>`
       );
     },
+    link(token) {
+      const href = escapeHtml(token.href || '');
+      const titleAttr = token.title ? ` title="${escapeHtml(token.title)}"` : '';
+      // marked 会把 this 绑到 Renderer，以正确渲染链接内加粗等
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const label = (this as any).parser.parseInline(token.tokens ?? []);
+      return (
+        `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">` + `${label}</a>`
+      );
+    },
   },
 });
 
@@ -31,5 +41,6 @@ const md = new Marked({
  */
 export function renderMarkdown(source: string): string {
   const html = md.parse(source, { async: false }) as string;
-  return DOMPurify.sanitize(html);
+  // 保留新窗口打开所需属性（默认消毒可能剥掉 target）
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
 }

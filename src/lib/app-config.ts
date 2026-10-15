@@ -59,6 +59,7 @@ const DEFAULT_GENERAL: GeneralPrefs = {
   sessionFontSize: 14,
   toolStepDetail: 'standard',
   busySendBehavior: 'queue',
+  subagentModel: '',
 };
 
 function uid(): string {
@@ -181,6 +182,7 @@ function normalizeConfig(raw: Partial<AppFileConfig> | null | undefined): AppFil
           ? general.toolStepDetail
           : 'standard',
       busySendBehavior: general.busySendBehavior === 'interrupt' ? 'interrupt' : 'queue',
+      subagentModel: typeof general.subagentModel === 'string' ? general.subagentModel.trim() : '',
     },
     plugins,
     caseTypes: normalizeCaseTypes(raw.caseTypes),

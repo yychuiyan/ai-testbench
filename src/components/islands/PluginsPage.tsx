@@ -1,11 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   PLUGIN_CATALOG,
   loadPluginEnabled,
@@ -22,7 +15,12 @@ import {
 import { fetchMemoryHealth, type MemoryHealth } from '../../lib/memory';
 import { fetchWebHealth, type WebHealth } from '../../lib/web-tools';
 import { fetchFsHealth, type FsHealth } from '../../lib/fs-tools';
-import { fetchBashHealth, fetchPwshHealth, type BashHealth, type PwshHealth } from '../../lib/bash-tools';
+import {
+  fetchBashHealth,
+  fetchPwshHealth,
+  type BashHealth,
+  type PwshHealth,
+} from '../../lib/bash-tools';
 import {
   generateCapabilityRecommendations,
   loadRecommendCache,
@@ -67,7 +65,6 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
   const [bash, setBash] = useState<BashHealth | null>(null);
   const [pwsh, setPwsh] = useState<PwshHealth | null>(null);
   const [probing, setProbing] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [settings, setSettings] = useState<LLMSettings | null>(null);
   const [recMeta, setRecMeta] = useState<RecommendCache | null>(() => loadRecommendCache());
@@ -77,29 +74,14 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState<string | null>(null);
   const [hintDraft, setHintDraft] = useState('');
-  const [toast, setToast] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setView(tab);
   }, [tab]);
 
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
-    };
-  }, []);
-
-  function showToast(message: string) {
-    setToast(message);
-    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 2800);
-  }
-
-  async function refreshRuntime(opts?: { toast?: boolean }): Promise<void> {
+  async function refreshRuntime(): Promise<void> {
     setProbing(true);
-    if (opts?.toast) setRefreshing(true);
     try {
       const [m, w, f, b, p] = await Promise.all([
         fetchMemoryHealth(),
@@ -113,19 +95,8 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
       setFs(f);
       setBash(b);
       setPwsh(p);
-      if (opts?.toast) {
-        const parts = [
-          `记忆 ${m?.ok ? '就绪' : '未就绪'}`,
-          `网页 ${w?.ok ? '就绪' : '未就绪'}`,
-          `工作区 ${f?.ok ? '就绪' : '未就绪'}`,
-          `Bash ${b?.ok ? '就绪' : '未就绪'}`,
-          `Pwsh ${p?.ok && p.available ? '就绪' : p?.ok ? '未安装' : '未就绪'}`,
-        ];
-        showToast(`状态已刷新：${parts.join(' · ')}`);
-      }
     } finally {
       setProbing(false);
-      setRefreshing(false);
     }
   }
 
@@ -272,8 +243,6 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
             runtimeFor={runtimeFor}
             builtinStatus={builtinStatus}
             onToggle={toggle}
-            refreshing={refreshing}
-            onRefresh={() => void refreshRuntime({ toast: true })}
             onOpenManage={() => setView('manage')}
           />
         ) : (
@@ -292,20 +261,23 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
           />
         )}
       </div>
-      {toast ? (
-        <div
-          className="tw-plugin-toast pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 max-w-[min(92vw,28rem)] px-4 py-2.5 rounded-full bg-stone-900/92 text-white text-[13px] leading-5 shadow-lg text-center"
-          role="status"
-        >
-          {toast}
-        </div>
-      ) : null}
     </div>
   );
 }
 
 function tbFullName(id: string): string {
   return `@tb-plugins/${id}`;
+}
+
+/** 全局/会话卡片描述：去掉对照体系残留字样，避免出现在产品页 */
+function displayPluginRoleZh(text: string): string {
+  return String(text ?? '')
+    .replace(/（\s*dsh[^）]*）/gi, '')
+    .replace(/\(\s*dsh[^)]*\)/gi, '')
+    .replace(/\bdsh\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/（\s*）/g, '')
+    .trim();
 }
 
 function MinePanel(props: {
@@ -315,25 +287,13 @@ function MinePanel(props: {
   runtimeFor: (id: PluginId) => RuntimeStatus;
   builtinStatus: (e: BuiltinCatalogEntry) => BuiltinStatus;
   onToggle: (id: PluginId) => void;
-  refreshing: boolean;
-  onRefresh: () => void;
   onOpenManage: () => void;
 }) {
-  const {
-    mineTab,
-    onMineTab,
-    enabled,
-    runtimeFor,
-    builtinStatus,
-    onToggle,
-    refreshing,
-    onRefresh,
-    onOpenManage,
-  } = props;
+  const { mineTab, onMineTab, enabled, runtimeFor, builtinStatus, onToggle, onOpenManage } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const tabs: Array<{ id: MineTab; label: string; count: number; hint: string }> = [
-    { id: 'extension', label: '扩展插件', count: PLUGIN_CATALOG.length, hint: '可开关' },
+    { id: 'extension', label: '扩展插件', count: PLUGIN_CATALOG.length, hint: '可配置插件' },
     { id: 'session', label: '会话插件', count: SESSION_PLUGIN_CATALOG.length, hint: '默认' },
     { id: 'global', label: '全局插件', count: GLOBAL_PLUGIN_CATALOG.length, hint: '默认' },
   ];
@@ -348,34 +308,16 @@ function MinePanel(props: {
         <div className="flex-1 min-w-0">
           <h2 className="text-xl font-bold text-stone-900">我的插件</h2>
           <p className="mt-1.5 text-sm text-stone-500 leading-6">
-            扩展可开关；会话 / 全局为平台默认。点击卡片展开详情。
+            扩展为可配置插件；会话 / 全局为平台默认。点击卡片展开详情。
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={refreshing}
-            title="重新检查本机服务是否可用（记忆、网页、工作区文件等）"
-            className="h-9 px-3 rounded-full border border-stone-200 bg-white text-[12px] text-stone-600 hover:bg-stone-50 transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
-          >
-            {refreshing ? (
-              <>
-                <span className="w-3.5 h-3.5 rounded-full border-2 border-stone-400 border-t-transparent animate-spin" />
-                刷新中…
-              </>
-            ) : (
-              '刷新状态'
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={onOpenManage}
-            className="h-9 px-4 rounded-full border border-stone-200 bg-white text-[13px] font-medium text-stone-700 shadow-sm hover:bg-stone-50 transition-colors"
-          >
-            插件管理
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onOpenManage}
+          className="h-9 px-4 shrink-0 rounded-full border border-stone-200 bg-white text-[13px] font-medium text-stone-700 shadow-sm hover:bg-stone-50 transition-colors"
+        >
+          插件管理
+        </button>
       </header>
 
       <div
@@ -417,16 +359,19 @@ function MinePanel(props: {
 
       {mineTab === 'extension' ? (
         <>
-          <p className="mb-3 text-xs text-stone-500">可开关的产品扩展 · {PLUGIN_CATALOG.length} 个</p>
+          <p className="mb-3 text-xs text-stone-500">可配置插件 · {PLUGIN_CATALOG.length} 个</p>
           <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-              {PLUGIN_CATALOG.map((p) => {
+            {PLUGIN_CATALOG.map((p) => {
               const on = enabled[p.id];
               const rt = runtimeFor(p.id);
               const open = expandedId === `ext:${p.id}`;
               const configLabel = on ? '已启用' : '未启用';
               const runLabel = on && rt.available === true ? '运行中' : '已停用';
               return (
-                <li key={p.id} className="min-w-0">
+                <li
+                  key={p.id}
+                  className={`min-w-0 relative z-0 overflow-visible hover:z-40 focus-within:z-40${open ? ' z-40' : ''}`}
+                >
                   <PluginExpandCard
                     open={open}
                     onToggleOpen={() => toggleExpand(`ext:${p.id}`)}
@@ -532,13 +477,16 @@ function BuiltinCatalogGrid(props: {
                 const configLabel = '已启用';
                 const runLabel = st.tone === 'ready' ? '运行中' : '已停用';
                 return (
-                  <li key={e.id} className="min-w-0">
+                  <li
+                    key={e.id}
+                    className={`min-w-0 relative z-0 overflow-visible hover:z-40 focus-within:z-40${open ? ' z-40' : ''}`}
+                  >
                     <PluginExpandCard
                       open={open}
                       onToggleOpen={() => onExpand(key)}
                       title={e.id}
                       titleMono
-                      subtitle={e.roleZh}
+                      subtitle={displayPluginRoleZh(e.roleZh)}
                       status={st}
                       fullName={tbFullName(e.id)}
                       configLabel={configLabel}
@@ -584,18 +532,39 @@ function PluginExpandCard(props: {
     runLabel,
     extra,
   } = props;
+  const subtitleRef = useRef<HTMLSpanElement | null>(null);
+  const [subtitleOverflow, setSubtitleOverflow] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = subtitleRef.current;
+    if (!el) {
+      setSubtitleOverflow(false);
+      return;
+    }
+    const measure = () => {
+      setSubtitleOverflow(el.scrollWidth > el.clientWidth + 1);
+    };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [subtitle]);
 
   return (
     <div
-      className={`tw-plugin-card bg-white border rounded-xl transition-colors self-start w-full ${
-        open ? 'border-[#4176e6]/50 shadow-sm' : 'border-stone-200 hover:border-stone-300'
+      className={`tw-plugin-card group/card relative z-0 hover:z-40 focus-within:z-40 bg-white border rounded-xl transition-colors self-start w-full overflow-visible ${
+        open ? 'border-[#4176e6]/50 shadow-sm z-40' : 'border-stone-200 hover:border-stone-300'
       }`}
     >
-      <div className="px-4 py-3 flex gap-3 items-start">
+      <div className="relative px-4 py-3 flex gap-3 items-start h-[4.25rem] overflow-visible">
         <button
           type="button"
           onClick={onToggleOpen}
-          className="flex-1 min-w-0 text-left outline-none focus:outline-none"
+          className="relative flex-1 min-w-0 h-full text-left outline-none focus:outline-none overflow-visible"
           aria-expanded={open}
         >
           <div className="flex items-center gap-2 min-w-0">
@@ -609,7 +578,19 @@ function PluginExpandCard(props: {
               className={`w-3.5 h-3.5 text-stone-400 shrink-0 transition-transform duration-300 ease-out ${open ? 'rotate-180' : ''}`}
             />
           </div>
-          <p className="mt-1.5 text-[13px] text-stone-500 leading-5 line-clamp-2">{subtitle}</p>
+          <span className="group/sub relative mt-1 block min-w-0">
+            <span ref={subtitleRef} className="block text-[13px] text-stone-500 leading-5 truncate">
+              {subtitle}
+            </span>
+            {subtitleOverflow && !open ? (
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute left-0 right-0 top-[calc(100%+0.25rem)] z-50 px-3 py-2 rounded-lg border border-stone-200 bg-white text-[12px] leading-5 text-stone-600 whitespace-normal shadow-lg opacity-0 invisible transition-opacity duration-150 group-hover/sub:opacity-100 group-hover/sub:visible"
+              >
+                {subtitle}
+              </span>
+            ) : null}
+          </span>
         </button>
         <div className="shrink-0 flex items-center gap-2 pt-0.5 self-start">
           {status ? <StatusPill tone={status.tone} label={status.label} /> : null}
@@ -622,7 +603,9 @@ function PluginExpandCard(props: {
             <dl className="mt-2.5 space-y-1.5 text-[13px]">
               <div className="flex gap-2">
                 <dt className="shrink-0 w-[4.5rem] text-stone-400">完整名称</dt>
-                <dd className="min-w-0 font-mono text-[12px] text-stone-700 break-all">{fullName}</dd>
+                <dd className="min-w-0 font-mono text-[12px] text-stone-700 break-all">
+                  {fullName}
+                </dd>
               </div>
               <div className="flex gap-2">
                 <dt className="shrink-0 w-[4.5rem] text-stone-400">配置状态</dt>
@@ -634,6 +617,12 @@ function PluginExpandCard(props: {
                   {runLabel}
                 </dd>
               </div>
+              {subtitle ? (
+                <div className="flex gap-2">
+                  <dt className="shrink-0 w-[4.5rem] text-stone-400">简介</dt>
+                  <dd className="text-stone-500 text-[12px] leading-5">{subtitle}</dd>
+                </div>
+              ) : null}
               {extra ? (
                 <div className="flex gap-2">
                   <dt className="shrink-0 w-[4.5rem] text-stone-400">说明</dt>
@@ -650,7 +639,14 @@ function PluginExpandCard(props: {
 
 function Chevron({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className={className}
+      aria-hidden
+    >
       <path d="m6 9 6 6 6-6" />
     </svg>
   );
@@ -664,9 +660,7 @@ function StatusPill(props: { tone: BuiltinStatus['tone']; label: string }) {
       : tone === 'warn'
         ? 'bg-amber-50 text-amber-800 border-amber-100'
         : 'bg-stone-100 text-stone-500 border-stone-200';
-  return (
-    <span className={`text-[11px] px-1.5 py-0.5 rounded border ${cls}`}>{label}</span>
-  );
+  return <span className={`text-[11px] px-1.5 py-0.5 rounded border ${cls}`}>{label}</span>;
 }
 
 function ManagePanel(props: {
