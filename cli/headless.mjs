@@ -63,7 +63,7 @@ export function loadHeadlessSettings(dataRoot) {
   const baseURL = String(active?.baseURL || model.baseURL || '').trim();
   const modelId = String(active?.model || model.model || '').trim();
   if (!baseURL || !modelId) {
-    throw new Error('未配置模型：请在数据目录设置页或 .local/app.config.json 填写提供商');
+    throw new Error('未配置模型：请在数据空间设置页或 .local/app.config.json 填写提供商');
   }
   if (!apiKey) {
     throw new Error('未配置 API Key：请设置 TW_API_KEY 或写入提供商 apiKey');
