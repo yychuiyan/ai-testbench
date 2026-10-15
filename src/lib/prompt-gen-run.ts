@@ -157,7 +157,7 @@ export function formatPromptGenResultSummary(opts: {
     return lines.join('\n');
   }
   const lines = ['**执行成功**', '', `- 提示词名称：${opts.title || '—'}`];
-  if (opts.path) lines.push(`- 入库文件：prompts/${opts.path}`);
+  if (opts.path) lines.push(`- 入库文件：提示词管理/${opts.path}`);
   if (opts.qcNote) {
     lines.push('', '**质检说明**', opts.qcNote);
   }

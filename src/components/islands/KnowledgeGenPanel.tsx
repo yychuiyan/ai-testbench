@@ -251,7 +251,7 @@ export default function KnowledgeGenPanel({ open, onClose, initial, onConfirm }:
               </button>
             </div>
             <p className="text-[10px] text-stone-400 leading-4">
-              入库目录为 knowledge/分类名/（界面「知识库管理」）；改名不会自动迁移已有文件。
+              分类写入文档 frontmatter，文件平铺存放于 知识库管理/；改名不会自动迁移已有文件。
             </p>
           </div>
         ) : null}

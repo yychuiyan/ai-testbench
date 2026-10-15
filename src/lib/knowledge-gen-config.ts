@@ -13,7 +13,7 @@ export interface KnowledgeGenPluginConfig {
   /** @deprecated 要求改由主输入框描述；保留字段兼容旧会话 */
   purpose?: string;
   confirmedAt: number;
-  /** 本会话最近一次入库相对路径（相对 knowledge/） */
+  /** 本会话最近一次入库相对路径（相对 知识库管理/） */
   linkedKnowledgePath?: string;
 }
 

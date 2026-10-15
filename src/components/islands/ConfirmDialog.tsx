@@ -8,6 +8,8 @@ interface Props {
   cancelLabel?: string;
   /** 危险操作：solid=红底白字；outline=描边红字（对齐 dsh 删工作区） */
   danger?: boolean | 'solid' | 'outline';
+  /** 纯提示（如拦截删除）：隐藏取消按钮，只留一个确认 */
+  hideCancel?: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }
@@ -19,10 +21,12 @@ export default function ConfirmDialog({
   confirmLabel = '确定',
   cancelLabel = '取消',
   danger = false,
+  hideCancel = false,
   onClose,
   onConfirm,
 }: Props) {
-  const dangerMode = danger === true || danger === 'solid' ? 'solid' : danger === 'outline' ? 'outline' : null;
+  const dangerMode =
+    danger === true || danger === 'solid' ? 'solid' : danger === 'outline' ? 'outline' : null;
 
   return (
     <Dialog open={open} onClose={onClose} transition className="relative z-[90]">
@@ -51,13 +55,15 @@ export default function ConfirmDialog({
             {message}
           </p>
           <div className="mt-5 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 transition-colors"
-            >
-              {cancelLabel}
-            </button>
+            {hideCancel ? null : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 transition-colors"
+              >
+                {cancelLabel}
+              </button>
+            )}
             <button
               type="button"
               onClick={onConfirm}

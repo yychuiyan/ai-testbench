@@ -68,7 +68,7 @@ export default function MultiSelectDropdown({
         </svg>
       </button>
       {open ? (
-        <div className="tw-select-menu tw-popover-anim absolute z-[80] mt-1 max-h-56 w-full overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200">
+        <div className="tw-select-menu tw-popover-anim absolute z-[80] mt-1 max-h-56 w-full overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200">
           {options.length === 0 ? (
             <div className="px-3 py-2 text-sm text-stone-400">暂无可选项</div>
           ) : (
@@ -77,7 +77,7 @@ export default function MultiSelectDropdown({
               return (
                 <label
                   key={o.value}
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-stone-700 cursor-pointer hover:bg-stone-50"
+                  className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-stone-700 cursor-pointer hover:bg-stone-50"
                 >
                   <input
                     type="checkbox"

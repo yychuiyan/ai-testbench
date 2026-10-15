@@ -76,7 +76,7 @@ export default function SlideOverDrawer({
             type="button"
             onClick={onClose}
             className="tw-icon-btn w-8 h-8 rounded-lg"
-            title="关闭（Esc）"
+            data-hint="关闭（Esc）"
           >
             ✕
           </button>

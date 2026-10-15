@@ -1,0 +1,23 @@
+---
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import Docs from '../../layouts/Docs.astro';
+import { mdToHtml, stripFirstH1 } from '../../lib/docs-md';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const md = readFileSync(path.join(root, 'docs/操作手册.md'), 'utf8');
+const html = mdToHtml(stripFirstH1(md));
+---
+
+<Docs title="操作手册 · TestBench" active="manual">
+  <article class="tw-docs-article">
+    <header class="tw-docs-article-hero">
+      <h1 class="tw-docs-article-title" data-i18n="docs.nav.manual">
+        操作手册
+      </h1>
+      <p class="tw-docs-article-lead">模型配置、工作台用法、内容目录与插件说明。</p>
+    </header>
+    <div class="tw-docs-prose" set:html={html} />
+  </article>
+</Docs>

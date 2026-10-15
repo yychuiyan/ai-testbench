@@ -302,7 +302,7 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
           <span className="text-[11px] text-stone-400 tabular-nums">{entries.length} 条</span>
           <span
             className="max-w-full break-all whitespace-normal text-[11px] text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/20 rounded-lg px-2 py-0.5 font-mono leading-4"
-            title={trackPath || pathShow}
+            data-hint={trackPath || pathShow}
           >
             {pathShow}
           </span>

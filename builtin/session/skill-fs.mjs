@@ -95,6 +95,7 @@ export function listWorkspaceSkills(workspace, projectRoot) {
  * @param {string} workspace
  * @param {string} idOrPath
  * @param {string} [projectRoot]
+ * @returns {{ ok: true, id: string, name: string, path: string, text: string, truncated: boolean, bytes: number } | { ok: false, error: string }}
  */
 export function loadWorkspaceSkill(workspace, idOrPath, projectRoot) {
   const key = String(idOrPath ?? '').trim();

@@ -21,11 +21,17 @@ export interface PasteCatalogEntry {
   format: string;
 }
 
-const DOC_PREFIXES: { prefix: string; collection: PasteDocCollection; category: string }[] = [
-  { prefix: 'knowledge', collection: 'knowledge', category: '知识库' },
-  { prefix: 'cases', collection: 'cases', category: '用例' },
-  { prefix: 'prompts', collection: 'prompts', category: '提示词' },
-  { prefix: 'templates', collection: 'templates', category: '模板' },
+const DOC_PREFIXES: {
+  prefix: string;
+  /** 旧目录名（英文），兼容历史路径文本 */
+  aliases?: string[];
+  collection: PasteDocCollection;
+  category: string;
+}[] = [
+  { prefix: '知识库管理', aliases: ['knowledge'], collection: 'knowledge', category: '知识库' },
+  { prefix: '用例管理', aliases: ['cases'], collection: 'cases', category: '用例' },
+  { prefix: '提示词管理', aliases: ['prompts'], collection: 'prompts', category: '提示词' },
+  { prefix: '测试模板库', aliases: ['templates'], collection: 'templates', category: '模板' },
 ];
 
 function normalizePath(p: string): string {
@@ -147,18 +153,20 @@ export function resolvePathToPasteDocRef(
     if (stripped != null) rel = stripped;
   }
 
-  for (const { prefix, collection, category } of DOC_PREFIXES) {
-    if (rel === prefix) continue;
-    if (rel.startsWith(`${prefix}/`)) {
-      const inner = rel.slice(prefix.length + 1);
-      if (!inner) continue;
-      return toDocRef({
-        collection,
-        path: inner,
-        title: basenamePath(inner),
-        category,
-        format: extOf(inner),
-      });
+  for (const { prefix, aliases, collection, category } of DOC_PREFIXES) {
+    for (const p of [prefix, ...(aliases ?? [])]) {
+      if (rel === p) continue;
+      if (rel.startsWith(`${p}/`)) {
+        const inner = rel.slice(p.length + 1);
+        if (!inner) continue;
+        return toDocRef({
+          collection,
+          path: inner,
+          title: basenamePath(inner),
+          category,
+          format: extOf(inner),
+        });
+      }
     }
   }
 
@@ -178,9 +186,9 @@ export function resolvePathToPasteDocRef(
   // 已是相对路径且带目录：默认当工作区路径
   if (!isAbsoluteFsPath(rel) && rel.includes('/')) {
     const first = rel.split('/')[0] || '';
-    const hit = DOC_PREFIXES.find((d) => d.prefix === first);
+    const hit = DOC_PREFIXES.find((d) => d.prefix === first || d.aliases?.includes(first));
     if (hit) {
-      const inner = rel.slice(hit.prefix.length + 1);
+      const inner = rel.slice(first.length + 1);
       if (inner) {
         return toDocRef({
           collection: hit.collection,

@@ -21,7 +21,7 @@ function excelAttachText(opts: {
     ``,
     `格式：Excel`,
     `分类：${opts.category}`,
-    `文件：templates/${opts.relPosix}`,
+    `文件：测试模板库/${opts.relPosix}`,
     `说明：二进制工作簿无法在对话中展开全部单元格；以下为构建期解析的表头摘要。`,
     ``,
   ];
@@ -50,7 +50,7 @@ function wordAttachText(opts: {
     ``,
     `格式：Word（${opts.format}）`,
     `分类：${opts.category}`,
-    `文件：templates/${opts.relPosix}`,
+    `文件：测试模板库/${opts.relPosix}`,
     `说明：Word 二进制暂不解析正文，请下载原文件查看；对话中仅作模板引用。`,
   ].join('\n');
 }
@@ -69,7 +69,7 @@ export function buildSlashDocs(
       category: e.data.category,
       description: e.data.description ?? '',
       format: 'md',
-      path: `knowledge/${e.id}.md`,
+      path: `知识库管理/${e.id}.md`,
     });
   }
 
@@ -81,7 +81,7 @@ export function buildSlashDocs(
       category: e.data.category,
       description: e.data.description ?? '',
       format: 'md',
-      path: `templates/${e.id}.md`,
+      path: `测试模板库/${e.id}.md`,
     });
   }
 
@@ -109,7 +109,7 @@ export function buildSlashDocs(
       category: b.category,
       description: b.fieldSummary || `${label} 模板`,
       format: b.format,
-      path: `templates/${b.relPosix}`,
+      path: `测试模板库/${b.relPosix}`,
       attachText,
     });
   }

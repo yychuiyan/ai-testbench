@@ -19,6 +19,11 @@ const ZH = {
   'nav.settings': '设置',
   'nav.changelog': '变更日志',
   'nav.changelogShort': '版本日志',
+  'nav.helpCenter': '帮助中心',
+  'docs.nav.title': '文档',
+  'docs.nav.changelog': '版本日志',
+  'docs.nav.manual': '操作手册',
+  'docs.nav.install': '安装手册',
   'nav.repo': 'GitHub 仓库',
   'nav.repoShort': '仓库',
   'nav.npm': 'npm 包',
@@ -117,6 +122,11 @@ const EN: Record<MsgKey, string> = {
   'nav.settings': 'Settings',
   'nav.changelog': 'Changelog',
   'nav.changelogShort': 'Changelog',
+  'nav.helpCenter': 'Help Center',
+  'docs.nav.title': 'Docs',
+  'docs.nav.changelog': 'Changelog',
+  'docs.nav.manual': 'User Guide',
+  'docs.nav.install': 'Install Guide',
   'nav.repo': 'GitHub',
   'nav.repoShort': 'Repo',
   'nav.npm': 'npm package',
@@ -228,10 +238,11 @@ export function applyDomI18n(lang?: AppLanguage): void {
     if (!key || !(key in ZH)) return;
     el.textContent = t(key, undefined, l);
   });
-  document.querySelectorAll<HTMLElement>('[data-i18n-title]').forEach((el) => {
-    const key = el.dataset.i18nTitle as MsgKey | undefined;
+  // 悬浮提示改用 data-hint（自定义气泡），故翻译目标也从 title 换成 data-hint
+  document.querySelectorAll<HTMLElement>('[data-i18n-hint]').forEach((el) => {
+    const key = el.dataset.i18nHint as MsgKey | undefined;
     if (!key || !(key in ZH)) return;
-    el.title = t(key, undefined, l);
+    el.dataset.hint = t(key, undefined, l);
   });
 }
 

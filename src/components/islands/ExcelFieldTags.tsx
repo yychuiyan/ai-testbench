@@ -77,7 +77,7 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
   return (
     <div ref={rootRef} className="mt-1.5 relative w-full min-w-0">
       {sheetNames && sheetNames.length > 1 && (
-        <p className="mb-1.5 text-xs text-stone-400 truncate" title={sheetNames.join(' | ')}>
+        <p className="mb-1.5 text-xs text-stone-400 truncate" data-hint={sheetNames.join(' | ')}>
           工作表：{sheetNames.join(' | ')}
         </p>
       )}
@@ -116,7 +116,7 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
           <span
             key={f}
             className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 text-stone-500 max-w-[9rem] truncate shrink-0"
-            title={f}
+            data-hint={f}
           >
             {f}
           </span>

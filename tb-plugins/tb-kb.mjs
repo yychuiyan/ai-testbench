@@ -1,12 +1,14 @@
 /**
  * 本地知识库 / 模板检索（仿 dsh kb-sieve 能力子集）：
- * 仅 `astro dev` / 本地一体服务可用，只读扫描仓库根 knowledge/ 与 templates/。
+ * 仅 `astro dev` / 本地一体服务可用，只读扫描仓库根 知识库管理/ 与 测试模板库/。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
+
 const PREFIX = '/__tb_kb';
-const ROOTS = ['knowledge', 'templates'];
+const ROOTS = [DOC_ROOT_DIRS.knowledge.dirName, DOC_ROOT_DIRS.templates.dirName];
 const MAX_RESULTS = 12;
 const SNIPPET_LEN = 180;
 const MAX_READ_CHARS = 24_000;
@@ -118,8 +120,10 @@ export function tbKbPlugin() {
               .toLowerCase();
             const scope = String(body.scope ?? 'all').toLowerCase();
             const docs = listDocs(root).filter((d) => {
-              if (scope === 'knowledge') return d.path.startsWith('knowledge/');
-              if (scope === 'templates') return d.path.startsWith('templates/');
+              if (scope === 'knowledge')
+                return d.path.startsWith(`${DOC_ROOT_DIRS.knowledge.dirName}/`);
+              if (scope === 'templates')
+                return d.path.startsWith(`${DOC_ROOT_DIRS.templates.dirName}/`);
               return true;
             });
             if (!q) {

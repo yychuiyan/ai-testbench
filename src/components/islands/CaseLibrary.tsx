@@ -184,7 +184,7 @@ export default function CaseLibrary({
               <div className="px-3 pb-3 space-y-2">
                 {knowledgeWithCases.length === 0 ? (
                   <p className="text-xs text-stone-400 px-1 py-2">
-                    暂无带用例表的知识库文档。可在 knowledge/测试用例/ 添加 Markdown 表格。
+                    暂无带用例表的知识库文档。可在 知识库管理/ 添加含 Markdown 表格的文档。
                   </p>
                 ) : (
                   knowledgeWithCases.map((s) => (

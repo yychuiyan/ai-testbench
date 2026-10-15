@@ -60,7 +60,8 @@ async function loadTemplatesForType(
     const out: TemplateOpt[] = [];
     for (const f of files) {
       const lower = f.name.toLowerCase();
-      let headers = [...CASE_FIELDS];
+      // 模板解析结果可能不含默认字段，故按 string[] 存放（默认值来自 CASE_FIELDS）
+      let headers: string[] = [...CASE_FIELDS];
       let body = '';
       try {
         if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
@@ -512,7 +513,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
               </button>
             </div>
             <p className="text-[10px] text-stone-400 leading-4">
-              模板目录约定为「名称 + 用例」，如「安全测试」→ templates/安全测试用例/
+              模板目录约定为「名称 + 用例」，如「安全测试」→ 测试模板库/安全测试用例/
             </p>
           </div>
         ) : null}

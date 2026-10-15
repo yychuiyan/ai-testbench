@@ -167,7 +167,8 @@ async function loadTemplatesForType(caseType: CaseType): Promise<CaseTemplateOpt
     const out: CaseTemplateOpt[] = [];
     for (const f of files) {
       const lower = f.name.toLowerCase();
-      let headers = [...CASE_FIELDS];
+      // 模板解析结果可能不含默认字段，故按 string[] 存放（默认值来自 CASE_FIELDS）
+      let headers: string[] = [...CASE_FIELDS];
       let body = '';
       try {
         if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
@@ -896,7 +897,7 @@ export default function CaseGenerateApp() {
                             <button
                               type="button"
                               className="text-xs text-[#4176e6] hover:underline text-left truncate max-w-full"
-                              title="本地打开"
+                              data-hint="本地打开"
                               onClick={() =>
                                 void openDocsFile('cases', result.path!).catch((e) =>
                                   setError(e instanceof Error ? e.message : String(e)),
@@ -950,7 +951,7 @@ export default function CaseGenerateApp() {
             <div className="text-xs font-medium text-stone-500 mb-1.5">生成的用例文件</div>
             <button
               type="button"
-              title="点击在本地打开"
+              data-hint="点击在本地打开"
               onClick={() => {
                 void openDocsFile('cases', savedFile.path).catch((e) =>
                   setError(e instanceof Error ? e.message : String(e)),

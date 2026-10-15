@@ -151,9 +151,7 @@ export function parseAskUserArgs(argsJson: string): AskUserQuestion[] {
     out.push({
       id,
       question,
-      header: (q as AskUserQuestion).header
-        ? String((q as AskUserQuestion).header)
-        : undefined,
+      header: (q as AskUserQuestion).header ? String((q as AskUserQuestion).header) : undefined,
       options: options?.length ? options : undefined,
       multi_select: Boolean((q as AskUserQuestion).multi_select),
     });

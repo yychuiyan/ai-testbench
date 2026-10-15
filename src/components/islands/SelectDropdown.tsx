@@ -12,11 +12,26 @@ interface Props<T extends string> {
   disabled?: boolean;
   /** 触发器占满父宽 */
   className?: string;
+  /** 紧凑尺寸：用于工具栏 / 分页条等与其它控件同行的场景（去掉上边距、降低高度） */
+  compact?: boolean;
+  /** 无可见 label 时给触发器补无障碍名称 */
+  ariaLabel?: string;
+  /**
+   * 选中项是否显示对钩。
+   * 默认 true（勾选语义明确）；分页 / 排序等轻量工具栏可置 false，改用颜色标识选中。
+   */
+  showCheck?: boolean;
+  /**
+   * 触发按钮与选项是否居中。
+   * 默认 false（左对齐 + 右侧箭头），适合「按修改时间」这类文字选项；
+   * 分页的每页条数等窄控件可置 true，让 1~2 位数字居中，视觉更稳。
+   */
+  centerContent?: boolean;
 }
 
-function Chevron() {
+function Chevron({ className = 'w-4 h-4 text-stone-400 shrink-0' }: { className?: string }) {
   return (
-    <svg className="w-4 h-4 text-stone-400 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor">
       <path
         fillRule="evenodd"
         d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
@@ -44,30 +59,53 @@ export default function SelectDropdown<T extends string>({
   onChange,
   disabled = false,
   className = '',
+  compact = false,
+  ariaLabel,
+  showCheck = true,
+  centerContent = false,
 }: Props<T>) {
   const current = options.find((o) => o.value === value);
 
+  /* 居中对齐时用 absolute 定位把箭头摘出文档流，避免它参与 flex 居中导致文字偏移 */
+  const alignCls = centerContent ? 'relative justify-center' : 'justify-between';
+  const chevronCls = centerContent
+    ? 'w-4 h-4 text-stone-400 shrink-0 absolute right-2.5'
+    : undefined;
+
   return (
     <Listbox value={value} onChange={onChange} disabled={disabled}>
-      <div className={`relative mt-1 ${className}`}>
-        <ListboxButton className="w-full h-9 flex items-center justify-between gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed">
+      <div className={`relative ${compact ? 'inline-block' : 'mt-1'} ${className}`}>
+        <ListboxButton
+          aria-label={ariaLabel}
+          className={`${
+            compact
+              ? 'w-full h-8 flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 text-sm text-left text-stone-700 outline-none hover:border-stone-400 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
+              : 'w-full h-9 flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
+          } ${alignCls}`}
+        >
           <span className="truncate">{current?.label ?? value}</span>
-          <Chevron />
+          <Chevron className={chevronCls} />
         </ListboxButton>
         <ListboxOptions
           transition
           anchor={{ to: 'bottom start', gap: 4 }}
-          className="tw-select-menu tw-menu-anim z-[80] max-h-56 w-[var(--button-width)] overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+          className="tw-select-menu tw-menu-anim z-[80] max-h-56 w-[var(--button-width)] overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
         >
           {options.map((o) => (
             <ListboxOption
               key={o.value}
               value={o.value}
-              className="group cursor-pointer select-none flex items-center gap-2 px-3 py-2 text-sm text-stone-700 data-[focus]:bg-stone-50 data-[selected]:text-stone-900"
+              className={`group cursor-pointer select-none flex items-center gap-2 rounded-md px-3 py-2 text-sm data-[focus]:bg-stone-50 ${
+                showCheck
+                  ? 'text-stone-700 data-[selected]:text-stone-900'
+                  : 'data-[selected]:text-[color:var(--tw-accent)] data-[selected]:font-medium'
+              } ${centerContent ? 'justify-center px-2' : ''}`}
             >
-              <span className="w-4 shrink-0 text-[#4176e6] opacity-0 group-data-[selected]:opacity-100">
-                <Check />
-              </span>
+              {showCheck ? (
+                <span className="w-4 shrink-0 text-[#4176e6] opacity-0 group-data-[selected]:opacity-100">
+                  <Check />
+                </span>
+              ) : null}
               <span className="truncate">{o.label}</span>
             </ListboxOption>
           ))}

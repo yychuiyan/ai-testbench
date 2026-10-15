@@ -16,13 +16,11 @@ const home = import.meta.env.BASE_URL || '/';
   <div class="tw-error-page">
     <h1 class="tw-error-title">出错了</h1>
     <p class="tw-error-desc">页面暂时无法打开，请返回重试。</p>
-    {
-      isDev && message ? (
-        <pre class="tw-error-pre">{message}</pre>
-      ) : null
-    }
+    {isDev && message ? <pre class="tw-error-pre">{message}</pre> : null}
     <div class="tw-error-actions">
-      <a href={home} class="tw-error-btn tw-error-btn--primary">返回工作台</a>
+      <a href={home} class="tw-error-btn tw-error-btn--primary">
+        返回工作台
+      </a>
       <button type="button" class="tw-error-btn tw-error-btn--ghost" onclick="location.reload()">
         刷新
       </button>

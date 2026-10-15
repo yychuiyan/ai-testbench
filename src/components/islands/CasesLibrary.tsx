@@ -10,29 +10,10 @@ import {
 import { openDocsInChatSession } from '../../lib/open-docs-in-session';
 import { hydrateSessionStore } from '../../lib/sessions';
 import ConfirmDialog from './ConfirmDialog';
+import DocsFileBrowser, { useDocsList } from './DocsFileBrowser';
 
-function fmtSize(n?: number) {
-  if (n == null) return '—';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function fmtTime(ts?: number) {
-  if (!ts) return '—';
-  try {
-    return new Date(ts).toLocaleString('zh-CN', {
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '—';
-  }
-}
+/** 每页条数默认值（可在分页条切换，选择会被记住） */
+const DEFAULT_PAGE_SIZE = 10;
 
 /** Excel/Office 打开文件时留下的临时锁文件（如 ~$xxx.xlsx） */
 function isOfficeLockCache(path: string): boolean {
@@ -50,7 +31,6 @@ async function walkCaseFiles(dir = '.'): Promise<DocsEntry[]> {
       files.push(...(await walkCaseFiles(e.path)));
     }
   }
-  files.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
   return files;
 }
 
@@ -63,6 +43,8 @@ export default function CasesLibrary() {
   const [deleteTarget, setDeleteTarget] = useState<
     { kind: 'one'; entry: DocsEntry } | { kind: 'batch'; paths: string[] } | null
   >(null);
+
+  const list = useDocsList(files, DEFAULT_PAGE_SIZE);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -92,8 +74,6 @@ export default function CasesLibrary() {
   }, [refresh]);
 
   const selectedPaths = useMemo(() => Object.keys(selected).filter((p) => selected[p]), [selected]);
-  const allChecked = files.length > 0 && selectedPaths.length === files.length;
-  const someChecked = selectedPaths.length > 0 && !allChecked;
 
   async function confirmDelete() {
     const target = deleteTarget;
@@ -146,16 +126,6 @@ export default function CasesLibrary() {
     }
   }
 
-  function toggleAll() {
-    if (allChecked) {
-      setSelected({});
-      return;
-    }
-    const next: Record<string, boolean> = {};
-    for (const f of files) next[f.path] = true;
-    setSelected(next);
-  }
-
   if (!live) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
@@ -165,10 +135,19 @@ export default function CasesLibrary() {
   }
 
   return (
-    <div className="rounded-xl border border-stone-200 bg-white min-h-[520px] flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-stone-100 flex items-center gap-2 flex-wrap">
+    <div className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0">
+      <div className="shrink-0 px-4 py-3 border-b border-stone-100 flex items-center gap-2 flex-wrap">
         <div className="text-sm text-stone-600 flex-1 min-w-0">
-          共 <span className="font-medium text-stone-800">{files.length}</span> 个文件
+          {list.query.trim() ? (
+            <>
+              匹配 <span className="font-medium text-stone-800">{list.filtered.length}</span> 个
+              <span className="text-stone-400"> · 共 {files.length}</span>
+            </>
+          ) : (
+            <>
+              共 <span className="font-medium text-stone-800">{files.length}</span> 个文件
+            </>
+          )}
           {selectedPaths.length > 0 ? (
             <span className="text-stone-400"> · 已选 {selectedPaths.length}</span>
           ) : null}
@@ -184,102 +163,61 @@ export default function CasesLibrary() {
       </div>
 
       {error ? (
-        <div className="mx-4 mt-3 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
+        <div className="shrink-0 mx-4 mt-3 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
           {error}
         </div>
       ) : null}
 
-      <div className="flex-1 overflow-y-auto p-4">
-        {files.length === 0 ? (
-          <p className="text-sm text-stone-400 py-10 text-center border border-dashed border-stone-200 rounded-lg">
-            暂无用例文件。请在「我的工作台」通过「生成测试用例」插件生成并自动入库。
-          </p>
-        ) : (
-          <ul className="tw-anim-list divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
-            <li className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-xs text-stone-500">
-              <input
-                type="checkbox"
-                checked={allChecked}
-                ref={(el) => {
-                  if (el) el.indeterminate = someChecked;
-                }}
-                onChange={toggleAll}
-                disabled={busy}
-                className="rounded border-stone-300"
-                aria-label="全选"
-              />
-              <span className="flex-1 min-w-0">文件名</span>
-              <span className="w-[9.5rem] shrink-0">创建时间</span>
-              <span className="w-[9.5rem] shrink-0">修改时间</span>
-              <span className="w-16 text-right shrink-0">大小</span>
-              <span className="w-52 shrink-0 text-right">操作</span>
-            </li>
-            {files.map((f) => (
-              <li
-                key={f.path}
-                className="flex items-center gap-2 px-3 py-2.5 transition-colors duration-150 hover:bg-[color:var(--tw-accent-soft)] cursor-default"
-                title="双击本地打开"
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  void openLocal(f);
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={Boolean(selected[f.path])}
-                  disabled={busy}
-                  onChange={() => setSelected((m) => ({ ...m, [f.path]: !m[f.path] }))}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                  className="rounded border-stone-300"
-                  aria-label={`选择 ${f.name}`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-stone-800 truncate">{f.name}</div>
-                  <div className="text-[11px] text-stone-400 truncate">{f.path}</div>
-                </div>
-                <span className="w-[9.5rem] text-[11px] text-stone-500 shrink-0 tabular-nums">
-                  {fmtTime(f.ctime ?? f.mtime)}
-                </span>
-                <span className="w-[9.5rem] text-[11px] text-stone-500 shrink-0 tabular-nums">
-                  {fmtTime(f.mtime)}
-                </span>
-                <span className="w-16 text-right text-[11px] text-stone-400 shrink-0">
-                  {fmtSize(f.size)}
-                </span>
-                <div
-                  className="w-52 shrink-0 flex justify-end gap-1 flex-wrap"
-                  onDoubleClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void openLocal(f)}
-                    className="text-xs text-[#4176e6] px-2 py-1 rounded hover:bg-[#e8f0fe]"
-                  >
-                    本地打开
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void openInSession(f)}
-                    className="text-xs text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7]"
-                  >
-                    在会话中打开
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setDeleteTarget({ kind: 'one', entry: f })}
-                    className="text-xs text-red-600 px-2 py-1 rounded hover:bg-red-50"
-                  >
-                    删除
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+      <DocsFileBrowser
+        files={files}
+        filtered={list.filtered}
+        pageFiles={list.pageFiles}
+        query={list.query}
+        onQuery={list.setQuery}
+        sortBy={list.sortBy}
+        onSortBy={list.setSortBy}
+        page={list.page}
+        totalPages={list.totalPages}
+        pageSize={list.pageSize}
+        onPage={list.setPage}
+        onPageSize={list.setPageSize}
+        busy={busy}
+        emptyText="暂无用例文件。请在「我的工作台」通过「生成测试用例」插件生成并自动入库。"
+        searchPlaceholder="搜索文件名或路径…"
+        selected={selected}
+        onToggleRow={(path) => setSelected((m) => ({ ...m, [path]: !m[path] }))}
+        onSelectPage={(paths, value) =>
+          setSelected((m) => {
+            const next = { ...m };
+            for (const p of paths) {
+              if (value) next[p] = true;
+              else delete next[p];
+            }
+            return next;
+          })
+        }
+        onRowDoubleClick={(f) => void openLocal(f)}
+        renderActions={(f) => (
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void openInSession(f)}
+              className="text-xs text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7] cursor-pointer disabled:opacity-40"
+            >
+              在会话中打开
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setDeleteTarget({ kind: 'one', entry: f })}
+              className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40"
+            >
+              删除
+            </button>
+          </>
         )}
-      </div>
+      />
 
       <ConfirmDialog
         open={deleteTarget != null}

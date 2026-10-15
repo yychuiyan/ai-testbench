@@ -151,7 +151,8 @@ export function emptyAppConfig(): AppFileConfig {
 function normalizeConfig(raw: Partial<AppFileConfig> | null | undefined): AppFileConfig {
   const base = emptyAppConfig();
   if (!raw || typeof raw !== 'object') return base;
-  const general = raw.general && typeof raw.general === 'object' ? raw.general : {};
+  const general: Partial<GeneralPrefs> =
+    raw.general && typeof raw.general === 'object' ? raw.general : {};
   const plugins = { ...base.plugins, ...(raw.plugins ?? {}) };
   return {
     version: typeof raw.version === 'number' ? raw.version : 1,

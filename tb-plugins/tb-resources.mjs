@@ -4,9 +4,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listStorageDomains } from './storage-domain.mjs';
+import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
 
 const PREFIX = '/__tb_resources';
-const DOC_DIRS = ['requirements', 'cases', 'templates', 'prompts', 'knowledge'];
+const DOC_DIRS = Object.values(DOC_ROOT_DIRS).map((d) => d.dirName);
 const MAX_READ = 256 * 1024;
 
 function sendJson(res, status, body) {

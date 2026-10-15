@@ -1,26 +1,34 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 
-const cli = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../cli/ai-testbench.mjs',
-);
+const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../cli/tbench.mjs');
 
-function rpcLine(child, req) {
-  return new Promise((resolve, reject) => {
+/** ACP over stdio 的 JSON-RPC 回包（只声明本测试断言用到的字段） */
+interface RpcReply {
+  result?: {
+    protocolVersion?: number;
+    serverInfo?: { name?: string };
+    capabilities?: { tools?: boolean };
+    sessionId?: string;
+    ok?: boolean;
+  };
+}
+
+function rpcLine(child: ChildProcessWithoutNullStreams, req: Record<string, unknown>) {
+  return new Promise<RpcReply>((resolve, reject) => {
     let buf = '';
-    const onData = (chunk) => {
+    const onData = (chunk: unknown) => {
       buf += String(chunk);
       const nl = buf.indexOf('\n');
       if (nl < 0) return;
       child.stdout.off('data', onData);
       try {
-        resolve(JSON.parse(buf.slice(0, nl)));
+        resolve(JSON.parse(buf.slice(0, nl)) as RpcReply);
       } catch (e) {
         reject(e);
       }

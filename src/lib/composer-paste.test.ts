@@ -19,12 +19,28 @@ describe('composer-paste', () => {
   });
 
   it('resolves project-relative knowledge path', () => {
+    const ref = resolvePathToPasteDocRef('/repo/知识库管理/规范/操作手册.md', {
+      projectRoot: '/repo',
+    });
+    assert.ok(ref);
+    assert.equal(ref!.collection, 'knowledge');
+    assert.equal(ref!.path, '规范/操作手册.md');
+  });
+
+  it('resolves legacy English dir alias', () => {
     const ref = resolvePathToPasteDocRef('/repo/knowledge/规范/操作手册.md', {
       projectRoot: '/repo',
     });
     assert.ok(ref);
     assert.equal(ref!.collection, 'knowledge');
     assert.equal(ref!.path, '规范/操作手册.md');
+  });
+
+  it('resolves relative dir path without projectRoot', () => {
+    const ref = resolvePathToPasteDocRef('用例管理/功能测试/登录.md', {});
+    assert.ok(ref);
+    assert.equal(ref!.collection, 'cases');
+    assert.equal(ref!.path, '功能测试/登录.md');
   });
 
   it('resolves unique catalog name', () => {

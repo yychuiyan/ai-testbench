@@ -9,6 +9,7 @@ import {
   loadSessionStore,
   type ChatSession,
 } from './sessions';
+import { hydrateAppConfig, loadAccessLevel } from './settings';
 
 export type OpenDocsInSessionRoot = Extract<DocsRoot, 'cases' | 'prompts' | 'knowledge'>;
 
@@ -47,13 +48,15 @@ export async function openDocsInChatSession(
 ): Promise<void> {
   const base = import.meta.env.BASE_URL || '/';
   await hydrateSessionStore().catch(() => null);
+  // 新会话的权限取设置页的默认值；先把配置读进来，否则会拿到未 hydrate 的空配置
+  await hydrateAppConfig().catch(() => null);
   let store = loadSessionStore();
   const pathNorm = normalizePath(entry.path);
 
   let chat = findExactLinkedSession(store, root, pathNorm);
 
   if (!chat) {
-    store = createSession(store);
+    store = createSession(store, { access: loadAccessLevel() });
     // 保持默认「新对话」，无消息切走时由 isEphemeralEmptySession 丢弃
     await flushSessionStore(store);
     chat = store.sessions.find((s) => s.id === store.activeId);

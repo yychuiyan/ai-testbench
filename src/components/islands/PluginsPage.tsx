@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import {
   PLUGIN_CATALOG,
   loadPluginEnabled,
@@ -34,6 +43,7 @@ import {
   onSettingsChanged,
   type LLMSettings,
 } from '../../lib/settings';
+import OverflowHint from './OverflowHint';
 
 type NavId = 'mine' | 'manage';
 type MineTab = 'session' | 'global' | 'extension';
@@ -298,6 +308,45 @@ function MinePanel(props: {
     { id: 'global', label: '全局插件', count: GLOBAL_PLUGIN_CATALOG.length, hint: '默认' },
   ];
 
+  // 选中项下标：滑动指示块据此平移
+  const activeIndex = Math.max(
+    0,
+    tabs.findIndex((t) => t.id === mineTab),
+  );
+
+  // WAI-ARIA Tabs 配套：给 tab / tabpanel 建立 id 关联，并支持方向键 + roving tabindex。
+  // 用 useId 生成前缀，避免同页多个实例 id 冲突。
+  const idBase = useId();
+  const tablistRef = useRef<HTMLDivElement | null>(null);
+  const panelId = `${idBase}-panel`;
+  const tabDomId = (id: string) => `${idBase}-tab-${id}`;
+  // 轨道列数由 tabs 推导（原实现写死 3 列，加 tab 会静默错位）
+  const tabCount = Math.max(1, tabs.length);
+  // 轨道被"占掉"的固定宽度：p-1 左右各 0.25rem + (n-1) 条 gap-1
+  const trackChrome = 0.5 + 0.25 * (tabCount - 1);
+
+  function selectTab(id: MineTab) {
+    onMineTab(id);
+    setExpandedId(null);
+  }
+
+  /** 方向键 / Home / End：按 tabs 顺序环形切换，并把焦点带到新选中的 tab。 */
+  function onTablistKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
+    const n = tabs.length;
+    if (!n) return;
+    let next = activeIndex;
+    if (e.key === 'ArrowLeft') next = (activeIndex - 1 + n) % n;
+    else if (e.key === 'ArrowRight') next = (activeIndex + 1) % n;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = n - 1;
+    else return;
+    e.preventDefault();
+    const target = tabs[next];
+    if (!target) return;
+    selectTab(target.id);
+    tablistRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
+
   function toggleExpand(id: string) {
     setExpandedId((cur) => (cur === id ? null : id));
   }
@@ -321,26 +370,41 @@ function MinePanel(props: {
       </header>
 
       <div
-        className="mb-5 grid grid-cols-3 gap-1 p-1 rounded-2xl bg-stone-100 border border-stone-200/90"
+        ref={tablistRef}
+        className="mb-5 relative grid gap-1 p-1 rounded-2xl bg-stone-100 border border-stone-200/90"
+        style={{ gridTemplateColumns: `repeat(${tabCount}, minmax(0, 1fr))` }}
         role="tablist"
         aria-label="插件分类"
+        aria-orientation="horizontal"
+        onKeyDown={onTablistKeyDown}
       >
+        {/* 选中滑块：跟随选中项平移，替代原先「活动项直接换底色」的硬切。
+            轨道 p-1 左右各 0.25rem、列间 gap-1，故
+            滑块宽 = (100% − trackChrome) / 列数，位移 100% 即自身宽度（一列），
+            每多一项再加一个 gap（0.25rem）。列数从 tabs.length 推导，
+            避免原实现写死 3 列、日后加 tab 时静默错位。 */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute left-1 top-1 bottom-1 rounded-xl bg-white shadow-sm ring-1 ring-stone-200/80 transition-transform duration-300 ease-out motion-reduce:transition-none"
+          style={{
+            width: `calc((100% - ${trackChrome}rem) / ${tabCount})`,
+            transform: `translateX(calc(${activeIndex} * (100% + 0.25rem)))`,
+          }}
+        />
         {tabs.map((t) => {
           const active = mineTab === t.id;
           return (
             <button
               key={t.id}
+              id={tabDomId(t.id)}
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => {
-                onMineTab(t.id);
-                setExpandedId(null);
-              }}
-              className={`min-w-0 h-11 px-2 rounded-xl text-left transition-all ${
-                active
-                  ? 'bg-white text-stone-900 shadow-sm ring-1 ring-stone-200/80'
-                  : 'text-stone-500 hover:text-stone-700 hover:bg-white/50'
+              aria-controls={panelId}
+              tabIndex={active ? 0 : -1}
+              onClick={() => selectTab(t.id)}
+              className={`relative min-w-0 h-11 px-2 rounded-xl text-left transition-colors ${
+                active ? 'text-stone-900' : 'text-stone-500 hover:text-stone-700'
               }`}
             >
               <div className="flex items-baseline gap-1.5 justify-center sm:justify-start sm:px-1">
@@ -357,80 +421,85 @@ function MinePanel(props: {
         })}
       </div>
 
-      {mineTab === 'extension' ? (
-        <>
-          <p className="mb-3 text-xs text-stone-500">可配置插件 · {PLUGIN_CATALOG.length} 个</p>
-          <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-            {PLUGIN_CATALOG.map((p) => {
-              const on = enabled[p.id];
-              const rt = runtimeFor(p.id);
-              const open = expandedId === `ext:${p.id}`;
-              const configLabel = on ? '已启用' : '未启用';
-              const runLabel = on && rt.available === true ? '运行中' : '已停用';
-              return (
-                <li
-                  key={p.id}
-                  className={`min-w-0 relative z-0 overflow-visible hover:z-40 focus-within:z-40${open ? ' z-40' : ''}`}
-                >
-                  <PluginExpandCard
-                    open={open}
-                    onToggleOpen={() => toggleExpand(`ext:${p.id}`)}
-                    title={p.name}
-                    subtitle={p.description}
-                    badge={
-                      <span className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 text-stone-500 tabular-nums">
-                        v{p.version}
-                      </span>
-                    }
-                    trailing={
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={on}
-                        aria-label={`${on ? '关闭' : '打开'} ${p.name}`}
-                        onClick={() => onToggle(p.id)}
-                        className="tw-toggle"
-                      >
-                        <span className="tw-toggle-knob" />
-                      </button>
-                    }
-                    fullName={tbFullName(p.id)}
-                    configLabel={configLabel}
-                    runLabel={runLabel}
-                    extra={rt.detail}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-          <p className="mt-5 text-xs text-stone-400 leading-5">
-            开关保存在本机。网页搜索 / 工作区文件已迁入会话默认能力。
-          </p>
-        </>
-      ) : null}
+      {/* 三个分类共用同一个面板容器，作为 tablist 对应的 tabpanel。
+          面板内始终存在可聚焦元素（插件卡片按钮 / 链接），因此按 WAI-ARIA APG
+          不额外设置 tabIndex，避免多出一个空转的 tab 停靠点。 */}
+      <div id={panelId} role="tabpanel" aria-labelledby={tabDomId(mineTab)}>
+        {mineTab === 'extension' ? (
+          <>
+            <p className="mb-3 text-xs text-stone-500">可配置插件 · {PLUGIN_CATALOG.length} 个</p>
+            <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+              {PLUGIN_CATALOG.map((p) => {
+                const on = enabled[p.id];
+                const rt = runtimeFor(p.id);
+                const open = expandedId === `ext:${p.id}`;
+                const configLabel = on ? '已启用' : '未启用';
+                const runLabel = on && rt.available === true ? '运行中' : '已停用';
+                return (
+                  <li
+                    key={p.id}
+                    className={`min-w-0 relative z-0 overflow-visible hover:z-40 focus-within:z-40${open ? ' z-40' : ''}`}
+                  >
+                    <PluginExpandCard
+                      open={open}
+                      onToggleOpen={() => toggleExpand(`ext:${p.id}`)}
+                      title={p.name}
+                      subtitle={p.description}
+                      badge={
+                        <span className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 text-stone-500 tabular-nums">
+                          v{p.version}
+                        </span>
+                      }
+                      trailing={
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          aria-label={`${on ? '关闭' : '打开'} ${p.name}`}
+                          onClick={() => onToggle(p.id)}
+                          className="tw-toggle"
+                        >
+                          <span className="tw-toggle-knob" />
+                        </button>
+                      }
+                      fullName={tbFullName(p.id)}
+                      configLabel={configLabel}
+                      runLabel={runLabel}
+                      extra={rt.detail}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-5 text-xs text-stone-400 leading-5">
+              开关保存在本机。网页搜索 / 工作区文件已迁入会话默认能力。
+            </p>
+          </>
+        ) : null}
 
-      {mineTab === 'session' ? (
-        <BuiltinCatalogGrid
-          title="由平台按会话默认提供"
-          entries={SESSION_PLUGIN_CATALOG}
-          statusOf={builtinStatus}
-          groupByCategory={false}
-          expandedId={expandedId}
-          onExpand={toggleExpand}
-          idPrefix="sess"
-        />
-      ) : null}
-      {mineTab === 'global' ? (
-        <BuiltinCatalogGrid
-          title="由系统与全部会话共享"
-          entries={GLOBAL_PLUGIN_CATALOG}
-          statusOf={builtinStatus}
-          groupByCategory
-          expandedId={expandedId}
-          onExpand={toggleExpand}
-          idPrefix="glob"
-        />
-      ) : null}
+        {mineTab === 'session' ? (
+          <BuiltinCatalogGrid
+            title="由平台按会话默认提供"
+            entries={SESSION_PLUGIN_CATALOG}
+            statusOf={builtinStatus}
+            groupByCategory={false}
+            expandedId={expandedId}
+            onExpand={toggleExpand}
+            idPrefix="sess"
+          />
+        ) : null}
+        {mineTab === 'global' ? (
+          <BuiltinCatalogGrid
+            title="由系统与全部会话共享"
+            entries={GLOBAL_PLUGIN_CATALOG}
+            statusOf={builtinStatus}
+            groupByCategory
+            expandedId={expandedId}
+            onExpand={toggleExpand}
+            idPrefix="glob"
+          />
+        ) : null}
+      </div>
     </>
   );
 }
@@ -532,27 +601,6 @@ function PluginExpandCard(props: {
     runLabel,
     extra,
   } = props;
-  const subtitleRef = useRef<HTMLSpanElement | null>(null);
-  const [subtitleOverflow, setSubtitleOverflow] = useState(false);
-
-  useLayoutEffect(() => {
-    const el = subtitleRef.current;
-    if (!el) {
-      setSubtitleOverflow(false);
-      return;
-    }
-    const measure = () => {
-      setSubtitleOverflow(el.scrollWidth > el.clientWidth + 1);
-    };
-    measure();
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    ro?.observe(el);
-    window.addEventListener('resize', measure);
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, [subtitle]);
 
   return (
     <div
@@ -578,19 +626,11 @@ function PluginExpandCard(props: {
               className={`w-3.5 h-3.5 text-stone-400 shrink-0 transition-transform duration-300 ease-out ${open ? 'rotate-180' : ''}`}
             />
           </div>
-          <span className="group/sub relative mt-1 block min-w-0">
-            <span ref={subtitleRef} className="block text-[13px] text-stone-500 leading-5 truncate">
-              {subtitle}
-            </span>
-            {subtitleOverflow && !open ? (
-              <span
-                role="tooltip"
-                className="pointer-events-none absolute left-0 right-0 top-[calc(100%+0.25rem)] z-50 px-3 py-2 rounded-lg border border-stone-200 bg-white text-[12px] leading-5 text-stone-600 whitespace-normal shadow-lg opacity-0 invisible transition-opacity duration-150 group-hover/sub:opacity-100 group-hover/sub:visible"
-              >
-                {subtitle}
-              </span>
-            ) : null}
-          </span>
+          <OverflowHint
+            text={subtitle}
+            className="mt-1 block min-w-0 text-[13px] text-stone-500 leading-5 truncate"
+            disabled={open}
+          />
         </button>
         <div className="shrink-0 flex items-center gap-2 pt-0.5 self-start">
           {status ? <StatusPill tone={status.tone} label={status.label} /> : null}
@@ -753,7 +793,7 @@ function ManagePanel(props: {
             type="button"
             onClick={onSubmitByHint}
             disabled={!canSendHint}
-            title="按输入内容探测推荐"
+            data-hint="按输入内容探测推荐"
             className="w-8 h-8 shrink-0 rounded-full bg-[#4176e6] text-white flex items-center justify-center hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed transition-colors"
           >
             <svg

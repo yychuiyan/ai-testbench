@@ -70,11 +70,13 @@ describe('tb-schedule host', () => {
       fs.readFileSync(path.join(root, '.local', 'sessions.json'), 'utf8'),
     ) as { sessions: Array<{ messages: Array<{ content?: string }> }> };
     const msgs = sessions.sessions[0]!.messages;
-    assert.ok(sessionHasScheduleMessage(msgs, created.reminder.id));
+    const reminder = created.reminder;
+    assert.ok(reminder, 'created.reminder 应当存在');
+    assert.ok(sessionHasScheduleMessage(msgs, reminder.id));
     assert.match(
       String(msgs[msgs.length - 1]!.content),
       new RegExp(
-        reminderMessageContent('喝水', created.reminder.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        reminderMessageContent('喝水', reminder.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
       ),
     );
 

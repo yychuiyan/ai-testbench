@@ -23,9 +23,7 @@ import {
   hydrateAppConfig,
   loadAccessLevel,
   loadGeneralPrefs,
-  onAccessLevelChanged,
   onGeneralPrefsChanged,
-  saveAccessLevel,
   type AccessLevel,
   type BusySendBehavior,
   type GeneralPrefs,
@@ -1000,7 +998,7 @@ function WorkspaceMoreMenu({
       <button
         ref={btnRef}
         type="button"
-        title="更多"
+        aria-label="更多"
         onClick={(e) => {
           e.stopPropagation();
           onToggle();
@@ -1257,7 +1255,7 @@ function SessionRailRow({
       }}
     >
       {busy ? (
-        <span className="tw-session-busy-slot" title="生成中" aria-label="生成中">
+        <span className="tw-session-busy-slot" data-hint="生成中" aria-label="生成中">
           <span className="tw-session-busy-dot" aria-hidden />
         </span>
       ) : null}
@@ -1294,7 +1292,7 @@ function SessionRailRow({
           <button
             ref={menuBtnRef}
             type="button"
-            title="更多"
+            aria-label="更多"
             onClick={onToggleMenu}
             className="tw-session-action-btn w-6 h-6 flex items-center justify-center rounded"
           >
@@ -1385,7 +1383,8 @@ function SessionRailRow({
         {!s.deleted && (
           <button
             type="button"
-            title={s.archived ? '取消归档' : '归档'}
+            aria-label={s.archived ? '取消归档' : '归档会话'}
+            data-hint={s.archived ? '取消归档' : '归档会话'}
             onClick={onToggleArchive}
             className="tw-session-action-btn w-6 h-6 flex items-center justify-center rounded"
           >
@@ -1395,7 +1394,7 @@ function SessionRailRow({
         {!s.archived && !s.deleted && (
           <button
             type="button"
-            title={s.pinned ? '取消置顶' : '置顶'}
+            data-hint={s.pinned ? '取消置顶' : '置顶'}
             onClick={onTogglePin}
             className="tw-session-action-btn w-6 h-6 flex items-center justify-center rounded"
           >
@@ -1566,7 +1565,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={onCopy}
-      title={copied ? '已复制' : '复制'}
+      aria-label={copied ? '已复制' : '复制'}
       className="tw-icon-btn tw-msg-action-btn inline-flex items-center justify-center rounded-md transition-colors"
     >
       {copied ? (
@@ -1846,7 +1845,7 @@ function ThreadOutlinePane({
                 <button
                   type="button"
                   disabled={busy || !restoreReady}
-                  title={
+                  data-hint={
                     !restoreReady
                       ? '待本轮助手回复完成后可从此处继续'
                       : '截断到本轮末，填入续写并发送'
@@ -1999,12 +1998,12 @@ function StatusBar({
             <span
               className="h-full bg-stone-400"
               style={{ width: `${(sysTokens / windowSize) * 100}%` }}
-              title="系统提示词"
+              data-hint="系统提示词"
             />
             <span
               className="h-full bg-[#4176e6]"
               style={{ width: `${(convTokens / windowSize) * 100}%` }}
-              title="对话消息"
+              data-hint="对话消息"
             />
           </div>
           <StatRows
@@ -2494,11 +2493,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     saveSessionStore(next);
   }
 
+  const activeSession = store?.sessions.find((s) => s.id === store.activeId);
+  const activeSessionId = activeSession?.id;
+  const activeSessionAccess = activeSession?.access;
+  /**
+   * 当前会话的访问权限 = 会话自身记录，未记录（旧存档）则回落到设置页的默认值。
+   * 依赖只取「会话 id + 该会话的权限」：设置页改默认值不应改写已有会话。
+   */
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setAccess(activeSessionAccess ?? loadAccessLevel());
+  }, [activeSessionId, activeSessionAccess]);
+
   useEffect(() => {
     let cancelled = false;
     const offSettings = onSettingsChanged(() => setSettings(loadSettings()));
     const offPlugins = onPluginEnabledChanged((map) => setPluginOn(map));
-    const offAccess = onAccessLevelChanged((level) => setAccess(level));
     const offGeneral = onGeneralPrefsChanged((p) => {
       setGeneralPrefs(p);
       applyGeneralPrefs(p);
@@ -2638,6 +2648,15 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       } else {
         store = settleStoreRunningSteps(store);
       }
+      // 权限按会话固化：旧存档没有 access 字段，用当前设置页默认值补齐并落盘。
+      // 补齐后这些会话就与「默认权限」解耦，之后改设置不再回头改写它们。
+      const fallbackAccess = loadAccessLevel();
+      if (store.sessions.some((s) => !s.access)) {
+        store = {
+          ...store,
+          sessions: store.sessions.map((s) => (s.access ? s : { ...s, access: fallbackAccess })),
+        };
+      }
       storeRef.current = store;
       setStore(store);
       saveSessionStore(store);
@@ -2690,7 +2709,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               const leavingId = storeRef.current.activeId;
               const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
               const ws = workspaceInfo?.workspace?.trim() || undefined;
-              const next = createSession(base, ws ? { workspacePath: ws } : undefined);
+              const next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
               storeRef.current = next;
               setStore(next);
               saveSessionStore(next);
@@ -2746,7 +2765,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       cancelled = true;
       offSettings();
       offPlugins();
-      offAccess();
       offGeneral();
     };
   }, []);
@@ -5031,7 +5049,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       resetComposer({ clearDraft: true, abortRun: false });
       const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
       const ws = workspaceInfo?.workspace?.trim() || undefined;
-      next = createSession(base, ws ? { workspacePath: ws } : undefined);
+      next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
       const activeId = next.activeId;
       next = {
         ...next,
@@ -5098,7 +5116,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     let base = pruneEphemeralSession(leavingId) ?? storeRef.current;
     // dsh：新会话归入「当前工作区」（显式传入 path 优先，否则用 picker 选中项）
     const ws = workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
-    const next = createSession(base, ws ? { workspacePath: ws } : undefined);
+    const next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
     commitStore(next);
     setMessages([]);
     setCaseGenConfig(null);
@@ -5620,8 +5638,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           )}
           <button
             type="button"
+            aria-label={railOpen ? '收起侧栏' : '展开侧栏'}
             onClick={toggleRail}
-            title={railOpen ? '收起侧栏' : '展开侧栏'}
             className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-stone-500 hover:bg-stone-200/70"
           >
             <Svg className="w-4 h-4">
@@ -5655,7 +5673,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
             </button>
             <a
               href={`${base}plugins/`}
-              title="我的插件"
+              data-hint="我的插件"
               onClick={() => {
                 const leaving = storeRef.current?.activeId;
                 const pruned = pruneEphemeralSession(leaving);
@@ -5674,7 +5692,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
             <button
               type="button"
               onClick={() => newSession()}
-              title="新会话"
+              data-hint="新会话"
               className="w-8 h-8 flex items-center justify-center rounded-lg text-[#4176e6] hover:bg-white/80"
             >
               <Svg className="w-4 h-4">
@@ -5684,7 +5702,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
             </button>
             <a
               href={`${base}plugins/`}
-              title="我的插件"
+              data-hint="我的插件"
               onClick={() => {
                 const leaving = storeRef.current?.activeId;
                 const pruned = pruneEphemeralSession(leaving);
@@ -5707,7 +5725,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               </div>
               <button
                 type="button"
-                title="搜索"
+                aria-label="搜索"
                 onClick={() => {
                   setWsSearchOpen((v) => !v);
                   if (wsSearchOpen) setWsQuery('');
@@ -5718,7 +5736,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               </button>
               <button
                 type="button"
-                title={fsLive ? '添加工作区（选择本地文件夹）' : '本地文件服务未就绪'}
+                data-hint={fsLive ? '添加工作区（选择本地文件夹）' : '本地文件服务未就绪'}
                 disabled={!fsLive || wsBusy}
                 onClick={() => void addWorkspaceByPicker()}
                 className="w-6 h-6 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/70 disabled:opacity-40"
@@ -5762,7 +5780,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     >
                       <button
                         type="button"
-                        title={item.path}
+                        data-hint={item.path}
                         onClick={(e) => {
                           e.stopPropagation();
                           setSessionMenuId(null);
@@ -5802,7 +5820,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         />
                         <button
                           type="button"
-                          title="在此工作区新建会话"
+                          data-hint="在此工作区新建会话"
                           onClick={(e) => {
                             e.stopPropagation();
                             newSession(item.path);
@@ -5858,7 +5876,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         {railOpen && (wsActivePath || toolBusy || toolHint) && (
           <div className="shrink-0 border-t border-stone-200/60 px-3 py-2 space-y-1">
             {wsActivePath && (
-              <div className="tw-rail-workspace-footer" title={wsActivePath}>
+              <div className="tw-rail-workspace-footer" data-hint={wsActivePath}>
                 <span className="tw-rail-workspace-label" data-i18n="chat.workspace">
                   工作区
                 </span>
@@ -5883,7 +5901,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
             <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
               <button
                 type="button"
-                title="点击重命名"
+                data-hint="点击重命名"
                 onClick={() => {
                   const id = store?.activeId;
                   if (id) renameSessionTitle(id);
@@ -5937,7 +5955,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     {(memoryHealth?.suggestionCount ?? 0) > 0 ? (
                       <span
                         className="min-w-[1.125rem] h-[1.125rem] px-1 inline-flex items-center justify-center rounded-full bg-red-500 text-[10px] font-medium text-white tabular-nums leading-none"
-                        title={`${memoryHealth?.suggestionCount} 条待确认`}
+                        data-hint={`${memoryHealth?.suggestionCount} 条待确认`}
                       >
                         {memoryHealth!.suggestionCount! > 99
                           ? '99+'
@@ -5968,7 +5986,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   </span>
                   <button
                     type="button"
-                    title="清除目标"
+                    data-hint="清除目标"
                     className="text-[11px] text-stone-400 hover:text-stone-600 shrink-0"
                     onClick={() => {
                       sessionGoalRef.current = null;
@@ -6132,7 +6150,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                 <span
                                   key={r.path}
                                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-[#4176e6] bg-white border border-[#4176e6]/30 rounded-lg"
-                                  title={r.path}
+                                  data-hint={r.path}
                                 >
                                   <FileIcon className="w-3.5 h-3.5" />
                                   <span className="text-[10px] text-stone-400 shrink-0">
@@ -6158,7 +6176,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   target="_blank"
                                   rel="noreferrer"
                                   className="block overflow-hidden rounded-lg border border-stone-200 bg-white"
-                                  title={img.name}
+                                  data-hint={img.name}
                                 >
                                   <img
                                     src={img.dataUrl}
@@ -6293,7 +6311,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                                       ? 'text-shimmer-muted'
                                                       : ''
                                                 }
-                                                title={s.detail}
+                                                data-hint={s.detail}
                                               >
                                                 {s.detail.length > 72
                                                   ? `${s.detail.slice(0, 72)}…`
@@ -6333,7 +6351,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             <button
                               type="button"
                               data-focus-doc={`cases:${m.caseFile.path.replace(/\\/g, '/')}`}
-                              title="双击本地打开"
+                              data-hint="双击本地打开"
                               onDoubleClick={() => {
                                 void openDocsFile('cases', m.caseFile!.path).catch((e) =>
                                   setError(e instanceof Error ? e.message : String(e)),
@@ -6361,7 +6379,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             <button
                               type="button"
                               data-focus-doc={`${m.docsFile.root}:${m.docsFile.path.replace(/\\/g, '/')}`}
-                              title="点击本地打开"
+                              data-hint="点击本地打开"
                               onClick={() => {
                                 void openDocsFile(m.docsFile!.root, m.docsFile!.path).catch((e) =>
                                   setError(e instanceof Error ? e.message : String(e)),
@@ -6396,7 +6414,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                 <button
                                   key={pf.path}
                                   type="button"
-                                  title="点击本地打开"
+                                  data-hint="点击本地打开"
                                   onClick={() => {
                                     void openFsPath(pf.path, access).catch((e) =>
                                       setError(e instanceof Error ? e.message : String(e)),
@@ -6445,7 +6463,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   <button
                     type="button"
                     onClick={jumpToBottom}
-                    title="回到底部"
+                    data-hint="回到底部"
                     className="absolute bottom-3 right-8 sm:right-10 lg:right-12 w-8 h-8 rounded-full bg-white border border-stone-200 shadow-md flex items-center justify-center text-stone-500 hover:text-stone-800 transition-colors"
                   >
                     <ChevronIcon className="w-4 h-4" />
@@ -6580,7 +6598,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         </span>
                         <button
                           type="button"
-                          title="编辑回输入框"
+                          data-hint="编辑回输入框"
                           onClick={() => editQueued(q.id)}
                           className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
                         >
@@ -6591,7 +6609,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         </button>
                         <button
                           type="button"
-                          title="从队列移除"
+                          data-hint="从队列移除"
                           onClick={() => removeQueued(q.id)}
                           className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none"
                         >
@@ -6603,7 +6621,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         </button>
                         <button
                           type="button"
-                          title="插话立即发送（其后队列仍会续发）"
+                          data-hint="插话立即发送（其后队列仍会续发）"
                           onClick={() => promoteQueued(q.id)}
                           className="tw-icon-btn w-7 h-7 rounded-md flex items-center justify-center outline-none text-[#4176e6]"
                         >
@@ -6769,7 +6787,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         <span
                           key={`${r.collection}:${r.path}`}
                           className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
-                          title={
+                          data-hint={
                             r.collection === 'workspace' ? r.path : `${r.collection}/${r.path}`
                           }
                         >
@@ -6786,7 +6804,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           <span className="max-w-48 truncate">{r.title}</span>
                           <button
                             type="button"
-                            title="移除引用"
+                            data-hint="移除引用"
                             onClick={() =>
                               setDocRefs((prev) =>
                                 prev.filter(
@@ -6807,14 +6825,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         <span
                           key={`${a.name}-${idx}`}
                           className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-xs text-[#4176e6] bg-[#edf3fe] border border-[#4176e6]/25 rounded-lg"
-                          title={a.path || a.name}
+                          data-hint={a.path || a.name}
                         >
                           <FileIcon className="w-3.5 h-3.5" />
                           <span className="text-[10px] text-[#4176e6]/80 shrink-0">文件</span>
                           <span className="max-w-48 truncate">{a.name}</span>
                           <button
                             type="button"
-                            title="移除"
+                            data-hint="移除"
                             onClick={() =>
                               setAttachments((prev) => prev.filter((_, j) => j !== idx))
                             }
@@ -6831,7 +6849,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         <span
                           key={img.id}
                           className="relative group inline-flex rounded-lg border border-stone-200 overflow-hidden bg-stone-50"
-                          title={`${img.name} · ${fmtSize(img.size)}`}
+                          data-hint={`${img.name} · ${fmtSize(img.size)}`}
                         >
                           <img
                             src={img.dataUrl}
@@ -6840,7 +6858,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           />
                           <button
                             type="button"
-                            title="移除图片"
+                            data-hint="移除图片"
                             onClick={() => setImages((prev) => prev.filter((x) => x.id !== img.id))}
                             className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/55 text-white hover:bg-black/75"
                           >
@@ -7201,7 +7219,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     )}
                     <div className="flex items-start gap-2 px-3">
                       {composerChip === 'goal' ? (
-                        <span className="tw-composer-mode-chip is-goal" title="会话目标">
+                        <span className="tw-composer-mode-chip is-goal" data-hint="会话目标">
                           <Svg className="w-3.5 h-3.5 shrink-0">
                             <circle cx="12" cy="12" r="10" />
                             <circle cx="12" cy="12" r="6" />
@@ -7210,7 +7228,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           <span>目标</span>
                           <button
                             type="button"
-                            title="取消目标输入"
+                            data-hint="取消目标输入"
                             aria-label="取消目标输入"
                             onClick={() => setComposerChip(null)}
                           >
@@ -7224,7 +7242,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       {composerChip === 'plan' ? (
                         <span
                           className={`tw-composer-mode-chip is-plan${planPhase === 'approved' ? ' is-approved' : ''}`}
-                          title={planPhase === 'approved' ? '计划模式·已批准' : '计划模式·探查中'}
+                          data-hint={
+                            planPhase === 'approved' ? '计划模式·已批准' : '计划模式·探查中'
+                          }
                         >
                           <Svg className="w-3.5 h-3.5 shrink-0">
                             <path d="M8 6h13" />
@@ -7237,7 +7257,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           <span>计划</span>
                           <button
                             type="button"
-                            title="退出计划模式"
+                            data-hint="退出计划模式"
                             aria-label="退出计划模式"
                             onClick={() => dismissComposerChip()}
                           >
@@ -7371,7 +7391,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     <button
                       type="button"
                       data-add-menu-btn
-                      title={
+                      aria-label={
                         planPhase === 'off'
                           ? '添加'
                           : planPhase === 'planning'
@@ -7425,7 +7445,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                     className={`flex-1 min-w-0 truncate text-[13px] ${
                                       active ? 'text-stone-900 font-medium' : 'text-stone-700'
                                     }`}
-                                    title={item.path}
+                                    data-hint={item.path}
                                   >
                                     {workspaceDisplayName(item, projectRootPath)}
                                   </span>
@@ -7471,7 +7491,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           className={`ml-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${
                             fsLive ? 'bg-emerald-500' : 'bg-stone-300'
                           }`}
-                          title={fsLive ? 'Runner 在线' : 'Runner 离线'}
+                          data-hint={fsLive ? 'Runner 在线' : 'Runner 离线'}
                         />
                         <ChevronIcon className="w-3.5 h-3.5 text-stone-400 transition-transform group-data-[open]:rotate-180" />
                       </MenuButton>
@@ -7488,8 +7508,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             <button
                               type="button"
                               onClick={() => {
+                                // 只改当前会话：设置页的「权限」是新会话默认值，不参与已有会话
                                 setAccess(o.value);
-                                saveAccessLevel(o.value);
+                                if (storeRef.current) {
+                                  commitStore(
+                                    updateActiveSessionMeta(storeRef.current, { access: o.value }),
+                                  );
+                                }
                               }}
                               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-[13px] data-[focus]:bg-stone-100"
                             >
@@ -7526,7 +7551,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         void send();
                       }}
                       disabled={!streaming && !canSend}
-                      title={streaming ? '停止生成' : '发送'}
+                      data-hint={streaming ? '停止生成' : '发送'}
                       className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
                         streaming
                           ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'

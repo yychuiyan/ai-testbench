@@ -100,7 +100,7 @@ function snippetAround(text, needle) {
 }
 
 /**
- * @returns {{ ok: boolean, backend: string, hits: Array<object>, error?: string }}
+ * @returns {{ ok: boolean, backend: string, hits: Array<{ sessionId: string, title: string, archived: boolean, score: number, snippet: string, updatedAt: number }>, error?: string }}
  */
 export async function querySessionIndex(root, query, opts = {}) {
   const q = String(query ?? '').trim();

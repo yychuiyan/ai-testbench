@@ -90,8 +90,7 @@ async function searchDuckDuckGo(query, maxResults = 8) {
   }
   const html = await res.text();
   const results = [];
-  const re =
-    /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const re = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   let m;
   while ((m = re.exec(html)) && results.length < maxResults) {
     const href = unwrapDdgHref(decodeBasicEntities(m[1]));

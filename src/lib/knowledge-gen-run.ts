@@ -210,7 +210,7 @@ export function formatKnowledgeGenResultSummary(opts: {
   }
   const lines = ['**执行成功**', '', `- 标题：${opts.title || '—'}`];
   if (opts.category) lines.push(`- 分类：${opts.category}`);
-  if (opts.path) lines.push(`- 入库文件：knowledge/${opts.path}`);
+  if (opts.path) lines.push(`- 入库文件：知识库管理/${opts.path}`);
   if (opts.qcNote) {
     lines.push('', '**质检说明**', opts.qcNote);
   }
@@ -218,21 +218,21 @@ export function formatKnowledgeGenResultSummary(opts: {
   return lines.join('\n');
 }
 
-async function uniqueKnowledgeRel(category: KnowledgeCategory, fileBase: string): Promise<string> {
-  let rel = `${category}/${fileBase}.md`;
+/** 平铺写入 知识库管理/ 根目录；分类只记录在 frontmatter 的 category（与用例一致） */
+async function uniqueKnowledgeRel(fileBase: string): Promise<string> {
+  const rel = `${fileBase}.md`;
   try {
-    const { entries } = await listDocs('knowledge', category);
+    const { entries } = await listDocs('knowledge', '.');
     const names = new Set(entries.filter((e) => e.type === 'file').map((e) => e.name));
-    const baseName = `${fileBase}.md`;
-    if (!names.has(baseName)) return rel;
+    if (!names.has(rel)) return rel;
     for (let i = 2; i < 100; i++) {
       const cand = `${fileBase}-${i}.md`;
-      if (!names.has(cand)) return `${category}/${cand}`;
+      if (!names.has(cand)) return cand;
     }
   } catch {
     // ignore
   }
-  return `${category}/${fileBase}-${Date.now().toString(36)}.md`;
+  return `${fileBase}-${Date.now().toString(36)}.md`;
 }
 
 export async function tryFinishKnowledgeGenFromAssistant(
@@ -275,7 +275,7 @@ export async function tryFinishKnowledgeGenFromAssistant(
     };
   }
   try {
-    const rel = await uniqueKnowledgeRel(qc.category, qc.fileBase);
+    const rel = await uniqueKnowledgeRel(qc.fileBase);
     const md = buildKnowledgeMarkdown({
       title: qc.title,
       category: qc.category,

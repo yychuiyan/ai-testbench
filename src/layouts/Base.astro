@@ -1,14 +1,17 @@
 ---
 import { ClientRouter, fade } from 'astro:transitions';
 import '../styles/global.css';
+import '../styles/docs-article.css';
 import SettingsDialog from '../components/islands/SettingsDialog';
 import { APP_VERSION } from '../lib/app-version';
 
 interface Props {
   title?: string;
+  /** 主内容区过渡：none 用于帮助中心文档（避免滚到底切页时叠影） */
+  mainTransition?: 'fade' | 'none';
 }
 
-const { title = 'TestBench' } = Astro.props;
+const { title = 'TestBench', mainTransition = 'fade' } = Astro.props;
 const base = import.meta.env.BASE_URL;
 const path = Astro.url.pathname;
 
@@ -35,6 +38,19 @@ const navItem = (active: boolean) =>
     <link rel="icon" type="image/png" sizes="32x32" href={`${base}favicon.png`} />
     <link rel="apple-touch-icon" href={`${base}apple-touch-icon.png`} />
     <title>{title}</title>
+    <script is:inline>
+      // 尽早禁用滚动恢复，避免整页跳转/切页时停在旧滚动位置造成文字叠影
+      try {
+        if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+      } catch (e) {}
+    </script>
+    <script>
+      // 全局悬浮提示（data-hint）：监听器挂在 document 上，软导航后依然生效。
+      // 注意 import 必须写在本脚本内：Astro 的 <script> 是独立客户端模块，
+      // 拿不到 frontmatter 的顶部 import。
+      import { initHintTips } from '../lib/hint-tip';
+      initHintTips();
+    </script>
     <ClientRouter />
     <script is:inline>
       (function () {
@@ -88,7 +104,7 @@ const navItem = (active: boolean) =>
                   <span class="tw-nav-brand-title" data-i18n="nav.brand">
                     TestBench
                   </span>
-                  <span class="tw-nav-brand-ver" title={`平台版本 v${APP_VERSION}`}>
+                  <span class="tw-nav-brand-ver" data-hint={`平台版本 v${APP_VERSION}`}>
                     v{APP_VERSION}
                   </span>
                 </span>
@@ -104,7 +120,6 @@ const navItem = (active: boolean) =>
           type="button"
           id="tw-nav-toggle"
           class="tw-nav-toggle"
-          title="收起导航"
           aria-label="收起或展开左侧导航"
           aria-expanded="true"
           aria-controls="tw-nav-aside"
@@ -140,7 +155,7 @@ const navItem = (active: boolean) =>
         </button>
 
         <nav class="tw-nav-list flex-1 overflow-y-auto">
-          <a href={base} class={navItem(isHome())} data-i18n-title="nav.home" title="我的工作台">
+          <a href={base} class={navItem(isHome())} data-i18n-hint="nav.home" data-hint="我的工作台">
             <svg
               class="tw-nav-ico"
               viewBox="0 0 24 24"
@@ -157,7 +172,7 @@ const navItem = (active: boolean) =>
             </span>
           </a>
 
-          <a href={`${base}cases/library/`} class={navItem(pathHas('cases'))} title="用例管理">
+          <a href={`${base}cases/library/`} class={navItem(pathHas('cases'))} data-hint="用例管理">
             <svg
               class="tw-nav-ico"
               viewBox="0 0 24 24"
@@ -174,7 +189,7 @@ const navItem = (active: boolean) =>
             </span>
           </a>
 
-          <a href={`${base}prompts/`} class={navItem(pathHas('prompts'))} title="提示词管理">
+          <a href={`${base}prompts/`} class={navItem(pathHas('prompts'))} data-hint="提示词管理">
             <svg
               class="tw-nav-ico"
               viewBox="0 0 24 24"
@@ -191,7 +206,11 @@ const navItem = (active: boolean) =>
             </span>
           </a>
 
-          <a href={`${base}knowledge/`} class={navItem(pathHas('knowledge'))} title="知识库管理">
+          <a
+            href={`${base}knowledge/`}
+            class={navItem(pathHas('knowledge'))}
+            data-hint="知识库管理"
+          >
             <svg
               class="tw-nav-ico"
               viewBox="0 0 24 24"
@@ -211,7 +230,7 @@ const navItem = (active: boolean) =>
           <details class="tw-nav-details group/docs" open>
             <summary
               class:list={['tw-nav-item tw-nav-summary', docsOpen ? 'is-branch-active' : '']}
-              title="文档库"
+              data-hint="文档库"
             >
               <!-- 收起：合上文件夹；展开（details open）：打开文件夹 -->
               <svg
@@ -253,7 +272,7 @@ const navItem = (active: boolean) =>
                 <a
                   href={`${base}requirements/`}
                   class={navItem(pathHas('requirements'))}
-                  title="需求文档库"
+                  data-hint="需求文档库"
                 >
                   <span class="tw-nav-label" data-i18n="nav.requirements">
                     需求文档库
@@ -262,7 +281,7 @@ const navItem = (active: boolean) =>
                 <a
                   href={`${base}templates/`}
                   class={navItem(pathHas('templates'))}
-                  title="测试模板库"
+                  data-hint="测试模板库"
                 >
                   <span class="tw-nav-label" data-i18n="nav.templates">
                     测试模板库
@@ -273,10 +292,10 @@ const navItem = (active: boolean) =>
           </details>
 
           <a
-            href={`${base}changelog/`}
-            class={navItem(pathHas('changelog'))}
-            title="版本日志"
-            data-i18n-title="nav.changelogShort"
+            href={`${base}docs/manual/`}
+            class={navItem(pathHas('docs'))}
+            data-hint="帮助中心"
+            data-i18n-hint="nav.helpCenter"
           >
             <svg
               class="tw-nav-ico"
@@ -286,84 +305,15 @@ const navItem = (active: boolean) =>
               stroke-width="1.75"
               aria-hidden="true"
             >
-              <circle cx="12" cy="12" r="9"></circle>
-              <path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M5 4.5h9.5L19 9v10.5H5V4.5Z" stroke-linejoin="round"></path>
+              <path d="M14.5 4.5V9H19" stroke-linejoin="round"></path>
+              <path d="M8 13h8M8 16.5h6" stroke-linecap="round"></path>
             </svg>
-            <span class="tw-nav-label" data-i18n="nav.changelogShort">
-              版本日志
+            <span class="tw-nav-label" data-i18n="nav.helpCenter">
+              帮助中心
             </span>
           </a>
         </nav>
-
-        <div class="tw-nav-meta">
-          <div class="tw-nav-ext" aria-label="外部链接">
-            <a
-              href="https://github.com/yychuiyan/ai-testbench"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="tw-nav-ext-btn"
-              title="GitHub 仓库"
-              data-i18n-title="nav.repo"
-              aria-label="GitHub 仓库"
-            >
-              <svg
-                class="tw-nav-ext-ico"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.71.5.1.68-.22.68-.48 0-.24-.01-.87-.01-1.7-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 7.1c.85 0 1.71.12 2.51.35 1.9-1.32 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.38-.01 2.48-.01 2.82 0 .26.18.59.69.48A10.05 10.05 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"></path>
-              </svg>
-              <span class="tw-nav-ext-label" data-i18n="nav.repoShort">
-                仓库
-              </span>
-            </a>
-            <a
-              href="https://www.npmjs.com/package/ai-testbench"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="tw-nav-ext-btn"
-              title="npm 包"
-              data-i18n-title="nav.npm"
-              aria-label="npm 包"
-            >
-              <svg
-                class="tw-nav-ext-ico"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M4 4h16v16H4V4zm2.5 2.5v11H12v-8.5h3.5v8.5H19.5v-11H6.5z"></path>
-              </svg>
-              <span class="tw-nav-ext-label" data-i18n="nav.npmShort">
-                npm
-              </span>
-            </a>
-            <a
-              href="https://docs.yychuiyan.com/friends/apply/"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="tw-nav-ext-btn"
-              title="问题与建议"
-              data-i18n-title="nav.board"
-              aria-label="问题与建议"
-            >
-              <svg
-                class="tw-nav-ext-ico"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                aria-hidden="true"
-              >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-              </svg>
-              <span class="tw-nav-ext-label" data-i18n="nav.boardShort">
-                问题与建议
-              </span>
-            </a>
-          </div>
-        </div>
 
         <div class="tw-nav-foot">
           <SettingsDialog client:load />
@@ -382,7 +332,8 @@ const navItem = (active: boolean) =>
             } catch (e) {}
             if (btn) {
               btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-              btn.title = collapsed ? '展开导航' : '收起导航';
+              // 气泡已移除；改为动态更新不可见标签，读屏仍能获知当前动作
+              btn.setAttribute('aria-label', collapsed ? '展开导航' : '收起导航');
             }
           }
           apply(root.dataset.navCollapsed === '1');
@@ -411,6 +362,11 @@ const navItem = (active: boolean) =>
               'nav.settings': 'Settings',
               'nav.changelog': 'Changelog',
               'nav.changelogShort': 'Changelog',
+              'nav.helpCenter': 'Help Center',
+              'docs.nav.title': 'Docs',
+              'docs.nav.changelog': 'Changelog',
+              'docs.nav.manual': 'User Guide',
+              'docs.nav.install': 'Install Guide',
               'nav.repo': 'GitHub',
               'nav.repoShort': 'Repo',
               'nav.npm': 'npm package',
@@ -424,28 +380,62 @@ const navItem = (active: boolean) =>
               var key = el.getAttribute('data-i18n');
               if (key && en[key]) el.textContent = en[key];
             });
-            document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
-              var key = el.getAttribute('data-i18n-title');
-              if (key && en[key]) el.setAttribute('title', en[key]);
+            document.querySelectorAll('[data-i18n-hint]').forEach(function (el) {
+              var key = el.getAttribute('data-i18n-hint');
+              if (key && en[key]) el.setAttribute('data-hint', en[key]);
             });
           } catch (e) {}
         })();
       </script>
-      <main class="tw-main min-h-screen" transition:animate={fade({ duration: '180ms' })}>
-        <div
-          id="tw-route-loading"
-          class="tw-route-loading is-hidden"
-          role="status"
-          aria-live="polite"
-          aria-label="页面加载中"
-        >
-          <span class="tw-route-loading-spin" aria-hidden="true"></span>
-        </div>
-        <slot />
-      </main>
+      {mainTransition === 'none' ? (
+        <main class="tw-main min-h-screen" transition:animate="none">
+          <div
+            id="tw-route-loading"
+            class="tw-route-loading is-hidden"
+            role="status"
+            aria-live="polite"
+            aria-label="页面加载中"
+          >
+            <span class="tw-route-loading-spin" aria-hidden="true"></span>
+          </div>
+          <slot />
+        </main>
+      ) : (
+        <main class="tw-main min-h-screen" transition:animate={fade({ duration: '180ms' })}>
+          <div
+            id="tw-route-loading"
+            class="tw-route-loading is-hidden"
+            role="status"
+            aria-live="polite"
+            aria-label="页面加载中"
+          >
+            <span class="tw-route-loading-spin" aria-hidden="true"></span>
+          </div>
+          <slot />
+        </main>
+      )}
     </div>
     <script is:inline>
       (function () {
+        /** 「文档库」分组展开状态：软导航会整页换 DOM，靠 localStorage 记住用户的收起/展开 */
+        var NAV_DOCS_KEY = 'tw.nav.docsOpen';
+        function navDocsStored() {
+          try {
+            var v = localStorage.getItem(NAV_DOCS_KEY);
+            return v === null ? null : v === '1';
+          } catch (e) {
+            return null;
+          }
+        }
+        function applyNavDocsState(doc) {
+          var state = navDocsStored();
+          if (state === null) return;
+          var details = (doc || document).querySelector('.tw-nav-details');
+          if (!details) return;
+          if (state) details.setAttribute('open', '');
+          else details.removeAttribute('open');
+        }
+
         /** 主导航「文档库」二级菜单：收起时先播动画再去掉 open */
         function bindNavDetails(root) {
           var scope = root || document;
@@ -464,6 +454,10 @@ const navItem = (active: boolean) =>
               ) {
                 return;
               }
+              // 记录目标状态（点击后要变成的状态），供切页后还原
+              try {
+                localStorage.setItem(NAV_DOCS_KEY, details.open ? '0' : '1');
+              } catch (err) {}
               if (details.open) {
                 details.classList.add('is-closing');
                 var finished = false;
@@ -494,10 +488,76 @@ const navItem = (active: boolean) =>
           });
         }
 
+        // 首屏先按记忆还原展开状态，避免「收起后又看到展开」的闪动
+        applyNavDocsState(document);
         document.addEventListener('astro:page-load', function () {
           bindNavDetails(document);
         });
         bindNavDetails(document);
+
+        /**
+         * 切页滚回顶部。
+         * 只在「换页后」重置：若在 before-preparation（点击瞬间）就重置，
+         * 当前页面会先跳回顶部、再等新页到达，用户看到的就是「打开时还在滚动」。
+         * 带锚点（#）时交给浏览器定位，不强制回顶。
+         */
+        try {
+          if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+        } catch (e) {}
+        function twScrollTop() {
+          if (location.hash) return;
+          if (window.scrollY === 0 && document.documentElement.scrollTop === 0) return;
+          try {
+            // instant：不受将来可能加入的 scroll-behavior: smooth 影响
+            window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+          } catch (e) {
+            // 旧浏览器不认 instant，会抛 TypeError，退回普通写法
+            window.scrollTo(0, 0);
+          }
+          document.documentElement.scrollTop = 0;
+          document.body.scrollTop = 0;
+          var main = document.querySelector('.tw-main');
+          if (main) main.scrollTop = 0;
+        }
+        document.addEventListener('astro:after-swap', twScrollTop);
+        document.addEventListener('astro:page-load', twScrollTop);
+
+        /**
+         * 软导航「闪白」修复。
+         * ClientRouter 交换文档时，会用新文档 <html> 的属性整体替换当前 <html>，
+         * 于是 data-theme 连同 style 里的 color-scheme 一起被清空；在主题属性
+         * 恢复之前，color-scheme 回落到 normal，画布变白 —— 深色主题下就是
+         * 切页瞬间的闪白（与具体页面无关，所有路由都受影响）。
+         * 在交换前把主题 / 语言写进新文档的 <html>，交换完成时即已带上，不留空档。
+         */
+        document.addEventListener('astro:before-swap', function (e) {
+          var next = e.newDocument;
+          if (!next || !next.documentElement) return;
+          // 换页前就把「文档库」分组还原成用户记忆的状态，避免新页先展开再收起
+          applyNavDocsState(next);
+          var cur = document.documentElement;
+          var theme = cur.dataset.theme;
+          if (!theme) return;
+          next.documentElement.dataset.theme = theme;
+          next.documentElement.style.colorScheme = theme;
+          if (cur.lang) next.documentElement.lang = cur.lang;
+        });
+
+        /** 版本日志「查看更多」：委托绑定，兼容 View Transitions 软导航 */
+        document.addEventListener('click', function (e) {
+          var t = e.target;
+          if (!(t instanceof Element)) return;
+          var btn = t.closest('.tw-changelog-toggle');
+          if (!(btn instanceof HTMLButtonElement)) return;
+          var card = btn.closest('.tw-changelog-card');
+          if (!(card instanceof HTMLElement)) return;
+          e.preventDefault();
+          var next = card.getAttribute('data-open') !== 'true';
+          card.setAttribute('data-open', next ? 'true' : 'false');
+          btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+          var label = btn.querySelector('.tw-changelog-toggle-label');
+          if (label) label.textContent = next ? '收起' : '查看更多';
+        });
       })();
     </script>
   </body>

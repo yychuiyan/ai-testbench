@@ -25,6 +25,7 @@ import {
   loadModelProviders,
   loadSettings,
   newProviderId,
+  onAccessLevelChanged,
   onGeneralPrefsChanged,
   saveAccessLevel,
   saveGeneralPrefs,
@@ -231,6 +232,11 @@ export default function SettingsDialog() {
     busySendBehavior: 'queue',
     subagentModel: '',
   });
+  /**
+   * 字号输入框的草稿值。受控 input 若在 onChange 里立刻夹取，
+   * 键盘敲「18」会被逐字符夹成 12 → 128 → 22；改为本地草稿、失焦/回车再提交。
+   */
+  const [fontSizeDraft, setFontSizeDraft] = useState('14');
   const fetchSeq = useRef(0);
 
   const isEditing = editingId !== null;
@@ -304,9 +310,13 @@ export default function SettingsDialog() {
     };
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpen);
     const offPrefs = onGeneralPrefsChanged((p) => setPrefs(p));
+    // 设置页的「权限」是新会话默认值；外部（另一标签页 / 会话内菜单）改了也要跟上，
+    // 否则弹窗开着时会一直显示旧值。
+    const offAccess = onAccessLevelChanged((level) => setAccess(level));
     return () => {
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpen);
       offPrefs();
+      offAccess();
     };
   }, []);
 
@@ -347,6 +357,23 @@ export default function SettingsDialog() {
 
   function patchPrefs(patch: Partial<GeneralPrefs>) {
     setPrefs(saveGeneralPrefs(patch));
+  }
+
+  // 拉取设置（含首次 hydrate）后把草稿同步到已保存值
+  useEffect(() => {
+    setFontSizeDraft(String(prefs.sessionFontSize));
+  }, [prefs.sessionFontSize]);
+
+  /** 提交字号草稿：空 / 非法则回退，越界由 saveGeneralPrefs 夹取后再回填 */
+  function commitFontSize() {
+    const n = Number(fontSizeDraft);
+    if (!fontSizeDraft.trim() || !Number.isFinite(n)) {
+      setFontSizeDraft(String(prefs.sessionFontSize));
+      return;
+    }
+    const next = saveGeneralPrefs({ sessionFontSize: Math.round(n) });
+    setPrefs(next);
+    setFontSizeDraft(String(next.sessionFontSize));
   }
 
   const canSave = Boolean(name.trim() && baseURL.trim() && apiKey.trim() && model.trim());
@@ -441,7 +468,7 @@ export default function SettingsDialog() {
           type="button"
           onClick={() => openSettings('general')}
           className="tw-nav-settings-btn"
-          title={configured ? '设置（已配置模型）' : '设置'}
+          data-hint={configured ? '设置（已配置模型）' : '设置'}
         >
           <svg
             className="tw-nav-ico w-[18px] h-[18px] shrink-0"
@@ -459,7 +486,7 @@ export default function SettingsDialog() {
         <button
           type="button"
           className={`tw-nav-provider-chip${providerName ? '' : ' is-empty'}`}
-          title={providerChipTitle}
+          data-hint={providerChipTitle}
           onClick={() => openSettings('model')}
         >
           <span className="tw-nav-provider-dot" aria-hidden="true" />
@@ -486,7 +513,6 @@ export default function SettingsDialog() {
                 <button
                   type="button"
                   aria-label={t('settings.close', undefined, lang)}
-                  title={t('settings.close', undefined, lang)}
                   onClick={() => setOpen(false)}
                   className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
                 >
@@ -591,11 +617,11 @@ export default function SettingsDialog() {
                                 type="number"
                                 min={12}
                                 max={22}
-                                value={prefs.sessionFontSize}
-                                onChange={(e) => {
-                                  const n = Number(e.target.value);
-                                  if (!Number.isFinite(n)) return;
-                                  patchPrefs({ sessionFontSize: n });
+                                value={fontSizeDraft}
+                                onChange={(e) => setFontSizeDraft(e.target.value)}
+                                onBlur={commitFontSize}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') e.currentTarget.blur();
                                 }}
                                 className="w-14 h-9 px-2 text-sm text-center rounded-lg bg-stone-100 border-0 outline-none focus:ring-2 focus:ring-[#4176e6]/30"
                               />
@@ -858,7 +884,7 @@ export default function SettingsDialog() {
                             >
                               <button
                                 type="button"
-                                title={
+                                data-hint={
                                   isActive
                                     ? lang === 'en'
                                       ? 'Active'

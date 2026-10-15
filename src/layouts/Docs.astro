@@ -1,0 +1,205 @@
+---
+import Base from './Base.astro';
+
+interface Props {
+  title: string;
+  /** manual | install | changelog */
+  active: 'manual' | 'install' | 'changelog';
+}
+
+const { title, active } = Astro.props;
+const base = import.meta.env.BASE_URL;
+
+const items = [
+  {
+    id: 'manual' as const,
+    href: `${base}docs/manual/`,
+    label: '操作手册',
+    i18n: 'docs.nav.manual',
+  },
+  {
+    id: 'install' as const,
+    href: `${base}docs/install/`,
+    label: '安装手册',
+    i18n: 'docs.nav.install',
+  },
+  {
+    id: 'changelog' as const,
+    href: `${base}docs/changelog/`,
+    label: '版本日志',
+    i18n: 'docs.nav.changelog',
+  },
+];
+
+/** 侧栏底部外链（新窗口打开） */
+const extLinks = [
+  {
+    href: 'https://docs.yychuiyan.com/friends/apply/',
+    label: '问题与建议',
+    i18n: 'nav.board',
+  },
+];
+---
+
+<Base title={title} mainTransition="none">
+  <div class="tw-docs">
+    <aside class="tw-docs-rail" aria-label="文档导航">
+      <div class="tw-docs-rail-inner">
+        <p class="tw-docs-rail-title" data-i18n="docs.nav.title">
+          文档
+        </p>
+        <nav class="tw-docs-rail-nav">
+          {items.map((item) => (
+            <a
+              href={item.href}
+              class:list={['tw-docs-rail-link', active === item.id && 'is-active']}
+              data-i18n={item.i18n}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
+        <div class="tw-docs-rail-ext">
+          {extLinks.map((link) => (
+            <a
+              href={link.href}
+              class="tw-docs-rail-link tw-docs-rail-link--ext"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-i18n={link.i18n}
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      </div>
+    </aside>
+    <div class="tw-docs-main">
+      <slot />
+    </div>
+  </div>
+</Base>
+
+<style>
+  .tw-docs {
+    display: grid;
+    grid-template-columns: 11.5rem minmax(0, 1fr);
+    gap: 0;
+    min-height: calc(100vh - 0px);
+  }
+
+  /*
+   * 侧栏背景交给整列（grid item 默认 stretch，随内容高度拉伸），
+   * 这样背景从上到下同色；导航内容放进 inner 用 sticky 固定，
+   * 否则 sticky 元素高度只等于自身内容，背景会到中途截断。
+   */
+  .tw-docs-rail {
+    background: color-mix(in srgb, var(--tw-surface-rail-solid) 55%, var(--tw-surface-panel));
+  }
+
+  .tw-docs-rail-inner {
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 1.75rem 0.85rem 2.5rem 1.25rem;
+  }
+
+  .tw-docs-rail-title {
+    margin: 0 0 0.65rem 0.55rem;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--tw-label-tertiary);
+  }
+
+  .tw-docs-rail-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  /* 外链区：与上方文档导航用分隔线区分 */
+  .tw-docs-rail-ext {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin-top: 0.85rem;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--tw-border);
+  }
+
+  .tw-docs-rail-link {
+    display: block;
+    padding: 0.45rem 0.65rem;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    line-height: 1.35;
+    color: var(--tw-label-secondary);
+    text-decoration: none;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease;
+  }
+
+  .tw-docs-rail-link:hover {
+    color: var(--tw-label-primary);
+    background: color-mix(in srgb, var(--tw-accent) 8%, transparent);
+  }
+
+  .tw-docs-rail-link.is-active {
+    color: var(--tw-accent);
+    font-weight: 600;
+    background: var(--tw-accent-soft);
+  }
+
+  /* 外链标记：提示会离开本站 */
+  .tw-docs-rail-link--ext::after {
+    content: '↗';
+    margin-left: 0.35rem;
+    font-size: 0.8em;
+    opacity: 0.65;
+  }
+
+  /*
+   * 分隔线放在 main 上而不是侧栏的 border-right：
+   * 侧栏是 sticky（align-self: start），高度只到导航内容底部，线到不了底；
+   * main 是 grid item，默认拉伸到整行高度，border-left 自然贯穿整页。
+   */
+  .tw-docs-main {
+    min-width: 0;
+    border-left: 1px solid var(--tw-border);
+  }
+
+  @media (max-width: 860px) {
+    .tw-docs {
+      grid-template-columns: 1fr;
+    }
+
+    .tw-docs-rail {
+      border-bottom: 1px solid var(--tw-border);
+    }
+
+    .tw-docs-rail-inner {
+      position: static;
+      max-height: none;
+      padding: 1rem 1rem 0.75rem;
+    }
+
+    .tw-docs-main {
+      border-left: none;
+    }
+
+    .tw-docs-rail-nav {
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .tw-docs-rail-title {
+      width: 100%;
+      margin: 0 0 0.45rem 0.15rem;
+    }
+  }
+</style>

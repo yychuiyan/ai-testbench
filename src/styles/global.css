@@ -68,6 +68,24 @@ html {
   font-size: 16px;
 }
 
+/*
+ * 画布底色显式跟随主题。
+ * 深色下 html 背景原本是透明的，底色完全依赖 JS 写入的 color-scheme；
+ * 一旦该属性短暂缺失（软导航交换属性期间），画布会回落到白色。
+ * 这里直接给 html 上色兜底，并在主题明确时同步 color-scheme，不依赖 UA 默认值。
+ */
+html {
+  background-color: var(--tw-surface-page);
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
 body,
 .tw-body,
 .tw-main {
@@ -92,6 +110,48 @@ body,
 
 html[data-nav-collapsed='1'] .tw-main {
   margin-left: var(--tw-nav-width-collapsed);
+}
+
+/* ── 文档库页面骨架 ──
+   卡片区撑满视口剩余高度，底部由页面自身 padding 保持固定边距，
+   内容超出时在卡片内部滚动（而非整页滚动）。随分辨率自适应，无需写死高度。 */
+.tw-library-page {
+  display: flex;
+  flex-direction: column;
+  /* dvh 跟随移动端地址栏显隐；不支持的浏览器回退 vh */
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  margin-inline: auto;
+  /* 默认 6xl；大屏由下方媒体查询逐级放宽，避免宽屏两侧留白过大 */
+  max-width: 72rem;
+}
+
+/* 大屏放宽内容宽度：6xl(72rem) → 7xl(80rem) → 90rem */
+@media (min-width: 1280px) {
+  .tw-library-page {
+    max-width: 80rem;
+  }
+}
+
+@media (min-width: 1536px) {
+  .tw-library-page {
+    max-width: 90rem;
+  }
+}
+
+/* Astro 岛屿包裹元素默认为 inline，这里让它成为可伸缩、可收缩的 flex 容器 */
+.tw-library-page > astro-island {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 岛屿内的组件根节点占满可用宽高，滚动交给组件内部处理 */
+.tw-library-page > astro-island > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── dsh 风格会话 / 工作区行 ── */
@@ -1162,6 +1222,8 @@ html[data-theme='dark'] {
   --tw-surface-rail: rgba(26, 29, 38, 0.68);
   --tw-surface-rail-solid: #1a1d26;
   --tw-surface-panel: #1a1d26;
+  /* 凹槽层：比面板再暗一层，用于分段轨道（tab 底槽）、输入框等"凹陷"表面 */
+  --tw-surface-recessed: #12141a;
   --tw-border: #2a2e3a;
   --tw-session-hover-bg: rgba(255, 255, 255, 0.05);
   --tw-session-selected-bg: rgba(122, 162, 247, 0.12);
@@ -1177,90 +1239,275 @@ html[data-theme='dark'] .tw-main {
   color: var(--tw-label-primary);
 }
 
-/* 管理页卡片在夜间可读 */
-html[data-theme='dark'] main .bg-white,
-html[data-theme='dark'] main [class*='bg-stone-50'],
-html[data-theme='dark'] main .bg-\[\#f4f5f7\] {
+/*
+ * ── 深色「浅色表面」统一映射 ──
+ *
+ * 这套映射原先按页面作用域散落在 main / .tw-app / .tw-settings-dialog / .tw-plugins-page
+ * 四处，覆盖面各不相同（.tw-app 最全、main 最弱），于是每新增一个页面就可能冒出一块没适配的
+ * 近白区域（插件页 tab 轨道就是这么漏出来的）。这里收敛成一份，作用域用 :is() 一次列全：
+ *   - main 已包含工作台（ChatApp 的 .tw-app 挂在 main 内），无需再列 .tw-app
+ *   - 设置弹窗 / 气泡 / 确认框 / 下拉菜单会 portal 到 body，必须单独列出
+ *
+ * 两条硬约束：
+ *   1) 用 [class~='x'] 精确匹配类标记，不要用 [class*='x']。后者会命中 hover:bg-stone-50
+ *      这类带变体前缀的类：既把「仅悬停」的底色变成常驻，又让 hover:border-* 失去悬停效果。
+ *   2) 带变体前缀的类（hover: / data-[*]: / disabled:）不会被 ~= 命中，必须逐条显式覆盖，
+ *      否则改成精确匹配的同时会丢掉原本"歪打正着"的覆盖。
+ */
+
+/* 抬升表面：卡片 / 面板 / 浮层 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .bg-white,
+    .bg-\[\#f4f5f7\],
+    [class~='bg-white/60'],
+    [class~='bg-white/70'],
+    [class~='bg-stone-50'],
+    [class~='bg-stone-50/50'],
+    [class~='bg-stone-50/60'],
+    [class~='bg-stone-50/80'],
+    [class~='bg-[#f4f5f7]'],
+    [class~='bg-[#f8f9fb]'],
+    [class~='data-[focus]:bg-stone-50'],
+    [class~='disabled:bg-stone-50']
+  ) {
   background-color: var(--tw-surface-panel) !important;
 }
 
-html[data-theme='dark'] main .bg-\[\#e8f0fe\],
-html[data-theme='dark'] main .bg-\[\#edf3fe\],
-html[data-theme='dark'] main [class*='bg-[#e8f0fe]'],
-html[data-theme='dark'] main [class*='bg-[#edf3fe]'] {
+/* 凹槽表面：分段轨道 / 输入类，比面板再暗一层 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    [class~='bg-stone-100'],
+    [class~='bg-stone-100/80'],
+    [class~='data-[focus]:bg-stone-100'],
+    [class~='data-[open]:bg-stone-100']
+  ) {
+  background-color: var(--tw-surface-recessed) !important;
+}
+
+/* 中性抬高表面：stone-200 在浅色下是一块实心浅灰（次级按钮 / 胶囊 / 小节点头部），
+   深色下用一层极淡的白色叠加代替，避免整块泛白。stone-300/400 多用于进度条与状态点，
+   在深色下本身可见，故不纳入。 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='bg-stone-200'], [class~='bg-stone-200/70']) {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 强调表面：浅蓝底 → 柔和 accent（实心块同时改文字色，hover 块只改底色） */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='bg-[#e8f0fe]'], [class~='bg-[#edf3fe]'], [class~='data-[focus]:bg-[#edf3fe]']) {
   background-color: var(--tw-accent-soft) !important;
   color: var(--tw-accent) !important;
 }
 
-html[data-theme='dark'] main .text-\[\#4176e6\],
-html[data-theme='dark'] main .text-\[\#3565c7\],
-html[data-theme='dark'] main [class*='text-[#4176e6]'] {
-  color: var(--tw-accent) !important;
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    [class~='bg-[#edf3fe]/50'],
+    [class~='hover:bg-[#e8f0fe]'],
+    [class~='hover:bg-[#edf3fe]/50'],
+    [class~='hover:bg-[#f5f8ff]']
+  ) {
+  background-color: var(--tw-accent-soft) !important;
 }
 
-html[data-theme='dark'] main .hover\:bg-stone-100:hover,
-html[data-theme='dark'] main .hover\:bg-stone-50:hover {
+/* 中性 hover：统一成极淡提亮，避免 stone-200 / white 在深色下泛白 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .hover\:bg-stone-50:hover,
+    .hover\:bg-stone-100:hover,
+    .hover\:bg-white:hover,
+    [class~='hover:bg-stone-50/80']:hover,
+    [class~='hover:bg-stone-200/50']:hover,
+    [class~='hover:bg-stone-200/60']:hover,
+    [class~='hover:bg-stone-200/70']:hover,
+    [class~='hover:bg-stone-200/80']:hover,
+    [class~='hover:bg-stone-300']:hover,
+    [class~='hover:bg-white/70']:hover,
+    [class~='hover:bg-white/80']:hover
+  ) {
   background-color: rgba(255, 255, 255, 0.06) !important;
 }
 
-html[data-theme='dark'] main .text-stone-900,
-html[data-theme='dark'] main .text-stone-800,
-html[data-theme='dark'] main .text-stone-700 {
-  color: var(--tw-label-primary) !important;
-}
-
-html[data-theme='dark'] main .text-stone-600,
-html[data-theme='dark'] main .text-stone-500,
-html[data-theme='dark'] main .text-stone-400 {
-  color: var(--tw-label-secondary) !important;
-}
-
-html[data-theme='dark'] main .border-stone-200,
-html[data-theme='dark'] main .border-stone-100,
-html[data-theme='dark'] main .divide-stone-100 > :not([hidden]) ~ :not([hidden]),
-html[data-theme='dark'] main .border-dashed {
+/* 边框：近白描边 → --tw-border */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .border-stone-100,
+    .border-stone-200,
+    .border-dashed,
+    [class~='border-stone-200/60'],
+    [class~='border-stone-200/80'],
+    [class~='border-stone-200/90']
+  ) {
   border-color: var(--tw-border) !important;
 }
 
-/* 删除 / 危险操作：提高对比 */
-html[data-theme='dark'] main .text-red-600,
-html[data-theme='dark'] main .text-red-700,
-html[data-theme='dark'] .tw-app .text-red-600,
-html[data-theme='dark'] .tw-app .text-red-700,
-html[data-theme='dark'] .tw-settings-dialog .text-red-600,
-html[data-theme='dark'] .tw-settings-dialog .text-red-700 {
+/*
+ * 表单控件边框：stone-300 在浅色下比 100/200 更重，深色下却没有对应覆盖，
+ * 保留近白描边。这里给一个比 --tw-border 略亮的炭灰，既不刺眼又保住输入框边界。
+ */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  [class~='border-stone-300'] {
+  border-color: #3a4050 !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='hover:border-stone-300']:hover, [class~='hover:border-stone-400']:hover) {
+  border-color: #4b5160 !important;
+}
+
+/* ring：近白描边 → --tw-border（可用变量覆盖，替换原先直接盖 box-shadow 的写法） */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='ring-stone-200'], [class~='ring-stone-200/80']) {
+  --tw-ring-color: var(--tw-border) !important;
+}
+
+/* 文字：主色 / 次级两档 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .text-stone-900,
+    .text-stone-800,
+    .text-stone-700,
+    [class~='data-[selected]:text-stone-900']
+  ) {
+  color: var(--tw-label-primary) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(.text-stone-600, .text-stone-500, .text-stone-400, [class~='disabled:text-stone-400']) {
+  color: var(--tw-label-secondary) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    [class~='hover:text-stone-400']:hover,
+    [class~='hover:text-stone-500']:hover,
+    .hover\:text-stone-600:hover
+  ) {
+  color: var(--tw-label-secondary) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    [class~='hover:text-stone-700']:hover,
+    [class~='hover:text-stone-800']:hover,
+    [class~='hover:text-stone-900']:hover
+  ) {
+  color: var(--tw-label-primary) !important;
+}
+
+/* 强调文字：accent；带透明度后缀的按透明度折算，保住 /70、/80 的层次 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    [class~='text-[#4176e6]'],
+    .text-\[\#4176e6\],
+    [class~='text-[#3565c7]'],
+    .text-\[\#3565c7\],
+    [class~='data-[selected]:text-[#3565c7]'],
+    [class~='hover:text-[#4176e6]']:hover
+  ) {
+  color: var(--tw-accent) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='text-[#4176e6]/70']) {
+  color: color-mix(in srgb, var(--tw-accent) 70%, transparent) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is([class~='text-[#4176e6]/80']) {
+  color: color-mix(in srgb, var(--tw-accent) 80%, transparent) !important;
+}
+
+/*
+ * 表格行分隔：Tailwind v4 的 divide-y 是给 :not(:last-child) 加 border-bottom，
+ * 原选择器用 `~`（要求有前置兄弟）只命中了第二行起的元素，
+ * 表头行（首个子元素）保留 stone-100（近白）→ 深色下成了一条刺眼的亮线。
+ * 改成覆盖全部子元素。
+ * 注：这里刻意保留 `*=` 通配 —— divide-* 不存在 hover: / data-*: 这类变体前缀，
+ * 不会误伤，而通配能顺带覆盖将来新增的 divide-stone-200 等。
+ */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  [class*='divide-stone-']
+  > * {
+  border-color: var(--tw-border) !important;
+}
+
+/*
+ * 危险 / 警告语义色：统一作用域 + 精确匹配，并补齐原先漏掉的色阶。
+ * 原规则只覆盖 main 与 .tw-app 的精确类，于是：
+ *   (a) 工作台里的 amber 文字完全没有覆盖（深色下是暗琥珀色，对比很低）；
+ *   (b) bg-amber-100 徽标底、border-amber-300/60 等半透明描边仍是亮色；
+ *   (c) [class*='bg-amber-50'] 通配会把 hover:bg-amber-50/40 钉成常驻琥珀底。
+ */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(.text-red-600, .text-red-700) {
   color: #f87171 !important;
 }
 
-html[data-theme='dark'] main .border-red-200,
-html[data-theme='dark'] .tw-app .border-red-200 {
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(.bg-red-50, .hover\:bg-red-50:hover, [class~='bg-red-50/40']) {
+  background-color: rgba(248, 113, 113, 0.12) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(.border-red-200, [class~='border-red-200/80']) {
   border-color: rgba(248, 113, 113, 0.4) !important;
 }
 
-html[data-theme='dark'] main .hover\:bg-red-50:hover,
-html[data-theme='dark'] .tw-app .hover\:bg-red-50:hover {
-  background-color: rgba(248, 113, 113, 0.12) !important;
-}
-
-html[data-theme='dark'] main .bg-red-50,
-html[data-theme='dark'] .tw-app .bg-red-50 {
-  background-color: rgba(248, 113, 113, 0.12) !important;
-}
-
-html[data-theme='dark'] main .bg-amber-50,
-html[data-theme='dark'] main [class*='bg-amber-50'],
-html[data-theme='dark'] .tw-app .bg-amber-50 {
+/* amber 提示底：50（提示条）/ 100（徽标）/ 及其半透明变体 */
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .bg-amber-50,
+    [class~='bg-amber-50/30'],
+    [class~='bg-amber-50/90'],
+    [class~='hover:bg-amber-50/40'],
+    [class~='hover:bg-amber-50/70']
+  ) {
   background-color: rgba(251, 191, 36, 0.12) !important;
 }
 
-html[data-theme='dark'] main .text-amber-800,
-html[data-theme='dark'] main .text-amber-900,
-html[data-theme='dark'] main .text-amber-700 {
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  [class~='bg-amber-100'] {
+  background-color: rgba(251, 191, 36, 0.2) !important;
+}
+
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900) {
   color: #fbbf24 !important;
 }
 
-html[data-theme='dark'] main .border-amber-100,
-html[data-theme='dark'] main .border-amber-200 {
+html[data-theme='dark']
+  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    .border-amber-100,
+    .border-amber-200,
+    [class~='border-amber-200/80'],
+    [class~='border-amber-300/60']
+  ) {
   border-color: rgba(251, 191, 36, 0.28) !important;
 }
 
@@ -1416,12 +1663,16 @@ html[data-theme='dark'] .tw-app aside:not(.tw-session-rail) {
   border-color: var(--tw-border) !important;
 }
 
-html[data-theme='dark'] .tw-app .bg-white,
-html[data-theme='dark'] .tw-app [class*='bg-[#f'],
-html[data-theme='dark'] .tw-app [class*='bg-[#e'],
-html[data-theme='dark'] .tw-app [class*='bg-stone-50'],
-html[data-theme='dark'] .tw-app [class*='bg-stone-100'] {
-  background-color: #1a1d26 !important;
+/*
+ * 工作台唯一保留的例外。
+ * bg-stone-100 在统一区块里被当作"凹槽"（比面板更暗）；但在工作台它承担的是
+ * 「选中 / 展开」胶囊（会话 Tab 激活态、项目切换器展开态），挂在
+ * --tw-surface-rail-solid(#1a1d26) 的侧栏上，必须比栏底更亮才看得出选中，
+ * 因此这里覆盖回 panel。其余表面类（bg-white / bg-stone-50 / bg-[#f..] / bg-[#e..]）
+ * 统一区块已覆盖且取值相同，不再重复。
+ */
+html[data-theme='dark'] .tw-app :is([class~='bg-stone-100'], [class~='bg-stone-100/80']) {
+  background-color: var(--tw-surface-panel) !important;
 }
 
 /* 用户气泡 / 浅蓝提示条在深色下可读 */
@@ -1442,17 +1693,7 @@ html[data-theme='dark'] .tw-app .text-stone-400 {
   color: #a8a29e !important;
 }
 
-html[data-theme='dark'] .tw-app .border-stone-200,
-html[data-theme='dark'] .tw-app .border-stone-100,
-html[data-theme='dark'] .tw-app [class*='border-stone-200'] {
-  border-color: #2a2e3a !important;
-}
-
-html[data-theme='dark'] .tw-app .hover\:bg-stone-200\/50:hover,
-html[data-theme='dark'] .tw-app .hover\:bg-stone-200\/70:hover,
-html[data-theme='dark'] .tw-app .bg-stone-200\/70 {
-  background-color: rgba(255, 255, 255, 0.06) !important;
-}
+/* 边框与中性 hover 已由上方统一区块覆盖（取值相同），此处不再重复。 */
 
 html[data-theme='dark'] .tw-settings-dialog {
   background-color: #1a1d26;
@@ -1464,69 +1705,24 @@ html[data-theme='dark'] .tw-settings-dialog aside {
   border-color: var(--tw-border) !important;
 }
 
-html[data-theme='dark'] .tw-settings-dialog .bg-white,
-html[data-theme='dark'] .tw-settings-dialog .bg-stone-50,
-html[data-theme='dark'] .tw-settings-dialog .bg-stone-100,
-html[data-theme='dark'] .tw-settings-dialog .bg-\[\#f4f5f7\] {
-  background-color: #1a1d26 !important;
-}
-
-/* 选中态：浅蓝底 → 柔和 accent，避免夜间刺眼白块 */
-html[data-theme='dark'] .tw-settings-dialog .bg-\[\#e8f0fe\],
-html[data-theme='dark'] .tw-settings-dialog .bg-\[\#edf3fe\],
-html[data-theme='dark'] .tw-settings-dialog [class*='bg-[#edf3fe]'],
-html[data-theme='dark'] .tw-settings-dialog [class*='bg-[#e8f0fe]'] {
-  background-color: var(--tw-accent-soft) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .text-\[\#4176e6\],
-html[data-theme='dark'] .tw-settings-dialog .text-\[\#3565c7\],
-html[data-theme='dark'] .tw-settings-dialog [class*='text-[#4176e6]'],
-html[data-theme='dark'] .tw-settings-dialog [class*='text-[#3565c7]'] {
-  color: var(--tw-accent) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .border-\[\#4176e6\],
-html[data-theme='dark'] .tw-settings-dialog [class*='border-[#4176e6]'] {
-  border-color: color-mix(in srgb, var(--tw-accent) 55%, var(--tw-border)) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .text-stone-800,
-html[data-theme='dark'] .tw-settings-dialog .text-stone-900,
-html[data-theme='dark'] .tw-settings-dialog .text-stone-700 {
-  color: var(--tw-label-primary) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .text-stone-600,
-html[data-theme='dark'] .tw-settings-dialog .text-stone-500,
-html[data-theme='dark'] .tw-settings-dialog .text-stone-400 {
-  color: var(--tw-label-secondary) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .border-stone-100,
-html[data-theme='dark'] .tw-settings-dialog .border-stone-200,
-html[data-theme='dark'] .tw-settings-dialog .border-stone-300 {
-  border-color: var(--tw-border) !important;
-}
+/* 表面 / 强调底 / 文字 / 边框 / hover 均已由上方统一区块覆盖（取值相同），
+   这里只保留统一区块覆盖不到的：输入控件外观、accent 边框、accent 实心按钮。 */
 
 html[data-theme='dark'] .tw-settings-dialog input,
 html[data-theme='dark'] .tw-settings-dialog textarea,
 html[data-theme='dark'] .tw-settings-dialog select,
 html[data-theme='dark'] .tw-settings-dialog .bg-stone-100 {
-  background-color: #12141a !important;
+  background-color: var(--tw-surface-recessed) !important;
   border-color: #3a3f4d !important;
   color: var(--tw-label-primary) !important;
 }
 
-html[data-theme='dark'] .tw-settings-dialog .hover\:bg-stone-50:hover,
-html[data-theme='dark'] .tw-settings-dialog .hover\:bg-white\/70:hover,
-html[data-theme='dark'] .tw-settings-dialog .hover\:bg-stone-200\/60:hover {
-  background-color: rgba(255, 255, 255, 0.06) !important;
-}
-
-html[data-theme='dark'] .tw-settings-dialog .hover\:border-stone-300:hover,
-html[data-theme='dark'] .tw-settings-dialog .hover\:border-stone-400:hover {
-  border-color: #4b5160 !important;
+/*
+ * accent 边框：原先用 [class*='border-[#4176e6]'] 通配，会把 focus:border-[#4176e6]
+ * 一起钉成常驻描边（未聚焦也显示强调边框）。改成精确匹配类标记。
+ */
+html[data-theme='dark'] .tw-settings-dialog [class~='border-[#4176e6]'] {
+  border-color: color-mix(in srgb, var(--tw-accent) 55%, var(--tw-border)) !important;
 }
 
 html[data-theme='dark'] .tw-settings-dialog button.bg-\[\#4176e6\],
@@ -1540,9 +1736,12 @@ html[data-theme='dark'] .tw-settings-dialog .bg-\[\#4176e6\] {
   animation: tw-pop-in 160ms ease-out;
 }
 
-/* 插件页：卡片抬高一层，避免与页面底色糊成一片 */
-html[data-theme='dark'] .tw-plugins-page .tw-plugin-card {
-  background-color: #21262d !important;
+/* 插件卡片：统一到 --tw-surface-panel。
+   这里原先单独抬高到 #21262d，比设置弹窗等处的 panel 亮一档 —— 同样是"卡片"却有两个
+   色值，深色下一眼能看出插件页比其它页偏亮。 */
+html[data-theme='dark'] .tw-plugins-page .tw-plugin-card,
+html[data-theme='dark'] .tw-app .tw-plugins-page .tw-plugin-card {
+  background-color: var(--tw-surface-panel) !important;
   border-color: var(--tw-border) !important;
 }
 
@@ -1550,25 +1749,25 @@ html[data-theme='dark'] .tw-plugins-page .tw-plugin-card:hover {
   border-color: #3a4050 !important;
 }
 
-html[data-theme='dark'] .tw-plugins-page .bg-white,
-html[data-theme='dark'] .tw-plugins-page [class*='bg-stone-50'] {
-  background-color: #21262d !important;
-}
+/* 分类切换轨道（bg-stone-100 → recessed）、中性胶囊（bg-stone-50 → panel）、
+   轨道描边与活动 tab 的 ring（→ --tw-border）均已由上方统一区块覆盖，此处不再重复。 */
 
-html[data-theme='dark'] .tw-app .tw-plugins-page .tw-plugin-card {
-  background-color: #21262d !important;
-}
-
-/* 下拉面板可能 portal 到 body，需单独随主题 */
+/* 下拉面板可能 portal 到 body，需单独随主题。
+   注意：这里显式声明 border 与 box-shadow，会盖掉 Tailwind 的 ring-*；
+   面板原先只靠 ring 描边，被盖掉后浅色主题下几乎没有边界，故补真实边框。 */
 .tw-select-menu {
   background-color: var(--tw-surface-panel) !important;
   color: var(--tw-label-primary) !important;
-  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+  border: 1px solid color-mix(in srgb, var(--tw-label-primary) 24%, transparent);
+  box-shadow:
+    0 12px 28px -6px rgb(0 0 0 / 0.16),
+    0 4px 8px -4px rgb(0 0 0 / 0.08);
   --tw-ring-color: var(--tw-border);
-  border-color: var(--tw-border);
 }
 
 html[data-theme='dark'] .tw-select-menu {
+  border-color: var(--tw-border);
+  --tw-ring-color: var(--tw-border);
   box-shadow: 0 12px 28px -6px rgb(0 0 0 / 0.55) !important;
 }
 
@@ -2165,6 +2364,59 @@ html[data-theme='dark'] .prose a:hover {
   transform: scale(0.96);
 }
 
+/* ── 溢出预览气泡（OverflowHint）──
+   portal 到 body，落在 main / .tw-settings-dialog 那套深色作用域之外，
+   所以这里必须自己用 token 上色；配色对齐同样 portal 的 .tw-session-preview。 */
+.tw-tooltip {
+  background-color: var(--tw-surface-panel);
+  border: 1px solid var(--tw-border);
+}
+
+html[data-theme='dark'] .tw-tooltip {
+  color: var(--tw-label-primary);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 箭头：45° 旋转的正方形，只描朝外的两条边，与气泡边框接成一体 */
+.tw-tooltip-arrow.is-up {
+  background-color: var(--tw-surface-panel);
+  border-right: 1px solid var(--tw-border);
+  border-bottom: 1px solid var(--tw-border);
+}
+
+.tw-tooltip-arrow.is-down {
+  background-color: var(--tw-surface-panel);
+  border-top: 1px solid var(--tw-border);
+  border-left: 1px solid var(--tw-border);
+}
+
+/* 文档库溢出预览气泡：靠左箭头 + 进出场过渡（配合 useLayoutEffect 的挂载 / data-closed 切换） */
+.tw-tooltip-anim {
+  transform: var(--tw-tip-base, translateY(0));
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+/* 箭头在上（气泡位于锚点下方）→ 从顶边向锚点生长。
+   基数用 translateY(0) 而非 none：none 与 scale() 拼接是非法值，整条声明会被丢弃。 */
+.tw-tooltip-anim.is-down {
+  --tw-tip-base: translateY(0);
+  transform-origin: top;
+}
+
+/* 箭头在下（气泡位于锚点上方）→ 从底边向锚点生长 */
+.tw-tooltip-anim.is-up {
+  --tw-tip-base: translateY(-100%);
+  transform-origin: bottom;
+}
+
+/* 放在 .is-up / .is-down 之后：同优先级下由此规则决定收起态的 transform */
+.tw-tooltip-anim[data-closed] {
+  opacity: 0;
+  transform: var(--tw-tip-base, translateY(0)) scale(0.94);
+}
+
 .tw-dialog-backdrop-anim {
   transition: opacity 200ms ease-out;
 }
@@ -2216,6 +2468,7 @@ html[data-theme='dark'] .prose a:hover {
 
   .tw-collapse,
   .tw-menu-anim,
+  .tw-tooltip-anim,
   .tw-dialog-backdrop-anim,
   .tw-dialog-panel-anim {
     transition: none !important;

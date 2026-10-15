@@ -9,6 +9,7 @@ import type { KnowledgeGenPluginConfig } from './knowledge-gen-config';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
 import type { TodoItem } from './session-interact';
 import type { SessionGoal } from './session-goal';
+import type { AccessLevel } from './settings';
 import type { WorkspaceChange } from './workspace-changes';
 
 const SESS_API = '/__tb_sessions';
@@ -46,6 +47,11 @@ export interface ChatSession {
   goal?: SessionGoal;
   /** 本会话工作区写操作记录（workspace-changes） */
   workspaceChanges?: WorkspaceChange[];
+  /**
+   * 本会话访问权限。会话创建时固化，之后只随本会话的权限菜单变化；
+   * 设置页的「权限」只是新会话的默认值，不再回头改写已有会话。
+   */
+  access?: AccessLevel;
 }
 
 export interface SessionStore {
@@ -289,10 +295,11 @@ export function mergeScheduleMessagesFromRemote(
 
 export function createSession(
   store: SessionStore,
-  opts?: { workspacePath?: string },
+  opts?: { workspacePath?: string; access?: AccessLevel },
 ): SessionStore {
   const s = emptySession({
     workspacePath: opts?.workspacePath,
+    access: opts?.access,
   });
   return {
     sessions: [s, ...store.sessions],
@@ -530,6 +537,7 @@ type SessionMetaPatch = Partial<
     | 'todos'
     | 'goal'
     | 'workspaceChanges'
+    | 'access'
   >
 >;
 

@@ -66,7 +66,9 @@ export function formatTimeContext(input: TimeContextInput = {}): TimeContextResu
   const tz = resolveTimeZone();
   const lastInject = input.lastInjectAt ?? null;
   const due =
-    lastInject == null || !Number.isFinite(lastInject) || now - lastInject >= TIME_CONTEXT_INTERVAL_MS;
+    lastInject == null ||
+    !Number.isFinite(lastInject) ||
+    now - lastInject >= TIME_CONTEXT_INTERVAL_MS;
 
   if (!due && lastInject != null) {
     return {

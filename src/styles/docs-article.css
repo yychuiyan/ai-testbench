@@ -1,0 +1,191 @@
+/* ── 帮助中心正文宽度（版本日志 / 操作手册 / 安装手册共用）──
+   随屏幕逐级放宽，避免大屏下正文只占一小块、右侧大片留白。
+   margin 用 auto 居中：否则放宽后多出的空间会全落在右侧，左右不对称。
+   上限比文档库页更保守：这三页以长文为主，过宽会影响阅读节奏。 */
+.tw-docs-article,
+.tw-changelog {
+  max-width: 48rem;
+  margin: 0 auto;
+}
+
+@media (min-width: 1280px) {
+  .tw-docs-article,
+  .tw-changelog {
+    max-width: 60rem;
+  }
+}
+
+@media (min-width: 1536px) {
+  .tw-docs-article,
+  .tw-changelog {
+    max-width: 72rem;
+  }
+}
+
+.tw-docs-article {
+  padding: 2.5rem 2rem 4rem;
+}
+
+.tw-docs-article-hero {
+  margin-bottom: 1.5rem;
+}
+
+.tw-docs-article-title {
+  margin: 0;
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--tw-label-primary);
+}
+
+.tw-docs-article-lead {
+  margin: 0.75rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--tw-label-secondary);
+}
+
+.tw-docs-prose h2 {
+  margin: 1.75rem 0 0.65rem;
+  font-size: 1.2rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--tw-label-primary);
+}
+
+.tw-docs-prose h3 {
+  margin: 1.25rem 0 0.45rem;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--tw-label-primary);
+}
+
+.tw-docs-prose h4 {
+  margin: 1rem 0 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: var(--tw-label-primary);
+}
+
+.tw-docs-prose p {
+  margin: 0.55rem 0;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: var(--tw-label-secondary);
+}
+
+.tw-docs-prose ul,
+.tw-docs-prose ol {
+  margin: 0.45rem 0 0.85rem;
+  padding-left: 1.25rem;
+  color: var(--tw-label-secondary);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+}
+
+.tw-docs-prose li {
+  margin: 0.3rem 0;
+}
+
+.tw-docs-prose a {
+  color: var(--tw-accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--tw-accent) 35%, transparent);
+}
+
+.tw-docs-prose a:hover {
+  border-bottom-color: var(--tw-accent);
+}
+
+.tw-docs-prose pre {
+  margin: 0.65rem 0 0.95rem;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--tw-border);
+  background: color-mix(in srgb, var(--tw-surface-rail-solid) 72%, var(--tw-surface-panel));
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.tw-docs-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.tw-docs-prose pre code {
+  font-size: inherit;
+  padding: 0;
+  background: none;
+  color: var(--tw-label-primary);
+}
+
+.tw-docs-prose :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--tw-accent-soft);
+  color: var(--tw-accent);
+}
+
+.tw-docs-prose table {
+  width: 100%;
+  margin: 0.75rem 0 1rem;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.tw-docs-prose th,
+.tw-docs-prose td {
+  border: 1px solid var(--tw-border);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+  color: var(--tw-label-secondary);
+}
+
+.tw-docs-prose th {
+  background: color-mix(in srgb, var(--tw-surface-rail-solid) 60%, var(--tw-surface-panel));
+  color: var(--tw-label-primary);
+  font-weight: 600;
+}
+
+.tw-docs-prose blockquote {
+  margin: 0.75rem 0;
+  padding: 0.35rem 0 0.35rem 0.9rem;
+  border-left: 3px solid color-mix(in srgb, var(--tw-accent) 55%, var(--tw-border));
+  color: var(--tw-label-secondary);
+}
+
+/* 版本日志展开（全局，避免 View Transitions 下 scoped 样式失效） */
+.tw-changelog-card-detail-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-top: 0;
+  transition:
+    grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.24s ease,
+    margin-top 0.32s ease;
+}
+
+.tw-changelog-card[data-open='true'] .tw-changelog-card-detail-wrap {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-top: 0.35rem;
+}
+
+.tw-changelog-card-detail {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.tw-changelog-card[data-open='true'] .tw-changelog-toggle-arrow {
+  transform: rotate(90deg);
+}
+
+.tw-changelog-toggle {
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}

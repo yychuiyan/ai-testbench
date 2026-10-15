@@ -1,5 +1,7 @@
 /**
- * 知识库管理：平铺列表 + 生成入库。
+ * 知识库管理：平铺列表（子目录仅作路径分类，不呈现目录树）+ 生成入库。
+ *
+ * 表格 / 搜索 / 排序 / 分页复用 DocsFileBrowser，与用例、提示词管理同源。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { docRootLabelPath } from '../../lib/doc-roots';
@@ -14,14 +16,12 @@ import {
 import { openDocsInChatSession } from '../../lib/open-docs-in-session';
 import { hydrateSessionStore } from '../../lib/sessions';
 import ConfirmDialog from './ConfirmDialog';
+import DocsFileBrowser, { useDocsList } from './DocsFileBrowser';
 
-function fmtSize(n?: number) {
-  if (n == null) return '—';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+/** 每页条数默认值（可在分页条切换，选择会被记住） */
+const DEFAULT_PAGE_SIZE = 10;
 
+/** 递归收集 .md 文件（顺序交给列表层的排序处理） */
 async function walkKnowledgeFiles(dir = '.'): Promise<DocsEntry[]> {
   const { entries } = await listDocs('knowledge', dir);
   const files: DocsEntry[] = [];
@@ -32,12 +32,8 @@ async function walkKnowledgeFiles(dir = '.'): Promise<DocsEntry[]> {
       files.push(...(await walkKnowledgeFiles(e.path)));
     }
   }
-  files.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
   return files;
 }
-
-const ROW_HOVER =
-  'transition-colors duration-150 hover:bg-stone-50 hover:shadow-[inset_3px_0_0_0_var(--tw-accent)] cursor-pointer';
 
 interface Props {
   staticCount?: number;
@@ -53,6 +49,8 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
+
+  const list = useDocsList(files, DEFAULT_PAGE_SIZE);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -74,8 +72,6 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
   }, [refresh]);
 
   const selectedPaths = useMemo(() => Object.keys(selected).filter((p) => selected[p]), [selected]);
-  const allChecked = files.length > 0 && selectedPaths.length === files.length;
-  const someChecked = selectedPaths.length > 0 && !allChecked;
 
   function goGenerate() {
     if (!isPluginEnabled('knowledgeGen')) {
@@ -106,16 +102,6 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
-  }
-
-  function toggleAll() {
-    if (allChecked) {
-      setSelected({});
-      return;
-    }
-    const next: Record<string, boolean> = {};
-    for (const f of files) next[f.path] = true;
-    setSelected(next);
   }
 
   async function confirmDelete() {
@@ -158,10 +144,19 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
   }
 
   return (
-    <section className="rounded-xl border border-stone-200 bg-white overflow-hidden">
-      <div className="px-4 py-3 border-b border-stone-100 flex items-center gap-2 flex-wrap">
+    <section className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0">
+      <div className="shrink-0 px-4 py-3 border-b border-stone-100 flex items-center gap-2 flex-wrap">
         <div className="text-sm text-stone-600 flex-1 min-w-0">
-          共 <span className="font-medium text-stone-800">{files.length}</span> 个知识库文件
+          {list.query.trim() ? (
+            <>
+              匹配 <span className="font-medium text-stone-800">{list.filtered.length}</span> 个
+              <span className="text-stone-400"> · 共 {files.length}</span>
+            </>
+          ) : (
+            <>
+              共 <span className="font-medium text-stone-800">{files.length}</span> 个知识库文件
+            </>
+          )}
           {selectedPaths.length > 0 ? (
             <span className="text-stone-400"> · 已选 {selectedPaths.length}</span>
           ) : null}
@@ -185,101 +180,70 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
       </div>
 
       {error ? (
-        <div className="mx-4 mt-3 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
+        <div className="shrink-0 mx-4 mt-3 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
           {error}
         </div>
       ) : null}
 
-      <div className="p-4">
-        {files.length === 0 ? (
-          <p className="text-sm text-stone-400 py-10 text-center border border-dashed border-stone-200 rounded-lg">
-            暂无知识库文件，点击「生成知识库」前往我的工作台。
-          </p>
-        ) : (
-          <ul className="tw-anim-list divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
-            <li className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-xs text-stone-500">
-              <input
-                type="checkbox"
-                checked={allChecked}
-                ref={(el) => {
-                  if (el) el.indeterminate = someChecked;
-                }}
-                onChange={toggleAll}
-                disabled={busy}
-                className="rounded border-stone-300"
-                aria-label="全选"
-              />
-              <span className="flex-1 min-w-0">文件</span>
-              <span className="w-56 shrink-0 text-right">操作</span>
-            </li>
-            {files.map((f) => {
-              const cat = f.path.includes('/') ? f.path.split('/')[0] : '';
-              return (
-                <li
-                  key={f.path}
-                  className={`flex items-center gap-2 px-3 py-2.5 ${ROW_HOVER}`}
-                  title="双击本地打开"
-                  onDoubleClick={() => void onOpenLocal(f)}
-                >
-                  <input
-                    type="checkbox"
-                    checked={Boolean(selected[f.path])}
-                    disabled={busy}
-                    onChange={() => setSelected((m) => ({ ...m, [f.path]: !m[f.path] }))}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
-                    className="rounded border-stone-300"
-                    aria-label={`选择 ${f.name}`}
-                  />
-                  <div className="flex-1 min-w-0 text-left">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-sm text-stone-800 truncate">{f.name}</span>
-                      {cat ? (
-                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-100">
-                          {cat}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="text-[11px] text-stone-400 truncate">
-                      {f.path}
-                      {f.size != null ? ` · ${fmtSize(f.size)}` : ''}
-                    </div>
-                  </div>
-                  <div
-                    className="w-56 shrink-0 flex justify-end gap-1 flex-wrap"
-                    onDoubleClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void onOpenLocal(f)}
-                      className="text-xs text-[#4176e6] hover:bg-[#e8f0fe] px-2 py-1 rounded cursor-pointer"
-                    >
-                      本地打开
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void openInSession(f)}
-                      className="text-xs text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7] cursor-pointer disabled:opacity-40"
-                    >
-                      在会话中打开
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setDeleteTarget({ kind: 'one', entry: f })}
-                      className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+      <DocsFileBrowser
+        files={files}
+        filtered={list.filtered}
+        pageFiles={list.pageFiles}
+        query={list.query}
+        onQuery={list.setQuery}
+        sortBy={list.sortBy}
+        onSortBy={list.setSortBy}
+        page={list.page}
+        totalPages={list.totalPages}
+        pageSize={list.pageSize}
+        onPage={list.setPage}
+        onPageSize={list.setPageSize}
+        busy={busy}
+        emptyText="暂无知识库文件，点击「生成知识库」前往我的工作台。"
+        searchPlaceholder="搜索文件名或路径…"
+        selected={selected}
+        onToggleRow={(path) => setSelected((m) => ({ ...m, [path]: !m[path] }))}
+        onSelectPage={(paths, value) =>
+          setSelected((m) => {
+            const next = { ...m };
+            for (const p of paths) {
+              if (value) next[p] = true;
+              else delete next[p];
+            }
+            return next;
+          })
+        }
+        onRowDoubleClick={(f) => void onOpenLocal(f)}
+        renderBadge={(f) => {
+          // 子目录名作为分类徽标（仅知识库有这个标记）
+          const cat = f.path.includes('/') ? f.path.split('/')[0] : '';
+          return cat ? (
+            <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-100">
+              {cat}
+            </span>
+          ) : null;
+        }}
+        renderActions={(f) => (
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void openInSession(f)}
+              className="text-xs text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7] cursor-pointer disabled:opacity-40"
+            >
+              在会话中打开
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setDeleteTarget({ kind: 'one', entry: f })}
+              className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40"
+            >
+              删除
+            </button>
+          </>
         )}
-      </div>
+      />
 
       <ConfirmDialog
         open={deleteTarget != null}

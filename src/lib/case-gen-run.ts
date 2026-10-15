@@ -152,7 +152,7 @@ export function formatCaseGenResultSummary(opts: {
     `- 共编写：${opts.count ?? 0} 条用例`,
     `- 覆盖需求率：${opts.coverageRate != null ? `${opts.coverageRate}%` : '未给出（已按用例入库）'}`,
   ];
-  if (opts.path) lines.push(`- 入库文件：cases/${opts.path}`);
+  if (opts.path) lines.push(`- 入库文件：用例管理/${opts.path}`);
   if (opts.writeNote) {
     lines.push('', `**编写说明**`, opts.writeNote);
   }
@@ -180,7 +180,7 @@ export async function persistGeneratedCases(opts: {
   linkedPath?: string;
 }): Promise<string> {
   const meta = caseTypeMeta(opts.caseType);
-  // 平铺写入 cases/ 根目录（不再按类型分子文件夹）
+  // 平铺写入 用例管理/ 根目录（不再按类型分子文件夹）
   const base = safeFileBase(opts.title);
   const ext = opts.outputFormat === 'md' ? '.md' : opts.outputFormat === 'csv' ? '.csv' : '.xlsx';
   let rel = opts.linkedPath || `${base}${ext}`;

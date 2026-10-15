@@ -8,6 +8,11 @@ interface Props {
   placeholder?: string;
   /** 打开时预填（重命名场景） */
   initialValue?: string;
+  /**
+   * 锁定扩展名：输入框只编辑主名，扩展名灰显固定在右侧。
+   * 后端 /rename 要求文件改名后扩展名仍属白名单，锁住可以避免误删扩展名。
+   */
+  lockExtension?: boolean;
   confirmLabel?: string;
   cancelLabel?: string;
   onClose: () => void;
@@ -20,29 +25,43 @@ export default function NamePromptDialog({
   label = '文件夹名称',
   placeholder = '请输入名称',
   initialValue = '',
+  lockExtension = false,
   confirmLabel = '创建',
   cancelLabel = '取消',
   onClose,
   onConfirm,
 }: Props) {
   const [value, setValue] = useState('');
+  /** 被锁定的扩展名（含点，如 .md）；未锁定时为空串 */
+  const [ext, setExt] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
-      setValue(initialValue);
+      let base = initialValue;
+      let suffix = '';
+      if (lockExtension) {
+        // 末段点之后视为扩展名；隐藏文件（.gitkeep）与无扩展名不锁
+        const i = initialValue.lastIndexOf('.');
+        if (i > 0) {
+          base = initialValue.slice(0, i);
+          suffix = initialValue.slice(i);
+        }
+      }
+      setValue(base);
+      setExt(suffix);
       const t = window.setTimeout(() => {
         inputRef.current?.focus();
         inputRef.current?.select();
       }, 50);
       return () => window.clearTimeout(t);
     }
-  }, [open, initialValue]);
+  }, [open, initialValue, lockExtension]);
 
   function submit() {
     const name = value.trim();
     if (!name) return;
-    onConfirm(name);
+    onConfirm(name + ext);
   }
 
   return (
@@ -62,19 +81,24 @@ export default function NamePromptDialog({
           </DialogTitle>
           <label className="tw-confirm-msg mt-4 block text-xs font-medium text-stone-500">
             {label}
-            <input
-              ref={inputRef}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
-              placeholder={placeholder}
-              className="mt-1.5 w-full h-9 px-3 text-sm rounded-lg border border-stone-200 text-stone-800 outline-none focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] transition-colors"
-            />
+            <span className="mt-1.5 flex items-center gap-0 rounded-lg border border-stone-200 focus-within:ring-2 focus-within:ring-[#4176e6]/30 focus-within:border-[#4176e6] transition-colors">
+              <input
+                ref={inputRef}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+                placeholder={placeholder}
+                className="flex-1 min-w-0 h-9 px-3 text-sm rounded-lg border-0 bg-transparent text-stone-800 outline-none"
+              />
+              {ext ? (
+                <span className="shrink-0 pr-3 text-sm text-stone-400 select-none">{ext}</span>
+              ) : null}
+            </span>
           </label>
           <div className="mt-5 flex justify-end gap-2">
             <button

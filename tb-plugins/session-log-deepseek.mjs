@@ -21,7 +21,7 @@ function safeSessionId(id) {
 
 /**
  * @param {string} root
- * @param {{ sessionId: string, model?: string, messages?: Array<Record<string, unknown>> }} entry
+ * @param {{ sessionId: string, model?: string, messages?: Array<object> }} entry
  */
 export function appendDeepseekSessionLog(root, entry) {
   const sessionId = safeSessionId(entry.sessionId);

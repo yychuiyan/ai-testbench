@@ -6,26 +6,38 @@ import path from 'node:path';
 import connect from 'connect';
 import { after, before, describe, it } from 'node:test';
 import { tbResourcesPlugin } from '../../tb-plugins/tb-resources.mjs';
+import { DOC_ROOT_DIRS } from '../../tb-plugins/tb-project-docs.mjs';
+
+/** 用例库在磁盘上的真实目录名（现为中文），与实现同源取值，避免硬编码再次漂移 */
+const CASES_DIR = DOC_ROOT_DIRS.cases.dirName;
 
 describe('tb-resources', () => {
   let tmp = '';
-  /** @type {http.Server | null} */
-  let server = null;
+  let server: http.Server | null = null;
   let base = '';
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-res-'));
     fs.mkdirSync(path.join(tmp, '.local'), { recursive: true });
-    fs.mkdirSync(path.join(tmp, 'cases'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, CASES_DIR), { recursive: true });
     const app = connect();
     const plugin = tbResourcesPlugin();
-    plugin.configureServer({
+    // Vite 的 configureServer 是 ObjectHook 联合类型（函数或 { handler }）；该插件用的是
+    // 函数形式，这里按函数收窄后直接调用 hook，传入最小可用的 dev server 替身。
+    const configureServer = plugin.configureServer as unknown as (server: {
+      config: { root: string };
+      middlewares: connect.Server;
+    }) => void;
+    configureServer({
       config: { root: tmp },
       middlewares: app,
     });
+    // let server 被捕获进回调后收窄会失效，赋给局部 const 再用
     server = http.createServer(app);
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const addr = server.address();
+    const started = server;
+    await new Promise<void>((resolve) => started.listen(0, '127.0.0.1', resolve));
+    const addr = started.address();
+    if (!addr || typeof addr === 'string') throw new Error('未能取得监听端口');
     base = `http://127.0.0.1:${addr.port}`;
   });
 
@@ -41,15 +53,18 @@ describe('tb-resources', () => {
   it('lists storage and doc resources', async () => {
     const res = await fetch(`${base}/__tb_resources`);
     assert.equal(res.ok, true);
-    const data = await res.json();
+    const data = (await res.json()) as {
+      count: number;
+      resources: Array<{ uri: string; id: string }>;
+    };
     assert.ok(data.count >= 1);
     assert.ok(data.resources.some((r) => String(r.uri).startsWith('tb://storage/')));
-    assert.ok(data.resources.some((r) => r.id === 'cases'));
+    assert.ok(data.resources.some((r) => r.id === CASES_DIR));
   });
 
   it('reads resource by uri and mcp resources/list', async () => {
     const read = await fetch(
-      `${base}/__tb_resources/read?uri=${encodeURIComponent('tb://docs/cases')}`,
+      `${base}/__tb_resources/read?uri=${encodeURIComponent(`tb://docs/${CASES_DIR}`)}`,
     );
     assert.equal(read.ok, true);
     const body = await read.json();
