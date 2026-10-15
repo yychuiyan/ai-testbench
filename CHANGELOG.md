@@ -72,6 +72,7 @@ ai-testbench -y          # 数据目录用当前目录
 - 会话 `tool-workflow` / `workflow-ptc`：`workflow` 编排脚本 + 浏览器引擎（agent/parallel/pipeline）
 - 软沙箱 `sandbox-policy`：bash/pwsh 命令黑名单 + 精简 env（非 OS 隔离）
 - 持久 bash：`bash_session_*`（`node-pty` optional，失败则管道 marker 回退）
+- 全局插件目录：把已有会话/存储/LLM/网页等映射标为已就绪或部分就绪
 - 规格文档：`docs/会话插件.md`、`docs/全局插件.md`
 - 对话时间线：思考 / 工具步骤（搜索、获取、本地文件等）折叠展示
 - 插件管理页：按诉求推荐扩展能力（结果缓存本机）

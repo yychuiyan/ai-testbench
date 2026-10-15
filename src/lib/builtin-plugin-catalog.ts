@@ -21,19 +21,36 @@ export function builtinRuntimeKey(id: string): BuiltinRuntimeKey {
     id === 'time-context' ||
     id === 'tool-todo' ||
     id === 'tool-ask-user' ||
+    id === 'user-questions' ||
     id === 'plan-mode' ||
     id === 'tool-result-pruner' ||
     id === 'compaction-basic' ||
     id === 'command-compact' ||
     id === 'tool-goal' ||
     id === 'command-goal' ||
+    id === 'goal' ||
     id === 'tool-schedule' ||
     id === 'tool-subagent' ||
     id === 'tool-subagent-control' ||
     id === 'tool-subagent-list-agents' ||
     id === 'tool-subagent-fork' ||
     id === 'tool-workflow' ||
-    id === 'workflow-ptc'
+    id === 'workflow-ptc' ||
+    id === 'session-title' ||
+    id === 'attachment-local' ||
+    id === 'file-upload' ||
+    id === 'file-reference-local' ||
+    id === 'credentials' ||
+    id === 'connection' ||
+    id === 'token-meter' ||
+    id === 'llm' ||
+    id === 'llm-deepseek' ||
+    id === 'agent-default-model' ||
+    id === 'session' ||
+    id === 'sessions' ||
+    id === 'session-projection' ||
+    id === 'storage' ||
+    id === 'storage-json'
   ) {
     return 'ready';
   }
@@ -61,7 +78,10 @@ export function builtinRuntimeKey(id: string): BuiltinRuntimeKey {
     id === 'present' ||
     id === 'filesystem' ||
     id === 'fs-sandbox' ||
-    id === 'permission'
+    id === 'permission' ||
+    id === 'working-directory' ||
+    id === 'tool-working-directory' ||
+    id === 'workspace'
   ) {
     return 'fs';
   }
