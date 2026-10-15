@@ -19,6 +19,8 @@ import { tbResourcesPlugin } from '../tb-plugins/tb-resources.mjs';
 import { tbWebPlugin } from '../builtin/session/tb-web.mjs';
 import { tbSessionRunsPlugin } from '../builtin/session/session-runs.mjs';
 import {
+  DOC_ROOT_DIRS,
+  migrateLegacyRoot,
   tbCasesPlugin,
   tbKnowledgePlugin,
   tbPromptsPlugin,
@@ -31,9 +33,7 @@ export const PKG_ROOT = path.resolve(__dirname, '..');
 export const DIST_DIR = path.join(PKG_ROOT, 'dist');
 const PKG_DEFAULTS = path.join(PKG_ROOT, 'config', 'app.defaults.json');
 
-const DOC_DIRS = ['requirements', 'cases', 'templates', 'prompts', 'knowledge'];
-
-/** 确保数据目录具备默认配置与文档根（不覆盖已有文件） */
+/** 确保数据目录具备默认配置与文档根（不覆盖已有文件；旧英文目录先迁移） */
 export function prepareDataRoot(dataRoot) {
   const root = path.resolve(dataRoot);
   fs.mkdirSync(root, { recursive: true });
@@ -48,8 +48,10 @@ export function prepareDataRoot(dataRoot) {
     fs.copyFileSync(PKG_DEFAULTS, destDefaults);
   }
 
-  for (const name of DOC_DIRS) {
-    const dir = path.join(root, name);
+  for (const { dirName, legacyDirNames } of Object.values(DOC_ROOT_DIRS)) {
+    // 必须先迁移：一旦先建出中文目录，旧目录里的文件就再也不会被搬过来
+    migrateLegacyRoot(root, legacyDirNames, dirName);
+    const dir = path.join(root, dirName);
     fs.mkdirSync(dir, { recursive: true });
     const keep = path.join(dir, '.gitkeep');
     if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
@@ -98,7 +100,7 @@ export function startLocalServer(opts) {
 
   if (!fs.existsSync(DIST_DIR) || !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
     throw new Error(
-      `未找到构建产物 dist/。请先在仓库执行 npm run build，或重新安装 ai-testbench 包。\n路径：${DIST_DIR}`,
+      `未找到构建产物 dist/。请先在仓库执行 pnpm build，或重新安装 ai-testbench 包。\n路径：${DIST_DIR}`,
     );
   }
 

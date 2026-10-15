@@ -120,7 +120,7 @@ export function listBinaryTemplates(): Array<{
   sheets?: ExcelSheetSummary[];
   fieldSummary?: string;
 }> {
-  const root = path.join(templatesRoot(), 'templates');
+  const root = path.join(templatesRoot(), '测试模板库');
   const out: ReturnType<typeof listBinaryTemplates> = [];
   if (!fs.existsSync(root)) return out;
 

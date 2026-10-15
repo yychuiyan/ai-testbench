@@ -20,6 +20,8 @@ export interface DocsEntry {
 export interface DocsTreeNode {
   name: string;
   path: string;
+  /** 该目录下递归的文件总数（用于「名称 (N)」与删除前提示） */
+  fileCount?: number;
   children: DocsTreeNode[];
 }
 
@@ -67,11 +69,19 @@ export async function listDocs(
   return { path: data.path, entries: data.entries ?? [] };
 }
 
-export async function fetchDocsTree(root: DocsRoot): Promise<DocsTreeNode[]> {
+/** 拉取文件夹树；totalFiles 为根目录递归文件总数（用于「全部 XX (N)」） */
+export async function fetchDocsTree(
+  root: DocsRoot,
+): Promise<{ tree: DocsTreeNode[]; totalFiles: number }> {
   const res = await fetch(`${prefixOf(root)}/tree`, { signal: AbortSignal.timeout(3000) });
-  const data = (await res.json()) as { ok?: boolean; tree?: DocsTreeNode[]; error?: string };
+  const data = (await res.json()) as {
+    ok?: boolean;
+    tree?: DocsTreeNode[];
+    totalFiles?: number;
+    error?: string;
+  };
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data.tree ?? [];
+  return { tree: data.tree ?? [], totalFiles: data.totalFiles ?? 0 };
 }
 
 export async function mkdirDocs(root: DocsRoot, parent: string, name: string): Promise<string> {
@@ -153,8 +163,52 @@ export async function writeDocsBinary(
   await postJson(root, '/write-binary', { path: filePath, contentBase64 });
 }
 
+/** 删除文件或目录；目录非空时后端会拒绝，需先清空内部内容 */
 export async function deleteDocs(root: DocsRoot, targetPath: string): Promise<void> {
   await postJson(root, '/delete', { path: targetPath });
+}
+
+/** 重命名文件或目录，返回新的相对路径 */
+export async function renameDocs(
+  root: DocsRoot,
+  targetPath: string,
+  name: string,
+): Promise<string> {
+  const data = await postJson<{ path: string }>(root, '/rename', { path: targetPath, name });
+  return data.path;
+}
+
+/** 取父目录相对路径；顶级项返回 '.' */
+export function parentDirPath(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i < 0 ? '.' : p.slice(0, i);
+}
+
+/** child 是否等于 ancestor，或位于其下 */
+export function isPathUnder(child: string, ancestor: string): boolean {
+  return child === ancestor || child.startsWith(`${ancestor}/`);
+}
+
+/** 路径重映射：位于 oldPrefix 之下时换成 newPrefix 对应位置 */
+export function remapPath(p: string, oldPrefix: string, newPrefix: string): string {
+  return isPathUnder(p, oldPrefix) ? newPrefix + p.slice(oldPrefix.length) : p;
+}
+
+/** 按相对路径在文件夹树中查找目录节点（含各目录已算好的递归文件数） */
+export function findTreeNode(tree: DocsTreeNode[], path: string): DocsTreeNode | null {
+  for (const n of tree) {
+    if (n.path === path) return n;
+    const hit = findTreeNode(n.children, path);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** 递归统计目录节点下的子目录数量（配合 fileCount 生成删除前的提示） */
+export function countTreeDirs(node: DocsTreeNode): number {
+  let dirs = 0;
+  for (const c of node.children) dirs += 1 + countTreeDirs(c);
+  return dirs;
 }
 
 /** 用本机默认程序打开文件（仅 npm run dev） */

@@ -5,10 +5,11 @@
  * - templates/    → `/__tb_templates`（界面：测试模板库）
  * - prompts/      → `/__tb_prompts`（界面：提示词管理）
  * - knowledge/    → `/__tb_knowledge`（界面：知识库管理）
- * 支持 list / mkdir / upload / read / delete / open；路径不得逃出根目录。
+ * 支持 list / mkdir / rename / upload / read / delete（进系统废纸篓，非空目录拒绝）/ open；路径不得逃出根目录。
  */
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -27,9 +28,67 @@ async function openLocalPath(absPath) {
   await execFileAsync('xdg-open', [absPath]);
 }
 
+/**
+ * 把文件/目录移入系统废纸篓（可恢复），而不是直接抹除。
+ * 失败时抛错，绝不静默退化为永久删除——避免误删无法找回。
+ *
+ * - darwin：交给 Finder，自动处理重名与外部卷的 .Trashes；
+ *   路径经 argv 传入，不做字符串插值，任意文件名都安全。
+ * - win32：Microsoft.VisualBasic 的 SendToRecycleBin。
+ * - linux：按 freedesktop Trash 规范移动到 ~/.local/share/Trash。
+ */
+async function trashLocalPath(absPath) {
+  if (process.platform === 'darwin') {
+    await execFileAsync('osascript', [
+      '-e',
+      'on run argv',
+      '-e',
+      'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)',
+      '-e',
+      'end run',
+      absPath,
+    ]);
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    const quoted = `'${absPath.replace(/'/g, "''")}'`;
+    const script = [
+      'Add-Type -AssemblyName Microsoft.VisualBasic;',
+      `$p = ${quoted};`,
+      'if (Test-Path -LiteralPath $p -PathType Container) {',
+      '  [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, "OnlyErrorDialogs", "SendToRecycleBin")',
+      '} else {',
+      '  [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, "OnlyErrorDialogs", "SendToRecycleBin")',
+      '}',
+    ].join(' ');
+    await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
+    });
+    return;
+  }
+
+  // Linux / 其他：freedesktop Trash 规范（仅同卷有效，跨卷由 rename 抛 EXDEV）
+  const dataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  const filesDir = path.join(dataHome, 'Trash', 'files');
+  const infoDir = path.join(dataHome, 'Trash', 'info');
+  fs.mkdirSync(filesDir, { recursive: true });
+  fs.mkdirSync(infoDir, { recursive: true });
+  const base = path.basename(absPath);
+  let dest = path.join(filesDir, base);
+  for (let i = 1; fs.existsSync(dest); i++) dest = path.join(filesDir, `${base}.${i}`);
+  fs.renameSync(absPath, dest);
+  const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  fs.writeFileSync(
+    path.join(infoDir, `${path.basename(dest)}.trashinfo`),
+    `[Trash Info]\nPath=${encodeURIComponent(absPath)}\nDeletionDate=${stamp}\n`,
+    'utf8',
+  );
+}
+
 const MAX_UPLOAD = 12 * 1024 * 1024;
 const MAX_READ = 4 * 1024 * 1024;
-const MAX_LIST = 800;
+const MAX_LIST = 5000;
 
 const ALLOWED_EXT = new Set(['.md', '.txt', '.docx', '.csv', '.xlsx', '.xls']);
 
@@ -46,6 +105,12 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+/** 列表 / 文件夹树 / 删除判定统一忽略的占位与系统文件（.DS_Store 由 macOS 自动生成） */
+const IGNORED_ENTRIES = new Set(['.gitkeep', '.DS_Store']);
+function isIgnoredEntry(name) {
+  return IGNORED_ENTRIES.has(name);
 }
 
 function ensureRoot(absRoot, onReady, readyFlag) {
@@ -89,7 +154,7 @@ function extOf(name) {
 }
 
 /** 旧目录（英文 / 中文短名）→ 与菜单一致的中文长名（仅当目标尚不存在时改名） */
-function migrateLegacyRoot(projectRoot, legacyNames, dirName) {
+export function migrateLegacyRoot(projectRoot, legacyNames, dirName) {
   const names = Array.isArray(legacyNames) ? legacyNames : legacyNames ? [legacyNames] : [];
   const to = path.join(projectRoot, dirName);
   for (const legacyName of names) {
@@ -157,7 +222,7 @@ function createDocsPlugin(opts) {
             const names = fs.readdirSync(abs);
             const entries = [];
             for (const n of names.slice(0, MAX_LIST)) {
-              if (n === '.gitkeep') continue;
+              if (isIgnoredEntry(n)) continue;
               try {
                 const child = path.join(abs, n);
                 const cst = fs.statSync(child);
@@ -318,22 +383,71 @@ function createDocsPlugin(opts) {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
             const { abs, display } = resolveUnderRoot(absRoot, body.path);
             if (display === '.') return sendJson(res, 400, { error: '不能删除根目录' });
-            if (dirName === 'prompts' && PROTECTED_PROMPT_FILES.has(path.basename(display))) {
+            if (dirName === '提示词管理' && PROTECTED_PROMPT_FILES.has(path.basename(display))) {
               return sendJson(res, 403, { error: '系统提示词不可删除', path: display });
             }
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
             const st = fs.statSync(abs);
             if (st.isDirectory()) {
-              const children = fs.readdirSync(abs).filter((n) => n !== '.gitkeep');
+              // 非空目录一律拒绝：前端会先提示「还有 N 个文件」，由用户清空后再删
+              const children = fs.readdirSync(abs).filter((n) => !isIgnoredEntry(n));
               if (children.length) {
-                return sendJson(res, 400, { error: '文件夹非空，请先删除内部文件', path: display });
+                return sendJson(res, 400, {
+                  error: '文件夹非空，请先清空内部内容',
+                  path: display,
+                  children: children.length,
+                });
               }
-              fs.rmSync(abs, { recursive: true, force: true });
-            } else {
-              fs.unlinkSync(abs);
             }
-            return sendJson(res, 200, { ok: true, path: display });
+            // 移入系统废纸篓（可恢复），不做永久删除
+            await trashLocalPath(abs);
+            return sendJson(res, 200, { ok: true, path: display, trashed: true });
+          }
+
+          if (url === `${prefix}/rename` && req.method === 'POST') {
+            const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+            const { abs, display } = resolveUnderRoot(absRoot, body.path);
+            if (display === '.') return sendJson(res, 400, { error: '不能重命名根目录' });
+            if (!fs.existsSync(abs))
+              return sendJson(res, 404, { error: 'not found', path: display });
+            const newName = String(body.name || '').trim();
+            if (
+              !newName ||
+              /[\\/]/.test(newName) ||
+              newName === '.' ||
+              newName === '..' ||
+              newName.includes('\0')
+            ) {
+              return sendJson(res, 400, { error: '无效名称' });
+            }
+            // 与删除保持一致：系统提示词为受保护文件，不允许改名
+            if (dirName === '提示词管理' && PROTECTED_PROMPT_FILES.has(path.basename(display))) {
+              return sendJson(res, 403, { error: '系统提示词不可重命名', path: display });
+            }
+            const st = fs.statSync(abs);
+            // 文件改名须保持允许的扩展名，否则后续无法预览 / 再次上传
+            if (st.isFile()) {
+              const ext = extOf(newName);
+              if (!ALLOWED_EXT.has(ext)) {
+                return sendJson(res, 400, {
+                  error: `不支持的类型 ${ext || '(无扩展名)'}，允许：${[...ALLOWED_EXT].join(' ')}`,
+                });
+              }
+            }
+            const slash = display.lastIndexOf('/');
+            const parentDisplay = slash >= 0 ? display.slice(0, slash) : '.';
+            const { abs: parentAbs } = resolveUnderRoot(absRoot, parentDisplay);
+            const targetAbs = path.join(parentAbs, newName);
+            if (targetAbs !== abs && fs.existsSync(targetAbs)) {
+              return sendJson(res, 409, { error: `已存在同名项目「${newName}」`, path: display });
+            }
+            fs.renameSync(abs, targetAbs);
+            const { display: newDisplay } = resolveUnderRoot(
+              absRoot,
+              parentDisplay === '.' ? newName : `${parentDisplay}/${newName}`,
+            );
+            return sendJson(res, 200, { ok: true, path: newDisplay, from: display });
           }
 
           if (url === `${prefix}/open` && req.method === 'POST') {
@@ -356,11 +470,14 @@ function createDocsPlugin(opts) {
 
           if (url === `${prefix}/tree` && req.method === 'GET') {
             ensureRoot(absRoot);
+            // 顺带算出每个目录递归的文件数：左侧文件夹树要显示「名称 (N)」，
+            // 一次遍历算完，省掉前端逐目录请求。
             function walk(dirAbs, rel) {
               const names = fs.readdirSync(dirAbs);
               const dirs = [];
+              let fileCount = 0;
               for (const n of names) {
-                if (n === '.gitkeep') continue;
+                if (isIgnoredEntry(n)) continue; // 与 /list 保持同一口径
                 const childAbs = path.join(dirAbs, n);
                 let st;
                 try {
@@ -368,21 +485,30 @@ function createDocsPlugin(opts) {
                 } catch {
                   continue;
                 }
-                if (!st.isDirectory()) continue;
-                const childRel = rel === '.' ? n : `${rel}/${n}`;
-                dirs.push({
-                  name: n,
-                  path: childRel,
-                  children: walk(childAbs, childRel),
-                });
+                if (st.isDirectory()) {
+                  const childRel = rel === '.' ? n : `${rel}/${n}`;
+                  const sub = walk(childAbs, childRel);
+                  fileCount += sub.fileCount;
+                  dirs.push({
+                    name: n,
+                    path: childRel,
+                    fileCount: sub.fileCount,
+                    children: sub.children,
+                  });
+                } else {
+                  fileCount += 1;
+                }
               }
               dirs.sort((a, b) => a.name.localeCompare(b.name, 'zh'));
-              return dirs;
+              return { children: dirs, fileCount };
             }
+            const walked = walk(absRoot, '.');
             return sendJson(res, 200, {
               ok: true,
               root: dirName,
-              tree: walk(absRoot, '.'),
+              tree: walked.children,
+              // 根目录递归文件总数（含直接存放在根下的文件）
+              totalFiles: walked.fileCount,
             });
           }
 
@@ -398,11 +524,22 @@ function createDocsPlugin(opts) {
   };
 }
 
+/**
+ * 数据空间内容目录：中文目录名 ↔ 旧目录名。
+ * 单一来源：插件挂载、`cli/server.mjs` 初始化、资源列表都读这里。
+ */
+export const DOC_ROOT_DIRS = {
+  requirements: { dirName: '需求文档库', legacyDirNames: ['requirements', '需求'] },
+  cases: { dirName: '用例管理', legacyDirNames: ['cases', '用例'] },
+  templates: { dirName: '测试模板库', legacyDirNames: ['templates', '模板'] },
+  prompts: { dirName: '提示词管理', legacyDirNames: ['prompts', '提示词'] },
+  knowledge: { dirName: '知识库管理', legacyDirNames: ['knowledge', '知识库'] },
+};
+
 export function tbRequirementsPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_requirements',
-    dirName: 'requirements',
-    legacyDirNames: ['需求文档库', '需求'],
+    ...DOC_ROOT_DIRS.requirements,
     name: 'tb-requirements',
   });
 }
@@ -410,8 +547,7 @@ export function tbRequirementsPlugin() {
 export function tbCasesPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_cases',
-    dirName: 'cases',
-    legacyDirNames: ['用例管理', '用例'],
+    ...DOC_ROOT_DIRS.cases,
     name: 'tb-cases',
   });
 }
@@ -419,8 +555,7 @@ export function tbCasesPlugin() {
 export function tbTemplatesPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_templates',
-    dirName: 'templates',
-    legacyDirNames: ['测试模板库', '模板'],
+    ...DOC_ROOT_DIRS.templates,
     name: 'tb-templates',
   });
 }
@@ -465,27 +600,19 @@ function migratePromptFile(absRoot, fromNames, toName) {
   return dest;
 }
 
-const KNOWLEDGE_CATEGORIES = ['测试规范', '方法论', '环境约定'];
-
 export function tbKnowledgePlugin() {
   return createDocsPlugin({
     prefix: '/__tb_knowledge',
-    dirName: 'knowledge',
-    legacyDirNames: ['知识库管理', '知识库'],
+    ...DOC_ROOT_DIRS.knowledge,
     name: 'tb-knowledge',
-    onReady(absRoot) {
-      for (const cat of KNOWLEDGE_CATEGORIES) {
-        fs.mkdirSync(path.join(absRoot, cat), { recursive: true });
-      }
-    },
+    // 知识库为平铺存储：分类只写在 frontmatter 的 category，不再按分类建子目录
   });
 }
 
 export function tbPromptsPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_prompts',
-    dirName: 'prompts',
-    legacyDirNames: ['提示词管理', '提示词'],
+    ...DOC_ROOT_DIRS.prompts,
     name: 'tb-prompts',
     onReady(absRoot) {
       // 不再种子「默认提示词」：用例生成须在插件面板中显式选择提示词
@@ -507,7 +634,7 @@ export function tbPromptsPlugin() {
       if (!fs.existsSync(chatSeed)) {
         fs.writeFileSync(chatSeed, DEFAULT_CHAT_SYSTEM_PROMPT, 'utf8');
       }
-      // 清理旧版种子目录：prompts/功能测试/
+      // 清理旧版种子目录：提示词管理/功能测试/
       const legacyDir = path.join(absRoot, '功能测试');
       if (fs.existsSync(legacyDir) && fs.statSync(legacyDir).isDirectory()) {
         try {

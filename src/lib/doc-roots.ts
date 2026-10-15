@@ -1,43 +1,43 @@
 /**
- * 文档根：磁盘为英文目录，界面为中文 label（方案 C）。
- * DocsRoot 英文 id 与 path 一致。
+ * 文档根：磁盘为中文目录，界面为中文 label。
+ * DocsRoot 英文 id 与 path 解耦（id 用于代码 / API，path 是盘上真实目录名）。
  */
 import type { DocsRoot } from './project-docs';
 
 export interface DocRootMeta {
-  /** 仓库根下真实目录名（英文） */
+  /** 仓库根下真实目录名（中文） */
   path: string;
   /** 侧栏 / 文案展示名（中文） */
   label: string;
-  /** 旧目录名（中文长名 / 短名等），启动时可自动迁移到 path */
+  /** 旧目录名（英文 / 中文短名等），启动时可自动迁移到 path */
   legacyPaths: string[];
 }
 
 export const DOC_ROOT_META: Record<DocsRoot, DocRootMeta> = {
   cases: {
-    path: 'cases',
+    path: '用例管理',
     label: '用例管理',
-    legacyPaths: ['用例管理', '用例'],
+    legacyPaths: ['cases', '用例'],
   },
   requirements: {
-    path: 'requirements',
+    path: '需求文档库',
     label: '需求文档库',
-    legacyPaths: ['需求文档库', '需求'],
+    legacyPaths: ['requirements', '需求'],
   },
   prompts: {
-    path: 'prompts',
+    path: '提示词管理',
     label: '提示词管理',
-    legacyPaths: ['提示词管理', '提示词'],
+    legacyPaths: ['prompts', '提示词'],
   },
   knowledge: {
-    path: 'knowledge',
+    path: '知识库管理',
     label: '知识库管理',
-    legacyPaths: ['知识库管理', '知识库'],
+    legacyPaths: ['knowledge', '知识库'],
   },
   templates: {
-    path: 'templates',
+    path: '测试模板库',
     label: '测试模板库',
-    legacyPaths: ['测试模板库', '模板'],
+    legacyPaths: ['templates', '模板'],
   },
 };
 
@@ -58,7 +58,7 @@ export function docRootLabelPath(root: DocsRoot): string {
   return `${docRootLabel(root)}/`;
 }
 
-/** 磁盘相对路径前缀，如 knowledge/ */
+/** 磁盘相对路径前缀，如 知识库管理/ */
 export function docRootFsPrefix(root: DocsRoot): string {
   return `${DOC_ROOT_META[root]?.path ?? root}/`;
 }

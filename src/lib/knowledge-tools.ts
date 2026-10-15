@@ -38,7 +38,7 @@ export const KB_TOOLS = [
     function: {
       name: 'kb_read',
       description:
-        '按 path 读取文档。Markdown 返回全文；Excel/Word 返回构建期摘要。path 如 templates/接口测试用例/接口测试用例模版.xlsx 或 knowledge/…/xxx.md',
+        '按 path 读取文档。Markdown 返回全文；Excel/Word 返回构建期摘要。path 如 测试模板库/接口测试用例/接口测试用例模版.xlsx 或 知识库管理/xxx.md',
       parameters: {
         type: 'object',
         properties: {

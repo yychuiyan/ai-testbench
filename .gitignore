@@ -16,23 +16,19 @@ blogs/
 .cursor/
 # 临时工作区（决策清单等，不提交）
 temp/
-# 本地文档库内容（磁盘英文目录；界面中文 label）
-requirements/*
-!requirements/.gitkeep
-cases/*
-!cases/.gitkeep
-templates/*
-!templates/.gitkeep
-# prompts / knowledge：默认忽略本机草稿；下列种子内容入库
-prompts/*
-!prompts/.gitkeep
-!prompts/系统提示词.md
-knowledge/*
-!knowledge/.gitkeep
-!knowledge/方法论/
-!knowledge/方法论/**
-!knowledge/测试规范/
-!knowledge/测试规范/**
-!knowledge/环境约定/
-!knowledge/环境约定/**
+# 本地文档库内容（磁盘中文目录；界面中文 label）
+需求文档库/*
+!需求文档库/.gitkeep
+用例管理/*
+!用例管理/.gitkeep
+测试模板库/*
+!测试模板库/.gitkeep
+# 提示词管理 / 知识库管理：默认忽略本机草稿；下列种子内容入库
+提示词管理/*
+!提示词管理/.gitkeep
+!提示词管理/系统提示词.md
+知识库管理/*
+!知识库管理/.gitkeep
+# 知识库已打平：分类写在 frontmatter 的 category，种子文档直接放根目录
+!知识库管理/功能测试用例编写规范.md
 
