@@ -3,7 +3,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { assertCommandAllowed, buildChildEnv } from './sandbox-policy.mjs';
-import { detectPtyBackend } from './bash-session.mjs';
+import { detectPtyBackend, markPtyUnavailable } from './bash-session.mjs';
 
 const MAX_SESSIONS = 4;
 const SCROLL_MAX = 256 * 1024;
@@ -151,16 +151,23 @@ function pipeDriverScript(marker) {
 async function openPtySession(bin, cwdAbs, cwdDisplay, env, marker) {
   const { available, pty } = await detectPtyBackend();
   if (!available || !pty) return null;
-  const term = pty.spawn(bin, ['-NoLogo', '-NoProfile'], {
-    name: 'xterm-color',
-    cols: 120,
-    rows: 40,
-    cwd: cwdAbs,
-    env: {
-      ...env,
-      TERM: 'xterm-256color',
-    },
-  });
+  let term;
+  try {
+    term = pty.spawn(bin, ['-NoLogo', '-NoProfile'], {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 40,
+      cwd: cwdAbs,
+      env: {
+        ...env,
+        TERM: 'xterm-256color',
+      },
+    });
+  } catch {
+    // 能 import 但无法 spawn（spawn-helper 不可执行等）→ 降级管道会话
+    markPtyUnavailable();
+    return null;
+  }
   const id = uid();
   const session = {
     id,

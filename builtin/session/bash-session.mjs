@@ -35,6 +35,16 @@ export function ptyAvailableSync() {
   return ptyAvailableCache === true;
 }
 
+/**
+ * 标记 pty 后端不可用：`import('node-pty')` 可能成功，但真正 spawn 时失败
+ * （例如 macOS 上 prebuilds 的 spawn-helper 解包后没有可执行位）。
+ * 一旦失败就永久降级为管道会话，避免每个会话都重复踩坑。
+ */
+export function markPtyUnavailable() {
+  ptyAvailableCache = false;
+  ptyModule = null;
+}
+
 function uid() {
   return `sh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -134,18 +144,25 @@ async function openPtySession(cwdAbs, cwdDisplay, env, marker) {
   const { available, pty } = await detectPtyBackend();
   if (!available || !pty) return null;
   const bin = bashBinary();
-  const term = pty.spawn(bin, ['--noprofile', '--norc'], {
-    name: 'xterm-color',
-    cols: 120,
-    rows: 40,
-    cwd: cwdAbs,
-    env: {
-      ...env,
-      TERM: 'xterm-256color',
-      PS1: `${marker}`,
-      PROMPT_COMMAND: '',
-    },
-  });
+  let term;
+  try {
+    term = pty.spawn(bin, ['--noprofile', '--norc'], {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 40,
+      cwd: cwdAbs,
+      env: {
+        ...env,
+        TERM: 'xterm-256color',
+        PS1: `${marker}`,
+        PROMPT_COMMAND: '',
+      },
+    });
+  } catch {
+    // 能 import 但无法 spawn（spawn-helper 不可执行等）→ 降级管道会话
+    markPtyUnavailable();
+    return null;
+  }
   const id = uid();
   const session = {
     id,

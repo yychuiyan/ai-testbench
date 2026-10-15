@@ -11,19 +11,32 @@ const indexHtml = path.join(root, 'dist', 'index.html');
 
 if (fs.existsSync(indexHtml)) process.exit(0);
 
+/** 优先 pnpm（本项目包管理器），不可用时回退 npm。 */
+function pickRunner() {
+  const probe = spawnSync('pnpm', ['--version'], {
+    stdio: 'ignore',
+    shell: process.platform === 'win32',
+  });
+  if (!probe.error && probe.status === 0) {
+    return { cmd: 'pnpm', args: ['build'] };
+  }
+  return { cmd: 'npm', args: ['run', 'build'] };
+}
+
 const hasAstro =
   fs.existsSync(path.join(root, 'node_modules', 'astro')) ||
   fs.existsSync(path.join(root, 'package.json'));
 
 if (!hasAstro) {
   console.warn(
-    '[ai-testbench] 缺少 dist/，且无法自动构建。请使用 npm 正式包，或在源码目录执行 npm run build。',
+    '[ai-testbench] 缺少 dist/，且无法自动构建。请使用 npm 正式包，或在源码目录执行 pnpm build。',
   );
   process.exit(0);
 }
 
-console.log('[ai-testbench] 未找到 dist/，正在执行 npm run build …');
-const r = spawnSync('npm', ['run', 'build'], {
+const runner = pickRunner();
+console.log(`[ai-testbench] 未找到 dist/，正在执行 ${runner.cmd} ${runner.args.join(' ')} …`);
+const r = spawnSync(runner.cmd, runner.args, {
   cwd: root,
   stdio: 'inherit',
   shell: process.platform === 'win32',

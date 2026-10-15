@@ -1,6 +1,6 @@
 {
   "name": "ai-testbench",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "type": "module",
   "description": "TestBench",
@@ -20,7 +20,7 @@
   },
   "homepage": "https://github.com/yychuiyan/ai-testbench#readme",
   "bin": {
-    "ai-testbench": "cli/ai-testbench.mjs"
+    "tbench": "cli/tbench.mjs"
   },
   "files": [
     "dist",
@@ -40,18 +40,19 @@
     "dev": "astro dev --host 127.0.0.1 --port 4321",
     "build": "astro build",
     "preview": "astro preview",
-    "start": "node cli/ai-testbench.mjs -y",
+    "start": "node cli/tbench.mjs web --foreground --dir .",
     "astro": "astro",
     "lint": "eslint src --max-warnings 50",
     "lint:fix": "eslint src --fix",
     "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
     "prepare": "simple-git-hooks && node cli/ensure-dist.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm build"
   },
   "simple-git-hooks": {
-    "pre-commit": "npx lint-staged"
+    "pre-commit": "pnpm exec lint-staged"
   },
   "lint-staged": {
     "src/**/*.{ts,tsx,astro,css,md,json}": [
@@ -91,8 +92,10 @@
     "@eslint/js": "^10.0.1",
     "@tailwindcss/typography": "^0.5.16",
     "@tailwindcss/vite": "^4.0.0",
+    "@types/connect": "^3.4.38",
     "@types/dompurify": "^3.0.5",
     "@types/jszip": "^3.4.0",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^10.12.0",
@@ -105,6 +108,7 @@
     "prettier-plugin-astro": "^1.1.1",
     "simple-git-hooks": "^2.14.0",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.2"
   }

@@ -1,0 +1,7 @@
+# pnpm 10+ 默认不执行依赖的构建脚本（安全策略）。
+# 这里显式放行本项目需要的原生 / 二进制依赖，避免安装后功能缺失。
+allowBuilds:
+  esbuild: true
+  node-pty: true
+  sharp: true
+  simple-git-hooks: true
