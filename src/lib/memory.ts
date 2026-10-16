@@ -1,6 +1,6 @@
 /**
  * 跨会话长期记忆（Hermes / dsh-memory-evolve 五轨子集）：
- * - 本地 `.local/memories/`（仅 npm run dev）
+ * - 本地 `.tb/local/memories/`（仅 npm run dev）
  * - 每回合注入 USER / MEMORY / KEY 快照
  * - 重要写入经 memory_suggest 待确认
  * - project / daily 可直写；scratch 便签

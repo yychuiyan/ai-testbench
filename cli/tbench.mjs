@@ -15,7 +15,8 @@ import { nativePickDirectory } from '../builtin/session/tb-fs.mjs';
 import { runAcpServer } from './acp-server.mjs';
 import { headlessAsk, loadHeadlessSettings } from './headless.mjs';
 import { runJsonRpcServer } from './jsonrpc-server.mjs';
-import { prepareDataRoot, startLocalServer } from './server.mjs';
+import { displaySpacePath, publicSpacePath } from '../builtin/session/space-layout.mjs';
+import { prepareSpaceDir, prepareSpacesRoot, startLocalServer } from './server.mjs';
 import {
   clearDataRootFromConfig,
   clearRunState,
@@ -30,6 +31,19 @@ import {
   saveRunState,
   saveUserConfig,
 } from './user-config.mjs';
+import {
+  copySpace,
+  createSpace,
+  discoverSpaces,
+  exportSpaceToZip,
+  importSpaceFromZip,
+  listSpaces,
+  PUBLIC_SPACE_LABEL,
+  removeSpace,
+  renameSpace,
+  resolveSpace,
+  setActiveSpace,
+} from './spaces.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(__dirname, '..');
@@ -127,6 +141,18 @@ function printHelp() {
   tbench uninstall         卸载本机 tbench（保留数据空间）
   tbench wipe              删除当前数据空间（需确认）
 
+数据空间:
+  tbench space list        列出全部数据空间与当前项
+  tbench space add <名称>  新建数据空间（--use 顺带设为当前）
+  tbench space use <名称>  切换当前数据空间（重启服务后生效）
+  tbench space rename <旧> <新>   重命名数据空间
+  tbench space copy <源> <新名称> 复制数据空间（含全部内容）
+  tbench space rm <名称>   仅从列表移除（--purge --yes 连数据删除）
+  tbench space export <名称> [输出.zip] [--content-only]  导出为 zip
+  tbench space import <file.zip> [新名称] 从 zip 导入
+  tbench space discover    扫描托管目录，纳入带 .tb/space.json 清单的空间文件夹
+                           （--parent <目录> 指定要扫描的目录）
+
 进阶:
   tbench ask <提示词>      无界面单轮问答，直接输出结果
   tbench rpc               以 stdio JSON-RPC 暴露本地问答能力
@@ -143,7 +169,9 @@ async function promptDataRoot() {
   const rl = readline.createInterface({ input, output });
   try {
     console.log('');
-    console.log('选择数据空间（知识库 / 用例 / 提示词 / 记忆等将写入此目录）：');
+    console.log(
+      '选择数据目录（其下直接放置「公共空间」与其它空间；知识库 / 用例 / 提示词 / 记忆等写入其中）：',
+    );
     console.log('  1) 打开系统文件夹选择器');
     console.log(`  2) 当前目录（当前终端所在位置）  ${cwd}`);
     console.log('  3) 自定义路径（手输）');
@@ -198,15 +226,16 @@ function getAliveRun() {
 }
 
 async function cmdInit() {
-  const dataRoot = await promptDataRoot();
-  if (!fs.existsSync(dataRoot)) {
-    fs.mkdirSync(dataRoot, { recursive: true });
+  const spacesRoot = await promptDataRoot();
+  if (!fs.existsSync(spacesRoot)) {
+    fs.mkdirSync(spacesRoot, { recursive: true });
   }
-  prepareDataRoot(dataRoot);
-  saveUserConfig({ dataRoot, host: '127.0.0.1', port: 4321 });
+  prepareSpacesRoot(spacesRoot);
+  saveUserConfig({ dataRoot: spacesRoot, host: '127.0.0.1', port: 4321 });
   console.log('');
-  console.log('数据空间已关联：');
-  console.log(`  ${dataRoot}`);
+  console.log('数据目录已关联：');
+  console.log(`  ${spacesRoot}`);
+  console.log(`  公共空间：${displaySpacePath(publicSpacePath(spacesRoot), spacesRoot)}`);
   console.log(`  配置：${getConfigPath()}`);
   console.log('接下来可执行：tbench web');
   console.log('');
@@ -485,6 +514,254 @@ function cmdInstall(version) {
   process.exit(r.status === null ? 1 : r.status);
 }
 
+// ── 数据空间（多空间数据隔离）────────────────────────────────
+
+/** CLI 里的「基准根」：与网页端一致 —— 已记住的数据空间 */
+function spaceBaseRoot() {
+  const result = resolveConfiguredDataRoot();
+  if (result.ok) return result.dataRoot;
+  // 尚未 init 时，池根退化到当前目录，保证 space 命令本身可用
+  return process.cwd();
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function printSpaceList() {
+  const base = spaceBaseRoot();
+  const listed = listSpaces(base);
+  console.log('');
+  for (const s of listed.spaces) {
+    const marks = [s.isActive ? '●' : ' ', s.isPublic ? '[默认]' : '      '].join(' ');
+    const label = s.isPublic ? PUBLIC_SPACE_LABEL : s.name;
+    console.log(`${marks} ${label}`);
+    console.log(
+      `          ${displaySpacePath(s.path, listed.baseRoot)}${s.exists ? '' : '  (目录不存在)'}`,
+    );
+  }
+  console.log('');
+  const current = listed.spaces.find((s) => s.isActive);
+  const currentLabel = current?.isPublic ? PUBLIC_SPACE_LABEL : (current?.name ?? '(未知)');
+  console.log(`当前空间：${currentLabel}`);
+  console.log(`新建位置：${displaySpacePath(listed.managedParent, listed.baseRoot)}`);
+  console.log('');
+}
+
+function cmdSpace(args, flags) {
+  return cmdSpaceAsync(args, flags);
+}
+
+async function cmdSpaceAsync(args, flags) {
+  const action = (args[0] || 'list').trim();
+  const base = spaceBaseRoot();
+
+  switch (action) {
+    case 'list':
+    case 'ls':
+      printSpaceList();
+      return;
+
+    case 'add':
+    case 'create':
+    case 'new': {
+      const name = args.slice(1).join(' ').trim();
+      if (!name) {
+        console.error('用法：tbench space add <名称>');
+        process.exit(1);
+      }
+      const created = createSpace({ name, baseRoot: base });
+      if (!created.ok) {
+        console.error(created.error);
+        process.exit(1);
+      }
+      prepareSpaceDir(created.space.path);
+      console.log(`已创建数据空间：${created.space.name}`);
+      console.log(`  ${created.space.path}`);
+      if (flags.use) {
+        setActiveSpace(created.space.id);
+        console.log('已设为当前空间（下次启动生效；若服务正在运行，也可在界面里切换）。');
+      }
+      return;
+    }
+
+    case 'use':
+    case 'switch': {
+      const target = args.slice(1).join(' ').trim();
+      if (!target) {
+        console.error('用法：tbench space use <名称或 id>');
+        process.exit(1);
+      }
+      const found = resolveSpace(target, base);
+      if (!found.ok) {
+        console.error(found.error);
+        process.exit(1);
+      }
+      setActiveSpace(found.space.id);
+      console.log(`当前空间已设为「${found.space.name}」`);
+      console.log(`  ${found.space.path}`);
+      console.log('若服务已在运行：重启后生效（tbench restart），或直接在网页界面切换。');
+      return;
+    }
+
+    case 'rename': {
+      const [from, ...rest] = args.slice(1);
+      const to = rest.join(' ').trim();
+      if (!from || !to) {
+        console.error('用法：tbench space rename <原名> <新名>');
+        process.exit(1);
+      }
+      const out = renameSpace(from, to, base);
+      if (!out.ok) {
+        console.error(out.error);
+        process.exit(1);
+      }
+      console.log(`已重命名：「${from}」→「${out.space.name}」`);
+      console.log(`  ${out.space.path}`);
+      return;
+    }
+
+    case 'copy': {
+      const [from, ...rest] = args.slice(1);
+      const to = rest.join(' ').trim();
+      if (!from || !to) {
+        console.error('用法：tbench space copy <源空间> <新名称>');
+        process.exit(1);
+      }
+      const out = copySpace(from, to, base);
+      if (!out.ok) {
+        console.error(out.error);
+        process.exit(1);
+      }
+      console.log(`已复制为「${out.space.name}」`);
+      console.log(`  ${out.space.path}`);
+      return;
+    }
+
+    case 'rm':
+    case 'remove':
+    case 'delete': {
+      const target = args[1];
+      if (!target) {
+        console.error('用法：tbench space rm <名称> [--purge]');
+        process.exit(1);
+      }
+      const resolved = resolveSpace(target, base);
+      if (!resolved.ok) {
+        console.error(resolved.error);
+        process.exit(1);
+      }
+      const purge = flags.purge === true;
+      if (purge) {
+        // 不可逆操作：打印将被删除的绝对路径，并要求显式确认
+        console.log('即将永久删除以下目录及其全部数据：');
+        console.log(`  ${resolved.space.path}`);
+        if (!flags.yes) {
+          console.error(
+            '请追加 --yes 以确认（例如：tbench space rm ' + target + ' --purge --yes）',
+          );
+          process.exit(1);
+        }
+      }
+      const out = removeSpace({ id: resolved.space.id, purge, baseRoot: base });
+      if (!out.ok) {
+        console.error(out.error);
+        process.exit(1);
+      }
+      console.log(
+        out.purged
+          ? `已删除空间「${resolved.space.name}」及其数据。`
+          : `已从列表移除「${resolved.space.name}」，磁盘数据保留在：${resolved.space.path}`,
+      );
+      if (out.warning) console.warn(`注意：${out.warning}`);
+      return;
+    }
+
+    case 'export': {
+      // 输出的位置参数可能有两个（名称 + 输出文件），过滤掉开关后再取
+      const target = args[1];
+      if (!target) {
+        console.error('用法：tbench space export <名称> [输出.zip] [--content-only]');
+        process.exit(1);
+      }
+      const resolved = resolveSpace(target, base);
+      if (!resolved.ok) {
+        console.error(resolved.error);
+        process.exit(1);
+      }
+      const scope = flags.contentOnly ? 'content' : 'full';
+      const suffix = scope === 'content' ? '-content' : '';
+      const outFile = args[2] || path.join(process.cwd(), `${resolved.space.name}${suffix}.zip`);
+      const out = await exportSpaceToZip({
+        id: resolved.space.id,
+        outFile,
+        baseRoot: base,
+        scope,
+      });
+      if (!out.ok) {
+        console.error(out.error);
+        process.exit(1);
+      }
+      console.log(`已导出：${out.file}（${formatBytes(out.bytes)}）`);
+      if (scope === 'content') {
+        console.log('范围：内容库（已排除密钥、会话、记忆与缓存）');
+      } else {
+        console.log('范围：完整备份（含密钥、会话与本机状态，请勿随意外发）');
+      }
+      return;
+    }
+
+    case 'discover': {
+      const out = discoverSpaces({ managedParent: flags.parent, baseRoot: base });
+      console.log(`扫描目录：${displaySpacePath(out.managedParent, base)}`);
+      if (out.added.length) {
+        console.log(`已纳入 ${out.added.length} 个空间：`);
+        for (const s of out.added) console.log(`  ${s.name}  ${displaySpacePath(s.path, base)}`);
+      } else {
+        console.log('未发现可纳入的空间文件夹（只认带 .tb/space.json 清单的目录）。');
+      }
+      if (out.backfilled.length) {
+        console.log(
+          `已为 ${out.backfilled.length} 个已有空间补写 space.json：${out.backfilled.join('、')}`,
+        );
+      }
+      for (const s of out.skipped) console.log(`跳过 ${s.path}：${s.reason}`);
+      return;
+    }
+
+    case 'import': {
+      const zipFile = args[1];
+      if (!zipFile) {
+        console.error('用法：tbench space import <file.zip> [新名称]');
+        process.exit(1);
+      }
+      const name = args.slice(2).join(' ').trim() || undefined;
+      const out = await importSpaceFromZip({ zipFile, name, baseRoot: base });
+      if (!out.ok) {
+        console.error(out.error);
+        process.exit(1);
+      }
+      prepareSpaceDir(out.space.path);
+      console.log(`已导入为「${out.space.name}」`);
+      console.log(`  ${out.space.path}`);
+      return;
+    }
+
+    default:
+      console.error(`未知子命令：tbench space ${action}`);
+      console.error('可用：list | add | use | rename | copy | rm | export | import | discover');
+      process.exit(1);
+  }
+}
+
 function cmdUninstall() {
   const pm = getPackageManager();
   console.log(`正在卸载全局包 ${PKG_NAME}（数据空间与配置保留）…`);
@@ -534,12 +811,30 @@ async function cmdWipe() {
  * 解析 argv → { cmd, args, flags }
  */
 function parseArgv(argv) {
-  const flags = { foreground: false, help: false, dir: null };
+  const flags = {
+    foreground: false,
+    help: false,
+    dir: null,
+    purge: false,
+    yes: false,
+    use: false,
+    contentOnly: false,
+    parent: null,
+  };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') flags.help = true;
     else if (a === '--foreground') flags.foreground = true;
+    // 数据空间相关开关
+    else if (a === '--purge') flags.purge = true;
+    else if (a === '--yes' || a === '-y') flags.yes = true;
+    else if (a === '--content-only') flags.contentOnly = true;
+    else if (a === '--parent') {
+      flags.parent = argv[++i];
+      if (!flags.parent) throw new Error('--parent 需要路径参数');
+    } else if (a.startsWith('--parent=')) flags.parent = a.slice('--parent='.length);
+    else if (a === '--use') flags.use = true;
     else if (a === '-d' || a === '--dir') {
       flags.dir = argv[++i];
       if (!flags.dir) throw new Error('--dir 需要路径参数');
@@ -618,6 +913,9 @@ async function main() {
         break;
       case 'wipe':
         await cmdWipe();
+        break;
+      case 'space':
+        await cmdSpace(args, flags);
         break;
       case 'ask': {
         const dataRoot = requireDataRoot(flags.dir);

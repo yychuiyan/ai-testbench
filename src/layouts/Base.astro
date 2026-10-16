@@ -3,6 +3,7 @@ import { ClientRouter, fade } from 'astro:transitions';
 import '../styles/global.css';
 import '../styles/docs-article.css';
 import SettingsDialog from '../components/islands/SettingsDialog';
+import SpaceSwitcher from '../components/islands/SpaceSwitcher';
 import { APP_VERSION } from '../lib/app-version';
 
 interface Props {
@@ -86,7 +87,7 @@ const navItem = (active: boolean) =>
   </head>
   <body class="tw-body antialiased">
     <div class="tw-shell min-h-screen">
-      <aside class="tw-nav-aside fixed inset-y-0 left-0 flex flex-col z-20" id="tw-nav-aside">
+      <aside class="tw-nav-aside fixed inset-y-0 left-0 flex flex-col z-[45]" id="tw-nav-aside">
         <div class="tw-nav-brand">
           <div class="tw-nav-brand-row">
             <a href={base} class="tw-nav-brand-link min-w-0 flex-1">
@@ -108,12 +109,23 @@ const navItem = (active: boolean) =>
                     v{APP_VERSION}
                   </span>
                 </span>
-                <span class="tw-nav-tagline" data-i18n="nav.tagline">
-                  让测试更高效
-                </span>
               </span>
             </a>
           </div>
+        </div>
+
+        {/* 数据空间切换器：骨架先占位（同高），岛屿渲染后由 CSS 隐藏 */}
+        <div class="tw-nav-space-slot">
+          <div class="tw-nav-space tw-nav-space-ph" id="tw-nav-space-ph" aria-hidden="true">
+            <div class="tw-nav-space-ph-box">
+              <span class="tw-nav-space-ph-ico"></span>
+              <span class="tw-nav-space-ph-lines">
+                <span class="tw-nav-space-ph-bar is-cap"></span>
+                <span class="tw-nav-space-ph-bar is-name"></span>
+              </span>
+            </div>
+          </div>
+          <SpaceSwitcher client:only="react" transition:persist />
         </div>
 
         <button
@@ -320,7 +332,7 @@ const navItem = (active: boolean) =>
         </div>
       </aside>
 
-      <script is:inline>
+      <script is:inline data-astro-rerun>
         (function () {
           var root = document.documentElement;
           var btn = document.getElementById('tw-nav-toggle');
@@ -350,7 +362,6 @@ const navItem = (active: boolean) =>
             if (g.language !== 'en') return;
             var en = {
               'nav.brand': 'TestBench',
-              'nav.tagline': 'Make testing more efficient',
               'nav.home': 'My Workbench',
               'nav.caseManage': 'Test Cases',
               'nav.prompts': 'Prompts',
@@ -536,11 +547,19 @@ const navItem = (active: boolean) =>
           // 换页前就把「文档库」分组还原成用户记忆的状态，避免新页先展开再收起
           applyNavDocsState(next);
           var cur = document.documentElement;
+          var nextRoot = next.documentElement;
           var theme = cur.dataset.theme;
-          if (!theme) return;
-          next.documentElement.dataset.theme = theme;
-          next.documentElement.style.colorScheme = theme;
-          if (cur.lang) next.documentElement.lang = cur.lang;
+          if (theme) {
+            nextRoot.dataset.theme = theme;
+            nextRoot.style.colorScheme = theme;
+          }
+          if (cur.lang) nextRoot.lang = cur.lang;
+          // 新文档是「解析」出来的：head 里的内联脚本在解析阶段不会执行，
+          // 于是所有运行期写在 <html> 上的状态都不会自带。主题 / 语言之外，
+          // 侧栏收起状态与空间服务可用性同样要显式搬过去，否则每次软导航都会丢
+          // （表现为侧栏自己弹开、骨架又冒出来）。
+          if (cur.dataset.navCollapsed === '1') nextRoot.dataset.navCollapsed = '1';
+          if (cur.dataset.spaceService) nextRoot.dataset.spaceService = cur.dataset.spaceService;
         });
 
         /** 版本日志「查看更多」：委托绑定，兼容 View Transitions 软导航 */

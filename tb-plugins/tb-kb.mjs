@@ -1,10 +1,11 @@
 /**
  * 本地知识库 / 模板检索（仿 dsh kb-sieve 能力子集）：
- * 仅 `astro dev` / 本地一体服务可用，只读扫描仓库根 知识库管理/ 与 测试模板库/。
+ * 仅 `astro dev` / 本地一体服务可用。知识库跨空间共用（公共空间），模板仍跟当前空间。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
 import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
 
 const PREFIX = '/__tb_kb';
@@ -53,10 +54,14 @@ function parseFrontmatter(raw) {
   return { title, description, category, body };
 }
 
-function listDocs(projectRoot) {
+function rootForKbTop(top) {
+  return top === DOC_ROOT_DIRS.knowledge.dirName ? getPublicSpaceRoot() : getDataRoot();
+}
+
+function listDocs() {
   const files = [];
   for (const root of ROOTS) {
-    walkMd(path.join(projectRoot, root), root, files);
+    walkMd(path.join(rootForKbTop(root), root), root, files);
   }
   return files.map(({ abs, rel }) => {
     let raw = '';
@@ -96,15 +101,13 @@ export function tbKbPlugin() {
   return {
     name: 'tb-kb',
     configureServer(server) {
-      // Astro 的 vite root 通常是项目根
-      const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
 
         try {
           if (url === `${PREFIX}/health` && req.method === 'GET') {
-            const docs = listDocs(root);
+            const docs = listDocs();
             return sendJson(res, 200, {
               ok: true,
               mode: 'fs',
@@ -119,7 +122,7 @@ export function tbKbPlugin() {
               .trim()
               .toLowerCase();
             const scope = String(body.scope ?? 'all').toLowerCase();
-            const docs = listDocs(root).filter((d) => {
+            const docs = listDocs().filter((d) => {
               if (scope === 'knowledge')
                 return d.path.startsWith(`${DOC_ROOT_DIRS.knowledge.dirName}/`);
               if (scope === 'templates')
@@ -173,7 +176,7 @@ export function tbKbPlugin() {
             const body = JSON.parse((await readBody(req)) || '{}');
             const rel = safeRelPath(body.path);
             if (!rel) return sendJson(res, 400, { error: 'invalid path' });
-            const abs = path.join(root, ...rel.split('/'));
+            const abs = path.join(rootForKbTop(rel.split('/')[0]), ...rel.split('/'));
             if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
               return sendJson(res, 404, { error: 'not found', path: rel });
             }

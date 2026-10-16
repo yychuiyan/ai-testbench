@@ -21,6 +21,7 @@ import {
 import ConfirmDialog from './ConfirmDialog';
 import DocsPager, { usePageSize } from './DocsPager';
 import NamePromptDialog from './NamePromptDialog';
+import { useListAnim } from './useListAnim';
 
 /** 文件列表每页条数默认值（仅文件分页，左侧文件夹树照常全部显示；可在分页条切换并记住） */
 const DEFAULT_PAGE_SIZE = 5;
@@ -181,7 +182,7 @@ function fmtSize(n?: number) {
 }
 
 export default function RequirementsLibrary() {
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState<boolean | null>(null);
   const [tree, setTree] = useState<DocsTreeNode[]>([]);
   const [totalFiles, setTotalFiles] = useState(0);
   const [activePath, setActivePath] = useState('.');
@@ -204,6 +205,8 @@ export default function RequirementsLibrary() {
   /** 单击选中的文件（双击才打开，故需要高亮反馈选中了谁） */
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** 文件列表入场动画：首屏（刷新）不播，只有用户翻页 / 换目录后才播 */
+  const { cls: listAnimCls, play: playListAnim } = useListAnim();
 
   /** 重新拉取文件夹树（含各目录递归文件数） */
   const loadTree = useCallback(async () => {
@@ -248,6 +251,7 @@ export default function RequirementsLibrary() {
   }
 
   async function selectDir(p: string) {
+    playListAnim();
     setActivePath(p);
     setPage(1);
     setPreview(null);
@@ -399,9 +403,17 @@ export default function RequirementsLibrary() {
     }
   }
 
+  if (live === null) {
+    return (
+      <div className="tw-lib-probing" aria-busy="true" aria-label="正在连接本地文档服务">
+        <span className="tw-lib-spin" aria-hidden="true" />
+      </div>
+    );
+  }
+
   if (!live) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
         需求文档库需要本地文档服务，当前未就绪。
       </div>
     );
@@ -415,6 +427,7 @@ export default function RequirementsLibrary() {
 
   /** 切换每页条数：页码归 1，避免落在越界页 */
   function changePageSize(n: number) {
+    playListAnim();
     setPageSizeState(n);
     setPage(1);
   }
@@ -500,7 +513,7 @@ export default function RequirementsLibrary() {
             type="button"
             disabled={busy}
             onClick={() => fileRef.current?.click()}
-            className="h-8 px-3 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
+            className="h-8 px-3 shrink-0 whitespace-nowrap text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
           >
             上传文件
           </button>
@@ -561,7 +574,7 @@ export default function RequirementsLibrary() {
                 当前文件夹为空，点击「上传文件」添加需求文档（.md / .txt / .docx）
               </p>
             ) : (
-              <ul className="tw-anim-list space-y-1">
+              <ul className={`${listAnimCls}space-y-1`}>
                 {pageFiles.map((f) => {
                   const selected = selectedFile === f.path;
                   return (
@@ -639,7 +652,10 @@ export default function RequirementsLibrary() {
             totalPages={totalPages}
             pageSize={pageSize}
             busy={busy}
-            onPage={setPage}
+            onPage={(p) => {
+              playListAnim();
+              setPage(p);
+            }}
             onPageSize={changePageSize}
           />
         ) : null}

@@ -15,8 +15,8 @@
  * 样式复用 global.css 的 .tw-tooltip / .tw-tooltip-anim（与 OverflowHint 同一套）。
  */
 
-/** 层级：低于 ConfirmDialog 的 z-[90]，保证弹窗仍可覆盖气泡 */
-const Z_INDEX = 80;
+/** 高于空间管理弹窗 z-[95]/z-[96]，否则弹窗内路径气泡会被挡住；点击会先收起气泡 */
+const Z_INDEX = 100;
 /** 气泡最大宽度（px） */
 const MAX_WIDTH = 420;
 /** 箭头中心距气泡左右边缘的最小内缩（px） */
@@ -37,7 +37,40 @@ let pos: Pos | null = null;
 let entered = false;
 let enterRaf = 0;
 let exitTimer = 0;
+let watchRaf = 0;
 let inited = false;
+
+/**
+ * 锚点已经不该再挂气泡：被卸载、收进关闭中的弹层、或尺寸归零。
+ * 这些情况经常不触发 mouseout；鼠标停着也不会补发 mouseover。
+ */
+function anchorGone(el: HTMLElement): boolean {
+  if (!el.isConnected) return true;
+  if (el.closest('[data-closed]')) return true;
+  const r = el.getBoundingClientRect();
+  return r.width === 0 && r.height === 0;
+}
+
+function stopWatch(): void {
+  if (!watchRaf) return;
+  cancelAnimationFrame(watchRaf);
+  watchRaf = 0;
+}
+
+/** 气泡显示期间盯着锚点，弹窗一关就收，避免漂在页面上 */
+function startWatch(): void {
+  stopWatch();
+  const tick = () => {
+    watchRaf = 0;
+    if (!current) return;
+    if (anchorGone(current)) {
+      hide();
+      return;
+    }
+    watchRaf = requestAnimationFrame(tick);
+  };
+  watchRaf = requestAnimationFrame(tick);
+}
 
 /** 惰性创建 / 重建气泡（软导航后旧节点会脱离文档） */
 function ensureTip(): void {
@@ -45,7 +78,7 @@ function ensureTip(): void {
   tipEl = document.createElement('div');
   tipEl.setAttribute('role', 'tooltip');
   tipEl.className =
-    'tw-tooltip tw-tooltip-anim pointer-events-none fixed rounded-lg px-2.5 py-1.5 text-[12px] leading-5 break-all text-stone-700 shadow-lg';
+    'tw-tooltip tw-tooltip-anim pointer-events-none fixed rounded-md px-2 py-1 text-[12px] leading-5 break-all text-stone-700 shadow-lg';
   tipEl.style.zIndex = String(Z_INDEX);
   tipEl.dataset.closed = '';
   arrowEl = document.createElement('span');
@@ -137,9 +170,11 @@ function show(el: HTMLElement): void {
       delete tipEl.dataset.closed;
     });
   });
+  startWatch();
 }
 
 function hide(): void {
+  stopWatch();
   current = null;
   if (!tipEl) return;
   entered = false;
@@ -204,8 +239,16 @@ function onClick(): void {
 /** 滚动 / 缩放时跟随锚点（capture 以覆盖内部滚动容器） */
 function onMove(): void {
   if (!current) return;
+  if (anchorGone(current)) {
+    hide();
+    return;
+  }
   place();
   apply();
+}
+
+function onKey(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && current) hide();
 }
 
 /**
@@ -220,11 +263,14 @@ export function initHintTips(): void {
   document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('focusout', onFocusOut, true);
   document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKey, true);
   window.addEventListener('scroll', onMove, true);
   window.addEventListener('resize', onMove);
   // 软导航：气泡节点会随 body 内容被替换，重置引用即可，下次显示时重建
   document.addEventListener('astro:after-swap', () => {
+    stopWatch();
     current = null;
+    if (tipEl?.isConnected) tipEl.remove();
     tipEl = null;
     arrowEl = null;
     textNode = null;

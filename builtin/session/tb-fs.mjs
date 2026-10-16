@@ -19,6 +19,8 @@ import {
 } from './fs-observation-policy.mjs';
 import { convertOfficeToPdf, probeOfficeToPdf } from './office-to-pdf.mjs';
 import { listWorkspaceSkills, loadWorkspaceSkill } from './skill-fs.mjs';
+import { getDataRoot } from './space-context.mjs';
+import { LOCAL_REL } from './space-layout.mjs';
 import { loadWorkspaceDependencies } from './workspace-deps.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -114,16 +116,27 @@ function expandHome(p) {
 }
 
 function workspaceFile(projectRoot) {
-  return path.join(projectRoot, '.local', 'workspaces.json');
+  return path.join(projectRoot, LOCAL_REL, 'workspaces.json');
 }
 
 function legacyWorkspaceFile(projectRoot) {
-  return path.join(projectRoot, '.local', 'workspace.json');
+  return path.join(projectRoot, LOCAL_REL, 'workspace.json');
 }
 
 function folderName(abs) {
   const parts = abs.replace(/\\/g, '/').split('/').filter(Boolean);
   return parts[parts.length - 1] || abs;
+}
+
+function newWorkspaceId() {
+  return `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** 空间的上级目录（仓库根、空间池）不能当工作区：升级前曾把仓库加成「ai-testbench」 */
+function isAncestorPath(maybeAncestor, dir) {
+  const a = path.resolve(maybeAncestor);
+  const d = path.resolve(dir);
+  return d !== a && d.startsWith(a + path.sep);
 }
 
 function ensureWorkspaceRegistry(projectRoot) {
@@ -168,6 +181,24 @@ function ensureWorkspaceRegistry(projectRoot) {
     // ignore
   }
 
+  let dirty = false;
+  const kept = items.filter((it) => it.path === rootAbs || !isAncestorPath(it.path, rootAbs));
+  if (kept.length !== items.length) {
+    items = kept;
+    dirty = true;
+  }
+  // 空间根必须是唯一的 ws_project；升级前仓库路径也曾用这个 id，会在侧栏出现两个「默认工作区」
+  for (const it of items) {
+    if (it.path === rootAbs) {
+      if (it.id !== 'ws_project') {
+        it.id = 'ws_project';
+        dirty = true;
+      }
+    } else if (it.id === 'ws_project') {
+      it.id = newWorkspaceId();
+      dirty = true;
+    }
+  }
   if (!items.some((it) => it.path === rootAbs)) {
     items.unshift({
       id: 'ws_project',
@@ -175,11 +206,15 @@ function ensureWorkspaceRegistry(projectRoot) {
       name: folderName(rootAbs),
       addedAt: 0,
     });
+    dirty = true;
   }
   if (!items.some((it) => it.path === active)) {
     active = rootAbs;
+    dirty = true;
   }
-  return { active, items, projectRoot: rootAbs };
+  const reg = { active, items, projectRoot: rootAbs };
+  if (dirty && fs.existsSync(fp)) saveWorkspaceRegistry(projectRoot, reg);
+  return reg;
 }
 
 function saveWorkspaceRegistry(projectRoot, reg) {
@@ -680,10 +715,11 @@ export function tbFsPlugin() {
   return {
     name: 'tb-fs',
     configureServer(server) {
-      const projectRoot = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const projectRoot = getDataRoot();
 
         try {
           const workspace = readWorkspace(projectRoot);
@@ -792,10 +828,13 @@ export function tbFsPlugin() {
               if (isSystemSensitive(abs)) {
                 return sendJson(res, 403, { error: '禁止将该目录设为工作区' });
               }
+              if (isAncestorPath(abs, projectRoot)) {
+                return sendJson(res, 400, { error: '不能把当前空间的上级目录设为工作区' });
+              }
               let item = reg.items.find((it) => it.path === abs);
               if (!item) {
                 item = {
-                  id: `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                  id: newWorkspaceId(),
                   path: abs,
                   name: folderName(abs),
                   addedAt: Date.now(),

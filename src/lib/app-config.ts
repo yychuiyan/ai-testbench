@@ -18,6 +18,7 @@ import {
   type KnowledgeCategory,
 } from './knowledge-category-defs';
 import { DEFAULT_PROMPT_KINDS, normalizePromptKinds, type PromptKindDef } from './prompt-kind-defs';
+import { spaceScopedKey } from './space-scope';
 
 export interface ModelConfigBlock {
   activeId: string;
@@ -194,7 +195,7 @@ function normalizeConfig(raw: Partial<AppFileConfig> | null | undefined): AppFil
 
 function readLsConfig(): AppFileConfig | null {
   try {
-    const raw = localStorage.getItem(LS_CONFIG);
+    const raw = localStorage.getItem(spaceScopedKey(LS_CONFIG));
     if (!raw) return null;
     return normalizeConfig(JSON.parse(raw) as Partial<AppFileConfig>);
   } catch {
@@ -204,7 +205,7 @@ function readLsConfig(): AppFileConfig | null {
 
 function writeLsConfig(cfg: AppFileConfig) {
   try {
-    localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
+    localStorage.setItem(spaceScopedKey(LS_CONFIG), JSON.stringify(cfg));
   } catch {
     // ignore
   }
@@ -212,7 +213,7 @@ function writeLsConfig(cfg: AppFileConfig) {
 
 function readLsApiKey(): string {
   try {
-    return localStorage.getItem(LS_API_KEY)?.trim() ?? '';
+    return localStorage.getItem(spaceScopedKey(LS_API_KEY))?.trim() ?? '';
   } catch {
     return '';
   }
@@ -220,8 +221,8 @@ function readLsApiKey(): string {
 
 function writeLsApiKey(key: string) {
   try {
-    if (key) localStorage.setItem(LS_API_KEY, key);
-    else localStorage.removeItem(LS_API_KEY);
+    if (key) localStorage.setItem(spaceScopedKey(LS_API_KEY), key);
+    else localStorage.removeItem(spaceScopedKey(LS_API_KEY));
   } catch {
     // ignore
   }

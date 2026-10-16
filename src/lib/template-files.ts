@@ -1,5 +1,5 @@
 /**
- * 扫描 templates/ 下的 Office 模板（Excel / Word），按分类子目录归类。
+ * 扫描 空间池/公共空间/测试模板库/ 下的 Office 模板（Excel / Word），按分类子目录归类。
  * Excel：构建期解析 sheet 名 + 首行表头，供列表区分；不做在线预览。
  */
 import fs from 'node:fs';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as XLSX from 'xlsx';
 import type { CollectionEntry } from 'astro:content';
+import { PUBLIC_SPACE_REL } from '../../builtin/session/space-layout.mjs';
 import {
   TEMPLATE_CATEGORY_ORDER,
   isTemplateCategory,
@@ -48,9 +49,15 @@ const MIME: Record<TemplateBinaryExt, string> = {
   '.doc': 'application/msword',
 };
 
+/** 仓库根（构建期资源，如公共空间骨架、种子） */
 export function templatesRoot(): string {
   // src/lib → 仓库根
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+}
+
+/** 公共空间目录 */
+export function publicSpaceDir(): string {
+  return path.join(templatesRoot(), ...PUBLIC_SPACE_REL.split('/'));
 }
 
 function formatLabel(format: TemplateFormat): string {
@@ -120,7 +127,7 @@ export function listBinaryTemplates(): Array<{
   sheets?: ExcelSheetSummary[];
   fieldSummary?: string;
 }> {
-  const root = path.join(templatesRoot(), '测试模板库');
+  const root = path.join(publicSpaceDir(), '测试模板库');
   const out: ReturnType<typeof listBinaryTemplates> = [];
   if (!fs.existsSync(root)) return out;
 

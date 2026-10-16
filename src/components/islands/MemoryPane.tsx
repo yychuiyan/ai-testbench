@@ -174,7 +174,7 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
   const isTrack = tab === 'memory' || tab === 'key' || tab === 'project';
   const entries = isTrack ? (tracks[tab]?.entries ?? []) : [];
   const trackPath = isTrack ? tracks[tab]?.path : null;
-  const memBase = health?.path || '.local/memories';
+  const memBase = health?.path || '.tb/local/memories';
 
   async function onApprove(id: string) {
     setBusy(true);
@@ -685,7 +685,7 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
               />
             </label>
             <p className="text-xs text-stone-400 leading-5 break-all">
-              存储目录：<code className="font-mono">{health?.path ?? '.local/memories'}</code>
+              存储目录：<code className="font-mono">{health?.path ?? '.tb/local/memories'}</code>
               。memory/key 经待确认记忆建议后注入；project 不注入。
             </p>
           </div>

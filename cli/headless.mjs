@@ -3,7 +3,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { prepareDataRoot } from './server.mjs';
+import { publicSpacePath } from '../builtin/session/space-context.mjs';
+import { spaceConfigFile, spaceLocalFile, META_DIR } from '../builtin/session/space-layout.mjs';
+import { prepareSpacesRoot } from './server.mjs';
 
 function readJson(fp, fallback) {
   try {
@@ -41,13 +43,13 @@ function loadDotEnv(root) {
 }
 
 /**
- * @param {string} dataRoot
+ * @param {string} dataRoot 池根（公共空间位于其下）
  * @returns {{ baseURL: string, apiKey: string, model: string, dataRoot: string }}
  */
 export function loadHeadlessSettings(dataRoot) {
-  const root = prepareDataRoot(dataRoot);
-  const defaults = readJson(path.join(root, 'config', 'app.defaults.json'), {});
-  const local = readJson(path.join(root, '.local', 'app.config.json'), {});
+  const root = publicSpacePath(prepareSpacesRoot(dataRoot));
+  const defaults = readJson(spaceConfigFile(root, 'app.defaults.json'), {});
+  const local = readJson(spaceLocalFile(root, 'app.config.json'), {});
   const model = { ...(defaults.model || {}), ...(local.model || {}) };
   const providers = Array.isArray(local.model?.providers)
     ? local.model.providers
@@ -63,7 +65,7 @@ export function loadHeadlessSettings(dataRoot) {
   const baseURL = String(active?.baseURL || model.baseURL || '').trim();
   const modelId = String(active?.model || model.model || '').trim();
   if (!baseURL || !modelId) {
-    throw new Error('未配置模型：请在数据空间设置页或 .local/app.config.json 填写提供商');
+    throw new Error('未配置模型：请在数据空间设置页或 .tb/local/app.config.json 填写提供商');
   }
   if (!apiKey) {
     throw new Error('未配置 API Key：请设置 TW_API_KEY 或写入提供商 apiKey');
@@ -134,7 +136,14 @@ function walkFiles(dir, acc, limit) {
   }
   for (const ent of entries) {
     if (acc.length >= limit) return;
-    if (ent.name === 'node_modules' || ent.name === '.git' || ent.name === '.local') continue;
+    if (
+      ent.name === 'node_modules' ||
+      ent.name === '.git' ||
+      ent.name === META_DIR ||
+      ent.name === '.local'
+    ) {
+      continue;
+    }
     const abs = path.join(dir, ent.name);
     if (ent.isDirectory()) walkFiles(abs, acc, limit);
     else if (ent.isFile()) acc.push(abs);

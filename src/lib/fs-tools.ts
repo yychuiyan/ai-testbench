@@ -566,10 +566,7 @@ export function shortWorkspaceLabel(
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
   if (projectRoot && norm(ws) === norm(projectRoot)) return '默认工作区';
   const parts = norm(ws).split('/').filter(Boolean);
-  const base = parts[parts.length - 1] || ws;
-  // 项目根文件夹名常为仓库名 ai-testbench
-  if (base === 'ai-testbench') return '默认工作区';
-  return base;
+  return parts[parts.length - 1] || ws;
 }
 
 /** 侧栏 / picker 工作区显示名：项目根固定为「默认工作区」 */
@@ -597,7 +594,7 @@ export async function listWorkspaceFlat(
   const maxDepth = opts?.maxDepth ?? 3;
   const maxEntries = opts?.maxEntries ?? 80;
   const out: WorkspaceFlatEntry[] = [];
-  const skip = new Set(['node_modules', '.git', 'dist', '.local', '.astro', '.DS_Store']);
+  const skip = new Set(['node_modules', '.git', 'dist', '.tb', '.local', '.astro', '.DS_Store']);
 
   async function walk(rel: string, depth: number) {
     if (out.length >= maxEntries || depth > maxDepth) return;

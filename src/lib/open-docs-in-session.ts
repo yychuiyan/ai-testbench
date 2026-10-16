@@ -10,12 +10,14 @@ import {
   type ChatSession,
 } from './sessions';
 import { hydrateAppConfig, loadAccessLevel } from './settings';
+import { readActiveSpaceId } from './space-scope';
 
 export type OpenDocsInSessionRoot = Extract<DocsRoot, 'cases' | 'prompts' | 'knowledge'>;
 
 /** 跳转前写入，供 ChatApp hydrate 在 sessions.json 竞态丢失时恢复 */
 export function sessionHandoffKey(sessionId: string): string {
-  return `tb:session-handoff:${sessionId}`;
+  const space = readActiveSpaceId();
+  return space ? `tb:session-handoff:${space}:${sessionId}` : `tb:session-handoff:${sessionId}`;
 }
 
 function normalizePath(p: string): string {

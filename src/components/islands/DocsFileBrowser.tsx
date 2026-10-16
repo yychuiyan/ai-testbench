@@ -10,6 +10,7 @@ import type { DocsEntry } from '../../lib/project-docs';
 import DocsPager, { usePageSize } from './DocsPager';
 import OverflowHint from './OverflowHint';
 import SelectDropdown from './SelectDropdown';
+import { useListAnim } from './useListAnim';
 
 export type DocsSortBy = 'mtime' | 'name';
 
@@ -150,6 +151,28 @@ export default function DocsFileBrowser({
     selectablePageFiles.length > 0 && selectablePageFiles.every((f) => selected[f.path]);
   const someChecked = !allChecked && selectablePageFiles.some((f) => selected[f.path]);
 
+  /**
+   * 排序 / 筛选 / 翻页这些用户主动操作才播入场动画；
+   * 首次加载（含刷新）不播，避免列表整体「跳」出来。
+   */
+  const { cls: listAnimCls, play: playListAnim } = useListAnim();
+  const changeQuery = (v: string) => {
+    playListAnim();
+    onQuery(v);
+  };
+  const changeSortBy = (v: DocsSortBy) => {
+    playListAnim();
+    onSortBy(v);
+  };
+  const changePage = (p: number) => {
+    playListAnim();
+    onPage(p);
+  };
+  const changePageSize = (n: number) => {
+    playListAnim();
+    onPageSize(n);
+  };
+
   return (
     <>
       {files.length > 0 ? (
@@ -157,7 +180,7 @@ export default function DocsFileBrowser({
           <input
             type="search"
             value={query}
-            onChange={(e) => onQuery(e.target.value)}
+            onChange={(e) => changeQuery(e.target.value)}
             placeholder={searchPlaceholder}
             aria-label={searchPlaceholder}
             className={`${TOOL_INPUT_CLS} flex-1 min-w-[12rem]`}
@@ -166,7 +189,7 @@ export default function DocsFileBrowser({
             compact
             options={DOCS_SORT_OPTIONS}
             value={sortBy}
-            onChange={onSortBy}
+            onChange={changeSortBy}
             ariaLabel="排序方式"
             showCheck={false}
             className="w-[8.5rem] shrink-0"
@@ -180,7 +203,9 @@ export default function DocsFileBrowser({
         ) : filtered.length === 0 ? (
           <p className={EMPTY_BOX}>没有匹配「{query.trim()}」的文件。</p>
         ) : (
-          <ul className="tw-anim-list divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden">
+          <ul
+            className={`${listAnimCls}divide-y divide-stone-100 border border-stone-200 rounded-lg overflow-hidden`}
+          >
             <li className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-xs text-stone-500">
               <input
                 type="checkbox"
@@ -222,15 +247,9 @@ export default function DocsFileBrowser({
                     className="rounded border-stone-300"
                     aria-label={`选择 ${f.name}`}
                   />
-                  <div className="flex-1 min-w-0 text-left">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <OverflowHint text={f.name} className="text-sm text-stone-800 truncate" />
-                      {renderBadge ? renderBadge(f) : null}
-                    </div>
-                    <OverflowHint
-                      text={f.path}
-                      className="block text-[11px] text-stone-400 truncate"
-                    />
+                  <div className="flex-1 min-w-0 text-left flex items-center gap-2">
+                    <OverflowHint text={f.name} className="text-sm text-stone-800 truncate" />
+                    {renderBadge ? renderBadge(f) : null}
                   </div>
                   <span className={`${TIME_COL_CLS} text-[11px] text-stone-500 tabular-nums`}>
                     {fmtTime(f.ctime ?? f.mtime)}
@@ -260,8 +279,8 @@ export default function DocsFileBrowser({
           totalPages={totalPages}
           pageSize={pageSize}
           busy={busy}
-          onPage={onPage}
-          onPageSize={onPageSize}
+          onPage={changePage}
+          onPageSize={changePageSize}
         />
       ) : null}
     </>

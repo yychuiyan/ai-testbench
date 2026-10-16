@@ -13,7 +13,7 @@ import {
 import SelectDropdown from './SelectDropdown';
 
 const BTN_CLS =
-  'h-8 px-3 text-sm text-stone-600 border border-stone-200 rounded-lg hover:bg-stone-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer';
+  'h-8 px-3 shrink-0 whitespace-nowrap text-sm text-stone-600 border border-stone-200 rounded-lg hover:bg-stone-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer';
 
 /** 每页条数下拉项（SelectDropdown 的取值为字符串） */
 const PAGE_SIZE_CHOICES: ReadonlyArray<{ value: string; label: string }> = PAGE_SIZE_OPTIONS.map(

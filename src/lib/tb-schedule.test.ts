@@ -16,9 +16,9 @@ describe('tb-schedule host', () => {
 
   before(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-sched-'));
-    fs.mkdirSync(path.join(root, '.local'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.tb', 'local'), { recursive: true });
     fs.writeFileSync(
-      path.join(root, '.local', 'sessions.json'),
+      path.join(root, '.tb', 'local', 'sessions.json'),
       JSON.stringify(
         {
           activeId: 's1',
@@ -55,7 +55,7 @@ describe('tb-schedule host', () => {
     assert.equal(listHostReminders(root, 's1').length, 1);
 
     // force due
-    const storePath = path.join(root, '.local', 'schedules.json');
+    const storePath = path.join(root, '.tb', 'local', 'schedules.json');
     const store = JSON.parse(fs.readFileSync(storePath, 'utf8')) as {
       reminders: Array<{ dueAt: number }>;
     };
@@ -67,7 +67,7 @@ describe('tb-schedule host', () => {
     assert.equal(due[0]!.status, 'delivered');
 
     const sessions = JSON.parse(
-      fs.readFileSync(path.join(root, '.local', 'sessions.json'), 'utf8'),
+      fs.readFileSync(path.join(root, '.tb', 'local', 'sessions.json'), 'utf8'),
     ) as { sessions: Array<{ messages: Array<{ content?: string }> }> };
     const msgs = sessions.sessions[0]!.messages;
     const reminder = created.reminder;

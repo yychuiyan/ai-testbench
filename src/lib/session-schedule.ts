@@ -3,6 +3,7 @@
  * - 优先主机 `/__tb_schedule`（落盘 + 服务 tick 投递会话）
  * - 无本地服务时回退 localStorage（仅页面打开时投递）
  */
+import { spaceScopedKey } from './space-scope';
 
 const STORE_KEY = 'tw-session-schedules';
 const API = '/__tb_schedule';
@@ -120,7 +121,7 @@ export function isScheduleHostCached(): boolean | null {
 
 export function loadSchedules(): ScheduledReminder[] {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
+    const raw = localStorage.getItem(spaceScopedKey(STORE_KEY));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -133,7 +134,7 @@ export function loadSchedules(): ScheduledReminder[] {
 }
 
 export function saveSchedules(list: ScheduledReminder[]): void {
-  localStorage.setItem(STORE_KEY, JSON.stringify(list.slice(-200)));
+  localStorage.setItem(spaceScopedKey(STORE_KEY), JSON.stringify(list.slice(-200)));
 }
 
 function normalizeReminder(raw: unknown): ScheduledReminder | null {

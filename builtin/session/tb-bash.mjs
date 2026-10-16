@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { assertCommandAllowed, buildChildEnv, resolveSandboxPolicy } from './sandbox-policy.mjs';
+import { getDataRoot } from './space-context.mjs';
+import { LOCAL_REL } from './space-layout.mjs';
 import {
   closeBashSession,
   detectPtyBackend,
@@ -69,16 +71,22 @@ function expandHome(p) {
 }
 
 function workspaceFile(projectRoot) {
-  return path.join(projectRoot, '.local', 'workspaces.json');
+  return path.join(projectRoot, LOCAL_REL, 'workspaces.json');
 }
 
 function legacyWorkspaceFile(projectRoot) {
-  return path.join(projectRoot, '.local', 'workspace.json');
+  return path.join(projectRoot, LOCAL_REL, 'workspace.json');
 }
 
 function folderName(abs) {
   const parts = abs.replace(/\\/g, '/').split('/').filter(Boolean);
   return parts[parts.length - 1] || abs;
+}
+
+function isAncestorPath(maybeAncestor, dir) {
+  const a = path.resolve(maybeAncestor);
+  const d = path.resolve(dir);
+  return d !== a && d.startsWith(a + path.sep);
 }
 
 function ensureWorkspaceRegistry(projectRoot) {
@@ -123,6 +131,13 @@ function ensureWorkspaceRegistry(projectRoot) {
     // ignore
   }
 
+  items = items.filter((it) => it.path === rootAbs || !isAncestorPath(it.path, rootAbs));
+  for (const it of items) {
+    if (it.path === rootAbs) it.id = 'ws_project';
+    else if (it.id === 'ws_project') {
+      it.id = `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+  }
   if (!items.some((it) => it.path === rootAbs)) {
     items.unshift({
       id: 'ws_project',
@@ -613,12 +628,13 @@ export function tbBashPlugin() {
   return {
     name: 'tb-bash',
     configureServer(server) {
-      const projectRoot = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = (req.url || '').split('?')[0];
         const isBash = url.startsWith(PREFIX_BASH);
         const isPwsh = url.startsWith(PREFIX_PWSH);
         if (!isBash && !isPwsh) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const projectRoot = getDataRoot();
 
         const prefix = isPwsh ? PREFIX_PWSH : PREFIX_BASH;
         const shell = isPwsh ? 'pwsh' : 'bash';

@@ -5,7 +5,7 @@
 import type { DocsRoot } from './project-docs';
 
 export interface DocRootMeta {
-  /** 仓库根下真实目录名（中文） */
+  /** 数据空间目录下的真实目录名（中文） */
   path: string;
   /** 侧栏 / 文案展示名（中文） */
   label: string;

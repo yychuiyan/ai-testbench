@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { docRootLabelPath } from '../../lib/doc-roots';
+import { readDocsListCache, writeDocsListCache } from '../../lib/docs-list-cache';
 import {
   deleteDocs,
   fetchDocsHealth,
@@ -35,8 +36,10 @@ async function walkCaseFiles(dir = '.'): Promise<DocsEntry[]> {
 }
 
 export default function CasesLibrary() {
-  const [live, setLive] = useState(false);
-  const [files, setFiles] = useState<DocsEntry[]>([]);
+  /** 有缓存则首帧直接画列表，避免刷新时探测卡 ↔ 内容卡切换闪一下 */
+  const boot = readDocsListCache('cases');
+  const [live, setLive] = useState<boolean | null>(boot ? true : null);
+  const [files, setFiles] = useState<DocsEntry[]>(() => boot ?? []);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,6 +53,7 @@ export default function CasesLibrary() {
     setError(null);
     const listed = await walkCaseFiles('.');
     setFiles(listed);
+    writeDocsListCache('cases', listed);
     setSelected((prev) => {
       const next: Record<string, boolean> = {};
       for (const f of listed) {
@@ -62,13 +66,18 @@ export default function CasesLibrary() {
   useEffect(() => {
     void (async () => {
       const ok = await fetchDocsHealth('cases');
-      setLive(ok);
-      if (!ok) return;
+      if (!ok) {
+        setLive(false);
+        return;
+      }
       try {
         await hydrateSessionStore().catch(() => null);
         await refresh();
+        // 等列表就绪再揭卡，避免「探测 → 空态 → 有数据」连闪两下
+        setLive(true);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+        setLive(true);
       }
     })();
   }, [refresh]);
@@ -126,9 +135,24 @@ export default function CasesLibrary() {
     }
   }
 
+  if (live === null) {
+    // 外层与正式卡片同壳，避免探测态换成内容态时整卡「跳」一下
+    return (
+      <div
+        className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0"
+        aria-busy="true"
+        aria-label="正在连接本地文档服务"
+      >
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <span className="tw-lib-spin" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
   if (!live) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
         用例管理需要本地文档服务，当前未就绪。
       </div>
     );
@@ -156,7 +180,7 @@ export default function CasesLibrary() {
           type="button"
           disabled={busy || selectedPaths.length === 0}
           onClick={() => setDeleteTarget({ kind: 'batch', paths: selectedPaths })}
-          className="h-8 px-3 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-40"
+          className="h-8 px-3 shrink-0 whitespace-nowrap text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-40"
         >
           批量删除
         </button>
@@ -203,7 +227,7 @@ export default function CasesLibrary() {
               type="button"
               disabled={busy}
               onClick={() => void openInSession(f)}
-              className="text-xs text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7] cursor-pointer disabled:opacity-40"
+              className="text-xs whitespace-nowrap text-white bg-[#4176e6] px-2 py-1 rounded hover:bg-[#3565c7] cursor-pointer disabled:opacity-40"
             >
               在会话中打开
             </button>
@@ -211,7 +235,7 @@ export default function CasesLibrary() {
               type="button"
               disabled={busy}
               onClick={() => setDeleteTarget({ kind: 'one', entry: f })}
-              className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40"
+              className="text-xs whitespace-nowrap text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40"
             >
               删除
             </button>

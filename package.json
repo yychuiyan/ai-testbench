@@ -1,6 +1,6 @@
 {
   "name": "ai-testbench",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "MIT",
   "type": "module",
   "description": "TestBench",
@@ -29,6 +29,7 @@
     "tb-plugins",
     "config",
     "docs",
+    "空间池",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"

@@ -361,9 +361,17 @@ export function sessionStats() {
   };
 }
 
+/**
+ * 关闭所有常驻会话。数据空间切换时必须调用：会话的 cwd / env 绑在旧空间上，
+ * 继续复用会读到上一个空间的文件。
+ */
+export function closeAllBashSessions() {
+  for (const id of [...sessions.keys()]) closeSessionInternal(id);
+}
+
 /** 测试用 */
 export function resetBashSessionsForTests() {
-  for (const id of [...sessions.keys()]) closeSessionInternal(id);
+  closeAllBashSessions();
   ptyAvailableCache = false;
   ptyModule = null;
 }

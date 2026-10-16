@@ -18,9 +18,10 @@ import { tbMemoryPlugin } from '../tb-plugins/tb-memory.mjs';
 import { tbResourcesPlugin } from '../tb-plugins/tb-resources.mjs';
 import { tbWebPlugin } from '../builtin/session/tb-web.mjs';
 import { tbSessionRunsPlugin } from '../builtin/session/session-runs.mjs';
+import { tbSpacesPlugin } from '../builtin/session/tb-spaces.mjs';
+import { ensureSpaceContext, getDataRoot } from '../builtin/session/space-context.mjs';
+import { prepareSpacesRoot } from './data-root.mjs';
 import {
-  DOC_ROOT_DIRS,
-  migrateLegacyRoot,
   tbCasesPlugin,
   tbKnowledgePlugin,
   tbPromptsPlugin,
@@ -31,42 +32,21 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = path.resolve(__dirname, '..');
 export const DIST_DIR = path.join(PKG_ROOT, 'dist');
-const PKG_DEFAULTS = path.join(PKG_ROOT, 'config', 'app.defaults.json');
 
-/** 确保数据目录具备默认配置与文档根（不覆盖已有文件；旧英文目录先迁移） */
-export function prepareDataRoot(dataRoot) {
-  const root = path.resolve(dataRoot);
-  fs.mkdirSync(root, { recursive: true });
-  fs.mkdirSync(path.join(root, '.local'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'config'), { recursive: true });
-
-  const destDefaults = path.join(root, 'config', 'app.defaults.json');
-  if (!fs.existsSync(destDefaults)) {
-    if (!fs.existsSync(PKG_DEFAULTS)) {
-      throw new Error(`缺少包内默认配置：${PKG_DEFAULTS}`);
-    }
-    fs.copyFileSync(PKG_DEFAULTS, destDefaults);
-  }
-
-  for (const { dirName, legacyDirNames } of Object.values(DOC_ROOT_DIRS)) {
-    // 必须先迁移：一旦先建出中文目录，旧目录里的文件就再也不会被搬过来
-    migrateLegacyRoot(root, legacyDirNames, dirName);
-    const dir = path.join(root, dirName);
-    fs.mkdirSync(dir, { recursive: true });
-    const keep = path.join(dir, '.gitkeep');
-    if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
-  }
-
-  return root;
-}
+// 数据根初始化已抽到 `cli/data-root.mjs`（tb-spaces 插件也要用，避免循环依赖）；
+// 这里继续对外导出，保持既有调用方不受影响。
+export { prepareSpacesRoot, prepareSpaceDir } from './data-root.mjs';
 
 function attachPlugins(app, dataRoot) {
+  // 数据空间上下文：所有插件通过 getDataRoot() 惰性取根，切换空间无需重启
+  ensureSpaceContext(dataRoot);
   const fakeServer = {
     config: { root: dataRoot },
     middlewares: app,
   };
   const plugins = [
     tbSessionRunsPlugin(),
+    tbSpacesPlugin(),
     tbConfigPlugin(),
     tbResourcesPlugin(),
     tbMemoryPlugin(),
@@ -91,10 +71,11 @@ function attachPlugins(app, dataRoot) {
 
 /**
  * @param {{ dataRoot: string, host?: string, port?: number }} opts
- * @returns {Promise<{ url: string, server: http.Server, dataRoot: string }>}
+ * `opts.dataRoot` 是池根（tbench 记住的数据目录）：公共空间在 `<池根>/公共空间`。
+ * @returns {Promise<{ url: string, server: http.Server, dataRoot: string }>} dataRoot 为当前生效的空间目录
  */
 export function startLocalServer(opts) {
-  const dataRoot = prepareDataRoot(opts.dataRoot);
+  const spacesRoot = prepareSpacesRoot(opts.dataRoot);
   const host = opts.host ?? '127.0.0.1';
   const port = Number(opts.port) || 4321;
 
@@ -105,7 +86,7 @@ export function startLocalServer(opts) {
   }
 
   const app = connect();
-  attachPlugins(app, dataRoot);
+  attachPlugins(app, spacesRoot);
 
   const staticHandler = sirv(DIST_DIR, {
     dev: false,
@@ -128,7 +109,7 @@ export function startLocalServer(opts) {
     server.once('error', reject);
     server.listen(port, host, () => {
       const url = `http://${host}:${port}/`;
-      resolve({ url, server, dataRoot });
+      resolve({ url, server, dataRoot: getDataRoot() });
     });
   });
 }

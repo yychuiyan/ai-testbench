@@ -39,7 +39,7 @@ tbench init
 按序号选择数据空间：
 
 ```text
-选择数据空间（知识库 / 用例 / 提示词 / 记忆等将写入此目录）：
+选择数据目录（其下直接放置「公共空间」与其它空间；知识库 / 用例 / 提示词 / 记忆等写入其中）：
   1) 打开系统文件夹选择器
   2) 当前目录（当前终端所在位置）
   3) 自定义路径（手输）
@@ -66,6 +66,9 @@ tbench install        # 安装/更新到最新版本
 tbench install 0.1.x  # 安装/更新到指定版本
 tbench uninstall      # 卸载本机 tbench 命令（保留数据空间）
 tbench wipe           # 删除当前数据空间（需确认；不可恢复）
+tbench space list     # 列出全部数据空间与当前项
+tbench space add      # 新建数据空间（--use 顺带设为当前）
+tbench space use      # 切换当前数据空间
 tbench ask            # 无界面单轮问答，tbench ask <提示词>
 tbench rpc            # 以 stdio JSON-RPC 暴露本地问答能力
 tbench acp            # 以 ACP 子集供外部编排驱动无 UI Agent

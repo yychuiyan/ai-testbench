@@ -3,11 +3,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { LOCAL_REL } from '../builtin/session/space-layout.mjs';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 export function sessionLogDir(root) {
-  return path.join(root, '.local', 'session-log');
+  return path.join(root, LOCAL_REL, 'session-log');
 }
 
 function safeSessionId(id) {
@@ -48,5 +49,5 @@ export function appendDeepseekSessionLog(root, entry) {
   } catch {
     // ignore trim errors
   }
-  return { path: path.join('.local', 'session-log', `${sessionId}.jsonl`) };
+  return { path: path.join(LOCAL_REL, 'session-log', `${sessionId}.jsonl`) };
 }

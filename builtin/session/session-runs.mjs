@@ -10,6 +10,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { getDataRoot } from './space-context.mjs';
+import { LOCAL_REL } from './space-layout.mjs';
+
 const PREFIX = '/__tb_sessions/runs';
 
 /** @type {Map<string, import('./session-runs.mjs').SessionRun>} */
@@ -31,7 +34,7 @@ function readBody(req) {
 }
 
 function sessionsPath(root) {
-  return path.join(root, '.local', 'sessions.json');
+  return path.join(root, LOCAL_REL, 'sessions.json');
 }
 
 function readJson(fp, fallback) {
@@ -1176,7 +1179,6 @@ export function tbSessionRunsPlugin() {
   return {
     name: 'tb-session-runs',
     configureServer(server) {
-      const root = server.config.root;
       // 供 loopback 使用：优先从 listen 地址推断
       let listenOrigin = '';
       const captureListen = () => {
@@ -1188,6 +1190,8 @@ export function tbSessionRunsPlugin() {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const root = getDataRoot();
 
         try {
           if (url === PREFIX && req.method === 'GET') {
@@ -1329,3 +1333,14 @@ export function tbSessionRunsPlugin() {
 }
 
 export { runs as __sessionRunsForTest };
+
+/**
+ * 是否有会话仍在执行。数据空间切换前必须为空，否则在途请求会跨空间读到错误文件。
+ * @returns {boolean}
+ */
+export function hasRunningSessions() {
+  for (const r of runs.values()) {
+    if (r.status === 'running' || r.status === 'waiting_user') return true;
+  }
+  return false;
+}

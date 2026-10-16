@@ -29,7 +29,7 @@ export default function ConfirmDialog({
     danger === true || danger === 'solid' ? 'solid' : danger === 'outline' ? 'outline' : null;
 
   return (
-    <Dialog open={open} onClose={onClose} transition className="relative z-[90]">
+    <Dialog open={open} onClose={onClose} transition className="relative z-[110]">
       <DialogBackdrop
         transition
         className="tw-dialog-backdrop-anim fixed inset-0 bg-black/30"

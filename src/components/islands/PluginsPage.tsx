@@ -242,9 +242,9 @@ export default function PluginsPage({ tab = 'mine', embedded = false }: Props) {
 
   return (
     <div
-      className={`tw-plugins-page overflow-y-auto ${embedded ? 'h-full min-h-0' : 'min-h-[calc(100vh-0px)]'}`}
+      className={`tw-plugins-page overflow-y-auto ${embedded ? 'h-full min-h-0 flex-1' : 'min-h-[calc(100vh-0px)]'}`}
     >
-      <div className="w-full px-6 py-6">
+      <div className={`w-full ${embedded ? 'px-6 py-5' : 'px-6 py-6'}`}>
         {view === 'mine' ? (
           <MinePanel
             mineTab={mineTab}
@@ -428,7 +428,7 @@ function MinePanel(props: {
         {mineTab === 'extension' ? (
           <>
             <p className="mb-3 text-xs text-stone-500">可配置插件 · {PLUGIN_CATALOG.length} 个</p>
-            <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+            <ul className="tw-anim-list tw-plugin-grid">
               {PLUGIN_CATALOG.map((p) => {
                 const on = enabled[p.id];
                 const rt = runtimeFor(p.id);
@@ -538,7 +538,7 @@ function BuiltinCatalogGrid(props: {
             {g.name ? (
               <h3 className="mb-2 text-[13px] font-medium text-stone-600">{g.name}</h3>
             ) : null}
-            <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+            <ul className="tw-anim-list tw-plugin-grid">
               {g.items.map((e) => {
                 const st = statusOf(e);
                 const key = `${idPrefix}:${e.id}`;
@@ -778,12 +778,13 @@ function ManagePanel(props: {
           }
           className="block w-full min-h-[36px] pl-[14px] pr-2 pt-1 pb-0 text-sm leading-6 text-stone-800 bg-transparent resize-none focus:outline-none placeholder:text-stone-400 disabled:opacity-60"
         />
-        <div className="flex items-center gap-1.5 px-3 pb-3 pt-3">
+        {/* 窄窗口：控件不压缩，空间不足时换行 */}
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 px-3 pb-3 pt-3">
           {!settings && (
             <button
               type="button"
               onClick={onOpenSettings}
-              className="text-[13px] text-amber-800 hover:underline"
+              className="text-[13px] shrink-0 whitespace-nowrap text-amber-800 hover:underline"
             >
               配置模型
             </button>
@@ -842,7 +843,7 @@ function ManagePanel(props: {
       {recs.length > 0 && (
         <>
           <p className="mt-6 mb-3 text-xs text-stone-500">探测结果 · {recs.length} 个</p>
-          <ul className="tw-anim-list grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+          <ul className="tw-anim-list tw-plugin-grid">
             {recs.map((r) => {
               const slug = recSlug(r.name);
               const key = `rec:${slug}`;

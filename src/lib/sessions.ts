@@ -1,6 +1,6 @@
 /**
  * 多会话存档：
- * - 本地 dev：`.local/sessions.json`（换浏览器打开同一项目仍可见）
+ * - 本地 dev：`.tb/local/sessions.json`（换浏览器打开同一项目仍可见）
  * - 静态站：回退 localStorage
  * 兼容旧版单列表键 `tw-chat-history`：首次加载时自动迁入「默认会话」。
  */
@@ -11,6 +11,7 @@ import type { TodoItem } from './session-interact';
 import type { SessionGoal } from './session-goal';
 import type { AccessLevel } from './settings';
 import type { WorkspaceChange } from './workspace-changes';
+import { spaceScopedKey } from './space-scope';
 
 const SESS_API = '/__tb_sessions';
 const STORE_KEY = 'tw-chat-sessions';
@@ -110,9 +111,17 @@ function normalizeStore(parsed: Partial<SessionStore> | null | undefined): Sessi
   return { sessions, activeId };
 }
 
+function storeKey(): string {
+  return spaceScopedKey(STORE_KEY);
+}
+
+function activeKey(): string {
+  return spaceScopedKey(ACTIVE_KEY);
+}
+
 function loadSessionStoreFromLs(): SessionStore | null {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
+    const raw = localStorage.getItem(storeKey());
     if (!raw) return null;
     return normalizeStore(JSON.parse(raw) as Partial<SessionStore>);
   } catch {
@@ -122,8 +131,8 @@ function loadSessionStoreFromLs(): SessionStore | null {
 
 function writeSessionStoreLs(store: SessionStore) {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(store));
-    localStorage.setItem(ACTIVE_KEY, store.activeId);
+    localStorage.setItem(storeKey(), JSON.stringify(store));
+    localStorage.setItem(activeKey(), store.activeId);
   } catch {
     // 存储满时静默失败
   }
@@ -163,7 +172,11 @@ export async function hydrateSessionStore(opts?: {
       sessionsFileMode = true;
       let store = normalizeStore(data.store ?? null);
       if (!store) {
-        store = fromLs ?? bootstrapEmptyStore();
+        // 空空间不能灌浏览器缓存：localStorage 不按空间分键，上个空间的会话会写进新空间。
+        // preferId 只覆盖「本空间刚新建、尚未落盘」的单条竞态。
+        const orphan =
+          preferId && fromLs ? fromLs.sessions.find((s) => s.id === preferId) : undefined;
+        store = orphan ? { sessions: [orphan], activeId: preferId } : bootstrapEmptyStore();
         await persistSessionStoreNow(store);
       } else if (preferId && fromLs && !store.sessions.some((s) => s.id === preferId)) {
         const orphan = fromLs.sessions.find((s) => s.id === preferId);

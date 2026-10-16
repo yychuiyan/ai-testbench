@@ -1,4 +1,6 @@
 // @ts-check
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import tailwindcss from '@tailwindcss/vite';
@@ -10,6 +12,7 @@ import { tbSchedulePlugin } from './builtin/session/tb-schedule.mjs';
 import { tbSpillPlugin } from './builtin/session/tb-spill.mjs';
 import { tbWebPlugin } from './builtin/session/tb-web.mjs';
 import { tbSessionRunsPlugin } from './builtin/session/session-runs.mjs';
+import { tbSpacesPlugin } from './builtin/session/tb-spaces.mjs';
 import { tbConfigPlugin } from './tb-plugins/tb-config.mjs';
 import { tbResourcesPlugin } from './tb-plugins/tb-resources.mjs';
 import {
@@ -19,6 +22,13 @@ import {
   tbRequirementsPlugin,
   tbTemplatesPlugin,
 } from './tb-plugins/tb-project-docs.mjs';
+import { prepareSpacesRoot } from './cli/data-root.mjs';
+
+const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
+
+// 公共空间落在仓库根/空间池/下。这里先铺好骨架（含旧布局迁移），
+// 保证内容集合的 glob 基准目录一定存在，dev / build 都不至于空目录报错。
+prepareSpacesRoot(PROJECT_ROOT);
 
 // BASE_PATH 由 GitHub Actions 注入为 /<仓库名>（项目站点子路径），
 // 本地开发不设置，默认 '/'
@@ -47,6 +57,9 @@ export default defineConfig({
           '**/AGENTS.local.md',
           '**/CLAUDE.md',
           '**/CLAUDE.local.md',
+          '**/空间池/**',
+          '**/公共空间/**',
+          '**/.tb/**',
           '**/.local/**',
           '**/用例管理/**',
           '**/知识库管理/**',
@@ -59,6 +72,8 @@ export default defineConfig({
     plugins: [
       tailwindcss(),
       tbSessionRunsPlugin(),
+      // 数据空间上下文必须最先初始化，其余插件靠它取当前数据根
+      tbSpacesPlugin(),
       tbConfigPlugin(),
       tbResourcesPlugin(),
       tbMemoryPlugin(),

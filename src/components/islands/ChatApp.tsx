@@ -83,6 +83,7 @@ import {
   hydrateSessionStore,
   isEphemeralEmptySession,
   loadRailOpen,
+  loadSessionStore,
   pinSession,
   renameSession,
   saveRailOpen,
@@ -280,6 +281,7 @@ import KnowledgeGenPanel from './KnowledgeGenPanel';
 import ConfirmDialog from './ConfirmDialog';
 import MemoryPane from './MemoryPane';
 import NamePromptDialog from './NamePromptDialog';
+import PluginsPage from './PluginsPage';
 
 export type SlashDoc = SlashDocItem;
 
@@ -2115,10 +2117,10 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
       <button
         type="button"
         onClick={() => openSettings('model')}
-        className="flex items-center gap-1 h-7 pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-500 rounded-md hover:bg-stone-100 transition-colors"
+        className="flex items-center gap-1 h-7 shrink-0 pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-500 rounded-md hover:bg-stone-100 transition-colors"
       >
-        配置模型
-        <ChevronIcon className="w-3.5 h-3.5 text-stone-400" />
+        <span className="whitespace-nowrap">配置模型</span>
+        <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-stone-400" />
       </button>
     );
   }
@@ -2145,14 +2147,20 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
           setOpen((v) => !v);
           setSub(null);
         }}
-        className={`flex items-center gap-1 h-7 pl-2 pr-1 text-[13px] leading-5 font-medium rounded-md outline-none focus:outline-none focus-visible:outline-none transition-colors ${
+        className={`tw-composer-bar-model group flex items-center gap-1 h-7 shrink-0 pl-2 pr-1 text-[13px] leading-5 font-medium rounded-md outline-none focus:outline-none focus-visible:outline-none transition-colors ${
           open ? 'bg-stone-100' : 'hover:bg-stone-100'
         }`}
+        title={`${settings.model} · ${effortLabel}`}
+        aria-label={`模型 ${settings.model}，推理 ${effortLabel}`}
       >
-        <span className="max-w-40 truncate text-stone-600">{settings.model}</span>
-        <span className="text-stone-400">{effortLabel}</span>
+        <span className="tw-composer-bar-model-name max-w-40 truncate text-stone-600">
+          {settings.model}
+        </span>
+        <span className="tw-composer-bar-effort whitespace-nowrap text-stone-400">
+          {effortLabel}
+        </span>
         <ChevronIcon
-          className={`w-3.5 h-3.5 text-stone-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
 
@@ -2247,11 +2255,30 @@ function ModelEffortMenu({ settings }: { settings: LLMSettings | null }) {
   );
 }
 
+/**
+ * 首帧快照：直接拿 localStorage 镜像渲染，避免刷新时先闪一下「新对话」空态
+ * （岛屿是 client:only，服务端不输出，等 hydrate 完成才 setStore，
+ * 那之前渲染的是 store=null 的空会话），hydrate 完成后会被权威数据覆盖。
+ * 与侧栏 SpaceSwitcher 的 sessionStorage 缓存同一思路。
+ *
+ * 注意：loadSessionStore() 在无镜像时会现造一个空 store，
+ * 每次调用 id 都不同，所以这里必须缓存并复用同一份。
+ */
+let bootSnapshot: { store: SessionStore; messages: LocalMessage[] } | null = null;
+function readBootSnapshot(): { store: SessionStore; messages: LocalMessage[] } {
+  if (!bootSnapshot) {
+    const s = loadSessionStore();
+    const active = s.sessions.find((x) => x.id === s.activeId);
+    bootSnapshot = { store: s, messages: (active?.messages as LocalMessage[]) ?? [] };
+  }
+  return bootSnapshot;
+}
+
 export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) {
   const [settings, setSettings] = useState<LLMSettings | null>(null);
   const [ready, setReady] = useState(false);
-  const [store, setStore] = useState<SessionStore | null>(null);
-  const [messages, setMessages] = useState<LocalMessage[]>([]);
+  const [store, setStore] = useState<SessionStore | null>(() => readBootSnapshot().store);
+  const [messages, setMessages] = useState<LocalMessage[]>(() => readBootSnapshot().messages);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [images, setImages] = useState<ImageAtt[]>([]);
@@ -2274,6 +2301,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   /** 从管理页「在会话中打开」带入：`root:path`，用于滚动定位到对应文件卡 */
   const [pendingFocusDoc, setPendingFocusDoc] = useState<string | null>(null);
   const [pluginIndex, setPluginIndex] = useState(0);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
   /** 永久删除确认（仅已归档） */
   const [purgeSessionId, setPurgeSessionId] = useState<string | null>(null);
@@ -5107,6 +5135,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   }
 
   function newSession(workspacePath?: string) {
+    setPluginsOpen(false);
     if (!storeRef.current) return;
     setChatTab('dialog');
     const leavingId = storeRef.current.activeId;
@@ -5214,6 +5243,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   }
 
   function openSession(id: string) {
+    setPluginsOpen(false);
     if (!storeRef.current) return;
     setChatTab('dialog');
     setSessionMenuId(null);
@@ -5619,7 +5649,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   }
 
   return (
-    <div className="tw-app h-full flex bg-[color:var(--tw-surface-page)]">
+    <div className="tw-app h-full min-h-0 flex overflow-hidden bg-[color:var(--tw-surface-page)]">
       {/* dsh 风格：工作区树 + 会话挂在文件夹下 */}
       <aside
         className={`tw-session-rail shrink-0 border-r border-[color:var(--tw-border)] flex flex-col transition-[width] ${
@@ -5671,21 +5701,17 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               </Svg>
               {t('chat.newSession', undefined, generalPrefs.language)}
             </button>
-            <a
-              href={`${base}plugins/`}
+            <button
+              type="button"
               data-hint="我的插件"
-              onClick={() => {
-                const leaving = storeRef.current?.activeId;
-                const pruned = pruneEphemeralSession(leaving);
-                if (pruned && pruned !== storeRef.current) {
-                  commitStore(pruned);
-                }
-              }}
-              className="tw-rail-plugin-btn w-full h-9 flex items-center justify-center gap-1.5 text-[13px] font-medium rounded-full transition-colors"
+              onClick={() => setPluginsOpen((v) => !v)}
+              className={`tw-rail-plugin-btn w-full h-9 flex items-center justify-center gap-1.5 text-[13px] font-medium rounded-full transition-colors ${
+                pluginsOpen ? 'is-active' : ''
+              }`}
             >
               <PluginIcon className="w-3.5 h-3.5" />
               插件
-            </a>
+            </button>
           </div>
         ) : (
           <div className="px-1 pt-1 flex flex-col gap-1">
@@ -5700,20 +5726,16 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 <path d="M12 5v14" />
               </Svg>
             </button>
-            <a
-              href={`${base}plugins/`}
+            <button
+              type="button"
               data-hint="我的插件"
-              onClick={() => {
-                const leaving = storeRef.current?.activeId;
-                const pruned = pruneEphemeralSession(leaving);
-                if (pruned && pruned !== storeRef.current) {
-                  commitStore(pruned);
-                }
-              }}
-              className="tw-rail-plugin-btn tw-rail-plugin-btn--icon w-8 h-8 flex items-center justify-center rounded-lg"
+              onClick={() => setPluginsOpen((v) => !v)}
+              className={`tw-rail-plugin-btn tw-rail-plugin-btn--icon w-8 h-8 flex items-center justify-center rounded-lg ${
+                pluginsOpen ? 'is-active' : ''
+              }`}
             >
               <PluginIcon className="w-4 h-4" />
-            </a>
+            </button>
           </div>
         )}
 
@@ -5894,7 +5916,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         )}
       </aside>
 
-      <div className="flex-1 min-w-0 flex flex-col">
+      <div className={`min-w-0 flex flex-col flex-1 ${pluginsOpen ? 'hidden' : ''}`}>
         {/* 空会话隐藏标题/Tab；有消息时入场 */}
         {!empty ? (
           <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
@@ -6111,19 +6133,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                 <h2 className="mt-5 text-[22px] leading-8 font-semibold tracking-tight text-stone-800">
                   {t('chat.emptyTitle', undefined, generalPrefs.language)}
                 </h2>
-                {!settings ? (
-                  <>
-                    <p className="mt-2 text-sm text-stone-500 max-w-md">
-                      {t('chat.emptyNoModel', undefined, generalPrefs.language)}
-                    </p>
-                    <button
-                      onClick={() => openSettings('model')}
-                      className="mt-4 px-4 py-2 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] transition-colors"
-                    >
-                      {t('chat.configureModel', undefined, generalPrefs.language)}
-                    </button>
-                  </>
-                ) : null}
               </div>
             ) : null}
             {!empty ? (
@@ -7376,7 +7385,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         rows={1}
                         placeholder={
                           !settings
-                            ? '请先配置模型（右下角「配置模型」或左下角「设置」→ 模型）'
+                            ? '请先配置模型（左下角「设置」→ 模型）'
                             : sendQueue.length > 0 && streaming
                               ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
                               : '请输入内容，或用 @ 引用文档'
@@ -7386,7 +7395,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 px-3 pb-3 pt-3">
+                  {/* 始终单行；窄容器下工作区 / 权限文字由 .tw-composer-bar 的 container query 收成图标 */}
+                  <div className="tw-composer-bar flex items-center gap-1.5 px-3 pb-3 pt-3">
                     {/* 「+」：打开输入框上方添加面板（对齐 dsh） */}
                     <button
                       type="button"
@@ -7418,12 +7428,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       <Menu>
                         <MenuButton
                           title={composerWsPath ? `工作区：${composerWsPath}` : '选择工作区'}
+                          aria-label={composerWsLabel ? `工作区：${composerWsLabel}` : '选择工作区'}
                           disabled={wsBusy}
-                          className="group flex items-center gap-1 h-7 max-w-[min(40vw,11rem)] pl-1.5 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors disabled:opacity-50"
+                          className="tw-composer-bar-ws group flex items-center gap-1 h-7 shrink-0 max-w-[min(40vw,11rem)] pl-1.5 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors disabled:opacity-50"
                         >
                           <FolderIcon className="w-3.5 h-3.5 shrink-0 text-stone-500" />
-                          <span className="truncate">{composerWsLabel}</span>
-                          <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
+                          <span className="tw-composer-bar-label truncate">{composerWsLabel}</span>
+                          <ChevronIcon className="tw-composer-bar-chevron w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
                         </MenuButton>
                         <MenuItems
                           transition
@@ -7479,21 +7490,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     {/* 访问权限（dsh 左侧权限菜单） */}
                     <Menu>
                       <MenuButton
-                        title="访问权限"
-                        className="group flex items-center gap-1 h-7 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
+                        title={`访问权限：${accessOpt.label}`}
+                        aria-label={`访问权限：${accessOpt.label}`}
+                        className="tw-composer-bar-access group flex items-center gap-1 h-7 shrink-0 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
                       >
                         <ShieldIcon
                           level={access}
                           className="w-3.5 h-3.5 shrink-0 text-stone-500"
                         />
-                        {accessOpt.label}
+                        <span className="tw-composer-bar-label truncate">{accessOpt.label}</span>
                         <span
                           className={`ml-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${
                             fsLive ? 'bg-emerald-500' : 'bg-stone-300'
                           }`}
                           data-hint={fsLive ? 'Runner 在线' : 'Runner 离线'}
                         />
-                        <ChevronIcon className="w-3.5 h-3.5 text-stone-400 transition-transform group-data-[open]:rotate-180" />
+                        <ChevronIcon className="tw-composer-bar-chevron w-3.5 h-3.5 shrink-0 text-stone-400 transition-transform group-data-[open]:rotate-180" />
                       </MenuButton>
                       <MenuItems
                         transition
@@ -7551,7 +7563,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         void send();
                       }}
                       disabled={!streaming && !canSend}
-                      data-hint={streaming ? '停止生成' : '发送'}
+                      aria-label={streaming ? '停止生成' : '发送'}
                       className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
                         streaming
                           ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'
@@ -7594,6 +7606,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           </div>
         )}
       </div>
+      {pluginsOpen ? (
+        <div className="tw-plugins-rail flex-1 min-w-0 min-h-0 self-stretch h-full overflow-hidden flex flex-col">
+          <PluginsPage embedded />
+        </div>
+      ) : null}
       <CaseGenPanel
         open={caseGenPanelOpen}
         initial={caseGenConfig}

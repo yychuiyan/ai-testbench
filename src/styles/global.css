@@ -98,6 +98,10 @@ body,
 .tw-body {
   background-color: var(--tw-surface-page);
   color: var(--tw-label-primary);
+  /* 最小布局宽度：本平台是本地桌面工具，没有窄屏自适应方案。
+     视口窄于 1024px 时保持 1024px 布局并横向滚动，
+     而不是把工具栏 / 表格挤扁（文字竖排、按钮变形）。 */
+  min-width: 1024px;
 }
 
 .tw-main {
@@ -152,6 +156,38 @@ html[data-nav-collapsed='1'] .tw-main {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+/* 「需要本地服务」这类整页提示：只占内容高度，不被上面的 flex:1 拉到底部 */
+.tw-library-page > astro-island > .tw-lib-notice {
+  flex: 0 0 auto;
+  /* 岛屿是 flex 行容器，默认 align-items:stretch 会把提示条在交叉轴上撑满 */
+  align-self: flex-start;
+  min-height: 0;
+  /* 宽度占满内容区（左右边距一致），高度仍由内容自适应，不被拉到底 */
+  width: 100%;
+}
+
+/* 探测本地服务期间（live === null）：先铺一张安静的空白卡 + 转圈，
+   既不闪黄色告警，也不会让内容区先空一块再「长」出来 */
+.tw-lib-probing {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid var(--tw-border);
+  background: var(--tw-surface-panel);
+}
+
+.tw-lib-spin {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  border: 2.5px solid color-mix(in srgb, var(--tw-accent) 25%, transparent);
+  border-top-color: var(--tw-accent);
+  animation: tw-route-spin 0.7s linear infinite;
 }
 
 /* ── dsh 风格会话 / 工作区行 ── */
@@ -229,6 +265,57 @@ html[data-nav-collapsed='1'] .tw-main {
 .tw-rail-plugin-btn--icon.is-active {
   color: #fff;
   background: var(--tw-accent);
+}
+
+.tw-workbench-host {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tw-workbench-host > astro-island {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.tw-workbench-host > astro-island > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+.tw-plugins-rail {
+  background: var(--tw-surface-rail-solid);
+  border-left-color: var(--tw-border) !important;
+}
+
+.tw-plugins-page {
+  container-type: inline-size;
+  container-name: plugins;
+}
+
+.tw-plugins-rail .tw-plugins-page {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 按面板宽度分列，避免嵌在工作台右侧时仍按视口 md 挤成两列把标题截成「生..」 */
+.tw-plugin-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+@container plugins (min-width: 34rem) {
+  .tw-plugin-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 /* 会话行操作图标 */
@@ -612,7 +699,7 @@ html[data-theme='dark'] .tw-session-preview {
 
 .tw-nav-brand-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
 }
 
@@ -649,19 +736,22 @@ html[data-theme='dark'] .tw-session-preview {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 2px;
 }
 
 .tw-nav-brand-title-row {
   display: flex;
-  align-items: center;
+  /* 胶囊贴着标题上沿，再靠 margin-top 微微上提 = 文字的右上角 */
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
 }
 
 .tw-nav-brand-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.25;
   color: var(--tw-label-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -674,6 +764,7 @@ html[data-theme='dark'] .tw-session-preview {
   display: inline-flex;
   align-items: center;
   height: 18px;
+  margin-top: -3px;
   padding: 0 7px;
   border-radius: 999px;
   font-size: 10px;
@@ -685,20 +776,13 @@ html[data-theme='dark'] .tw-session-preview {
   background: var(--tw-accent-soft);
 }
 
-.tw-nav-tagline {
-  font-size: 11px;
-  color: var(--tw-label-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 侧栏右缘垂直居中：收起 / 展开 */
 .tw-nav-toggle {
   position: absolute;
   top: 50%;
   right: 0;
-  z-index: 30;
+  /* 高于空间下拉卡片（60）：卡片变长时不该把按钮压住 */
+  z-index: 70;
   transform: translate(50%, -50%);
   width: 22px;
   height: 44px;
@@ -720,6 +804,27 @@ html[data-theme='dark'] .tw-session-preview {
     color 140ms ease,
     box-shadow 140ms ease,
     transform 140ms ease;
+  /* 按钮横跨 <main> 左边界（一半压在 main 上）。路由切换时 <main> 带
+     view-transition-name，它的快照会作为独立图层画在整页快照之上，把按钮
+     右半边盖掉（只剩一半）。给它单独的 view-transition-name 并抬高图层，
+     让它整颗跟着过渡走、不被裁切。 */
+  view-transition-name: tw-nav-toggle;
+}
+
+::view-transition-group(tw-nav-toggle) {
+  z-index: 100;
+  animation: none;
+}
+
+::view-transition-new(tw-nav-toggle) {
+  animation: none;
+}
+
+/* 只保留「新」层：按钮前后状态一致，无需交叉淡入。
+   若两层同时不透明叠加，按钮自带的半透明投影会被画两遍 → 过渡瞬间阴影变重。 */
+::view-transition-old(tw-nav-toggle) {
+  animation: none;
+  visibility: hidden;
 }
 
 .tw-nav-toggle:hover {
@@ -1213,6 +1318,315 @@ html[data-nav-collapsed='1'] .tw-nav-provider-chip {
   display: none;
 }
 
+/* ── 侧栏顶部：数据空间切换器 ── */
+.tw-nav-space {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--tw-border);
+}
+
+.tw-nav-space-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.tw-nav-space-btn {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--tw-border);
+  background: transparent;
+  color: var(--tw-label-primary);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.tw-nav-space-btn:hover {
+  background: var(--tw-accent-soft);
+  border-color: color-mix(in srgb, var(--tw-accent) 35%, var(--tw-border));
+}
+
+.tw-nav-space-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tw-accent);
+}
+
+.tw-nav-space-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tw-nav-space-cap {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--tw-label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tw-nav-space-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tw-nav-space-caret {
+  flex: none;
+  color: var(--tw-label-tertiary);
+}
+
+.tw-nav-space-pop {
+  z-index: 60;
+  /* 宽度对齐触发按钮（Headless UI anchor 写入 --button-width）：
+     展开时按钮 219px，卡片同宽，左右边缘齐平；侧栏收起时按钮只剩 ~48px，
+     用 13.5rem 兜底，避免卡片窄到没法看。 */
+  width: max(13.5rem, var(--button-width, 13.5rem));
+  /* anchor 会内联写「视口级」的 max-width / max-height，
+     不 !important 覆盖的话超长路径会把卡片撑到 450px 宽 */
+  max-width: min(22rem, calc(100vw - 2rem)) !important;
+  max-height: min(60vh, 30rem) !important;
+  overflow-y: auto;
+  padding: 6px;
+  /* 1px 描边让卡片四边（尤其顶部）与侧栏背景分得清；色值走主题变量 */
+  border: 1px solid var(--tw-border);
+  border-radius: 12px;
+  /* 行距统一由 gap 控制，避免条目贴在一起 */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 底色 / 边框 / 阴影统一由下方「浮层」主题规则给出（跟主题变量走） */
+  outline: none;
+}
+
+.tw-nav-space-group {
+  padding: 6px 9px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--tw-label-tertiary);
+}
+
+.tw-nav-space-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tw-label-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.tw-nav-space-item:hover,
+.tw-nav-space-item[data-focus] {
+  background: var(--tw-accent-soft);
+}
+
+.tw-nav-space-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tw-nav-space-item-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tw-nav-space-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tw-nav-space-item-path {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--tw-label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 行尾箭头 / 齿轮图标：不参与压缩，色值弱化 */
+.tw-nav-space-item-go,
+.tw-nav-space-item-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tw-label-tertiary);
+}
+
+.tw-nav-space-item:hover .tw-nav-space-item-go,
+.tw-nav-space-item[data-focus] .tw-nav-space-item-go {
+  color: var(--tw-accent);
+}
+
+.tw-nav-space-item--manage .tw-nav-space-item-name {
+  color: var(--tw-accent);
+  font-weight: 500;
+}
+
+.tw-nav-space-item--manage .tw-nav-space-item-ico {
+  color: var(--tw-accent);
+}
+
+.tw-nav-space-sep {
+  height: 1px;
+  margin: 5px 9px;
+  background: var(--tw-border);
+}
+
+.tw-nav-space-hint {
+  padding: 8px 9px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--tw-label-tertiary);
+}
+
+.tw-nav-space-err {
+  margin: 4px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b42318;
+  background: #fef3f2;
+}
+
+/* 深色下浅红底会是一块刺眼的白斑，改用与工作台红字一致的柔和红 */
+html[data-theme='dark'] .tw-nav-space-err {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+html[data-nav-collapsed='1'] .tw-nav-space {
+  padding-inline: 6px;
+}
+
+html[data-nav-collapsed='1'] .tw-nav-space-text,
+html[data-nav-collapsed='1'] .tw-nav-space-caret {
+  display: none;
+}
+
+html[data-nav-collapsed='1'] .tw-nav-space-btn {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+/* ── 空间切换器骨架 ──
+   `SpaceSwitcher` 是 client:only 岛屿：服务端不渲染，首帧为空。
+   先铺一块同高的静态骨架占位，避免刷新时「先空一块、再弹出来」的跳动；
+   岛屿渲染出内容后（或确认无本地服务后）由 CSS 隐藏。 */
+:root {
+  --tw-nav-space-slot-h: 62px;
+}
+
+html[data-nav-collapsed='1'] {
+  --tw-nav-space-slot-h: 48px;
+}
+
+.tw-nav-space-slot {
+  position: relative;
+  min-height: var(--tw-nav-space-slot-h);
+}
+
+.tw-nav-space-ph {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tw-nav-space-ph-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 43px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--tw-border);
+}
+
+html[data-nav-collapsed='1'] .tw-nav-space-ph-box {
+  justify-content: center;
+  height: 29px;
+  padding-inline: 0;
+}
+
+.tw-nav-space-ph-ico {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: var(--tw-border);
+}
+
+.tw-nav-space-ph-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+html[data-nav-collapsed='1'] .tw-nav-space-ph-lines {
+  display: none;
+}
+
+.tw-nav-space-ph-bar {
+  display: block;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--tw-border);
+}
+
+.tw-nav-space-ph-bar.is-cap {
+  width: 38%;
+  height: 6px;
+  opacity: 0.75;
+}
+
+.tw-nav-space-ph-bar.is-name {
+  width: 66%;
+}
+
+/* 岛屿渲染出内容 → 隐藏骨架 */
+.tw-nav-space-slot:has(> astro-island:not(:empty)) .tw-nav-space-ph {
+  display: none;
+}
+
+/* 已确认没有本地服务（纯静态部署）→ 骨架也不保留 */
+html[data-space-service='none'] .tw-nav-space-ph {
+  display: none;
+}
+
 /* ── 深色主题（同系炭灰，蓝强调） ── */
 html[data-theme='dark'] {
   --tw-accent: #7aa2f7;
@@ -1257,7 +1671,15 @@ html[data-theme='dark'] .tw-main {
 
 /* 抬升表面：卡片 / 面板 / 浮层 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .bg-white,
     .bg-\[\#f4f5f7\],
@@ -1277,7 +1699,15 @@ html[data-theme='dark']
 
 /* 凹槽表面：分段轨道 / 输入类，比面板再暗一层 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     [class~='bg-stone-100'],
     [class~='bg-stone-100/80'],
@@ -1291,21 +1721,45 @@ html[data-theme='dark']
    深色下用一层极淡的白色叠加代替，避免整块泛白。stone-300/400 多用于进度条与状态点，
    在深色下本身可见，故不纳入。 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='bg-stone-200'], [class~='bg-stone-200/70']) {
   background-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 /* 强调表面：浅蓝底 → 柔和 accent（实心块同时改文字色，hover 块只改底色） */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='bg-[#e8f0fe]'], [class~='bg-[#edf3fe]'], [class~='data-[focus]:bg-[#edf3fe]']) {
   background-color: var(--tw-accent-soft) !important;
   color: var(--tw-accent) !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     [class~='bg-[#edf3fe]/50'],
     [class~='hover:bg-[#e8f0fe]'],
@@ -1317,7 +1771,15 @@ html[data-theme='dark']
 
 /* 中性 hover：统一成极淡提亮，避免 stone-200 / white 在深色下泛白 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .hover\:bg-stone-50:hover,
     .hover\:bg-stone-100:hover,
@@ -1336,7 +1798,15 @@ html[data-theme='dark']
 
 /* 边框：近白描边 → --tw-border */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .border-stone-100,
     .border-stone-200,
@@ -1353,27 +1823,59 @@ html[data-theme='dark']
  * 保留近白描边。这里给一个比 --tw-border 略亮的炭灰，既不刺眼又保住输入框边界。
  */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   [class~='border-stone-300'] {
   border-color: #3a4050 !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='hover:border-stone-300']:hover, [class~='hover:border-stone-400']:hover) {
   border-color: #4b5160 !important;
 }
 
 /* ring：近白描边 → --tw-border（可用变量覆盖，替换原先直接盖 box-shadow 的写法） */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='ring-stone-200'], [class~='ring-stone-200/80']) {
   --tw-ring-color: var(--tw-border) !important;
 }
 
 /* 文字：主色 / 次级两档 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .text-stone-900,
     .text-stone-800,
@@ -1384,13 +1886,29 @@ html[data-theme='dark']
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(.text-stone-600, .text-stone-500, .text-stone-400, [class~='disabled:text-stone-400']) {
   color: var(--tw-label-secondary) !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     [class~='hover:text-stone-400']:hover,
     [class~='hover:text-stone-500']:hover,
@@ -1400,7 +1918,15 @@ html[data-theme='dark']
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     [class~='hover:text-stone-700']:hover,
     [class~='hover:text-stone-800']:hover,
@@ -1411,7 +1937,15 @@ html[data-theme='dark']
 
 /* 强调文字：accent；带透明度后缀的按透明度折算，保住 /70、/80 的层次 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     [class~='text-[#4176e6]'],
     .text-\[\#4176e6\],
@@ -1424,15 +1958,49 @@ html[data-theme='dark']
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='text-[#4176e6]/70']) {
   color: color-mix(in srgb, var(--tw-accent) 70%, transparent) !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is([class~='text-[#4176e6]/80']) {
   color: color-mix(in srgb, var(--tw-accent) 80%, transparent) !important;
+}
+
+/*
+ * 行分隔线「闪黑」：Tailwind v4 的 divide-{color} 只作用于 `:not(:last-child)`，
+ * 最后一个子元素拿不到显式 border-color，会回退成 currentColor（近黑）。
+ * 行上再挂 transition-colors（含 border-color）时，切换排序 / 筛选引发 DOM 重排，
+ * 某个子元素会短暂地从「最后一个」变成「非最后一个」——border-width 瞬间 0 → 1px，
+ * 而 border-color 仍从 currentColor 渐变回 stone-100，
+ * 于是浅色表格上会闪出一条近黑横线（约 150ms）。
+ * 这里把颜色钉到全部子元素（含最后一个），从根上消除 currentColor 回退。
+ * 深色主题由下方带 !important 的规则覆盖，不会受影响。
+ */
+[class*='divide-stone-100'] > * {
+  border-color: var(--color-stone-100);
+}
+
+[class*='divide-stone-200'] > * {
+  border-color: var(--color-stone-200);
 }
 
 /*
@@ -1444,7 +2012,15 @@ html[data-theme='dark']
  * 不会误伤，而通配能顺带覆盖将来新增的 divide-stone-200 等。
  */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   [class*='divide-stone-']
   > * {
   border-color: var(--tw-border) !important;
@@ -1458,26 +2034,58 @@ html[data-theme='dark']
  *   (c) [class*='bg-amber-50'] 通配会把 hover:bg-amber-50/40 钉成常驻琥珀底。
  */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(.text-red-600, .text-red-700) {
   color: #f87171 !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(.bg-red-50, .hover\:bg-red-50:hover, [class~='bg-red-50/40']) {
   background-color: rgba(248, 113, 113, 0.12) !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(.border-red-200, [class~='border-red-200/80']) {
   border-color: rgba(248, 113, 113, 0.4) !important;
 }
 
 /* amber 提示底：50（提示条）/ 100（徽标）/ 及其半透明变体 */
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .bg-amber-50,
     [class~='bg-amber-50/30'],
@@ -1489,19 +2097,43 @@ html[data-theme='dark']
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   [class~='bg-amber-100'] {
   background-color: rgba(251, 191, 36, 0.2) !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900) {
   color: #fbbf24 !important;
 }
 
 html[data-theme='dark']
-  :is(main, .tw-settings-dialog, .tw-popover, .tw-confirm-dialog, .tw-select-menu)
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
   :is(
     .border-amber-100,
     .border-amber-200,
@@ -1511,9 +2143,69 @@ html[data-theme='dark']
   border-color: rgba(251, 191, 36, 0.28) !important;
 }
 
+/* emerald 成功语义（数据空间新建 / 导入成功的提示条） */
+html[data-theme='dark']
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
+  :is(.bg-emerald-50, [class~='bg-emerald-50/60']) {
+  background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+html[data-theme='dark']
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
+  :is(.border-emerald-200, [class~='border-emerald-200/80']) {
+  border-color: rgba(52, 211, 153, 0.4) !important;
+}
+
+html[data-theme='dark']
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
+  :is(.text-emerald-600, .text-emerald-700) {
+  color: #34d399 !important;
+}
+
+/* 强调软底：accent 的 /10 淡底（数据空间列表的「当前」标记等） */
+html[data-theme='dark']
+  :is(
+    main,
+    .tw-settings-dialog,
+    .tw-popover,
+    .tw-confirm-dialog,
+    .tw-select-menu,
+    .tw-space-dialog,
+    .tw-nav-space-pop
+  )
+  [class~='bg-[#4176e6]/10'] {
+  background-color: var(--tw-accent-soft) !important;
+}
+
 /* 浮层 / 确认框：直接跟主题变量，不依赖 bg-white 覆盖 */
 .tw-popover,
-.tw-confirm-dialog {
+.tw-confirm-dialog,
+.tw-space-dialog,
+.tw-nav-space-pop {
   background-color: var(--tw-surface-panel) !important;
   border-color: var(--tw-border) !important;
   color: var(--tw-label-primary);
@@ -1521,7 +2213,9 @@ html[data-theme='dark']
 }
 
 html[data-theme='dark'] .tw-popover,
-html[data-theme='dark'] .tw-confirm-dialog {
+html[data-theme='dark'] .tw-confirm-dialog,
+html[data-theme='dark'] .tw-space-dialog,
+html[data-theme='dark'] .tw-nav-space-pop {
   box-shadow: 0 16px 40px -8px rgb(0 0 0 / 0.55);
 }
 
@@ -1731,6 +2425,28 @@ html[data-theme='dark'] .tw-settings-dialog .bg-\[\#4176e6\] {
   color: #fff !important;
 }
 
+/* 数据空间面板：与 SettingsDialog 同样的输入控件 / accent 实心按钮处理。
+   面板落在侧栏 aside 内，不在 main 作用域里，所以这里显式指定。 */
+html[data-theme='dark'] .tw-space-dialog input {
+  background-color: var(--tw-surface-recessed) !important;
+  border-color: #3a3f4d !important;
+  color: var(--tw-label-primary) !important;
+}
+
+html[data-theme='dark'] .tw-space-dialog input::placeholder {
+  color: var(--tw-label-tertiary) !important;
+}
+
+html[data-theme='dark'] .tw-space-dialog button.bg-\[\#4176e6\],
+html[data-theme='dark'] .tw-space-dialog .bg-\[\#4176e6\] {
+  background-color: var(--tw-accent) !important;
+  color: #fff !important;
+}
+
+html[data-theme='dark'] .tw-space-dialog [class~='hover:bg-[#3565c7]']:hover {
+  background-color: color-mix(in srgb, var(--tw-accent) 88%, #000) !important;
+}
+
 /* 插件页 toast */
 .tw-plugin-toast {
   animation: tw-pop-in 160ms ease-out;
@@ -1794,6 +2510,52 @@ html[data-theme='dark'] .tw-select-menu {
 .tw-popover .border-stone-200,
 .tw-popover .border-t {
   border-color: var(--tw-border) !important;
+}
+
+/*
+ * 输入框底栏（+ / 工作区 / 权限 / 模型 / 发送）
+ * 始终单行不换行；容器变窄时把工作区、权限的文字收成图标，
+ * 模型名再截短一点，避免在 min-width:1024 布局下挤成两行。
+ */
+.tw-composer-bar {
+  container-type: inline-size;
+  container-name: composer-bar;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+@container composer-bar (max-width: 34rem) {
+  .tw-composer-bar-label {
+    display: none;
+  }
+
+  /* 收成图标后去掉多余左右内边距，按钮更紧凑 */
+  .tw-composer-bar-ws,
+  .tw-composer-bar-access {
+    max-width: none;
+    padding-left: 0.375rem;
+    padding-right: 0.25rem;
+  }
+
+  /* 窄栏下箭头占位多余，悬停 title / aria-label 已能说明含义 */
+  .tw-composer-bar-chevron {
+    display: none;
+  }
+
+  .tw-composer-bar-model-name {
+    max-width: 7.5rem;
+  }
+}
+
+@container composer-bar (max-width: 26rem) {
+  /* 再窄：模型名再收，推理档位文字也隐掉（title 仍保留完整信息） */
+  .tw-composer-bar-effort {
+    display: none;
+  }
+
+  .tw-composer-bar-model-name {
+    max-width: 5.5rem;
+  }
 }
 
 /* 输入区目标 / 计划模式胶囊（随主题） */
@@ -2362,6 +3124,18 @@ html[data-theme='dark'] .prose a:hover {
 .tw-menu-anim[data-closed] {
   opacity: 0;
   transform: scale(0.96);
+}
+
+.tw-nav-space-pop.tw-menu-anim {
+  transform-origin: 20px top;
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tw-nav-space-pop.tw-menu-anim[data-closed] {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.96);
 }
 
 /* ── 溢出预览气泡（OverflowHint）──

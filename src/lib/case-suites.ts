@@ -4,6 +4,7 @@
  * - 静态站：localStorage
  */
 import type { TestCaseRow } from './export';
+import { spaceScopedKey } from './space-scope';
 
 export interface CaseSuite {
   id: string;
@@ -45,7 +46,7 @@ function normalizeStore(raw: Partial<CaseSuiteStore> | null | undefined): CaseSu
 
 function readLs(): CaseSuiteStore {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(spaceScopedKey(LS_KEY));
     if (!raw) return { suites: [] };
     return normalizeStore(JSON.parse(raw) as Partial<CaseSuiteStore>);
   } catch {
@@ -55,7 +56,7 @@ function readLs(): CaseSuiteStore {
 
 function writeLs(store: CaseSuiteStore) {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(store));
+    localStorage.setItem(spaceScopedKey(LS_KEY), JSON.stringify(store));
   } catch {
     // ignore
   }

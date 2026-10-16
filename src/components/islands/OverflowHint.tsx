@@ -151,7 +151,7 @@ export default function OverflowHint({
               data-closed={entered ? undefined : ''}
               className={`tw-tooltip tw-tooltip-anim ${
                 pos.openUp ? 'is-up' : 'is-down'
-              } pointer-events-none fixed rounded-lg px-2.5 py-1.5 text-[12px] leading-5 break-all text-stone-700 shadow-lg`}
+              } pointer-events-none fixed rounded-md px-2 py-1 text-[12px] leading-5 break-all text-stone-700 shadow-lg`}
               style={{
                 zIndex: Z_INDEX,
                 top: pos.top,

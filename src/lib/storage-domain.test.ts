@@ -10,9 +10,9 @@ describe('storage-domain', () => {
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-storage-dom-'));
-    fs.mkdirSync(path.join(tmp, '.local'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, '.local', 'sessions.json'), '{"sessions":[]}\n');
-    fs.mkdirSync(path.join(tmp, '.local', 'spill'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.tb', 'local'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.tb', 'local', 'sessions.json'), '{"sessions":[]}\n');
+    fs.mkdirSync(path.join(tmp, '.tb', 'local', 'spill'), { recursive: true });
   });
 
   after(() => {

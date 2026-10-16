@@ -1,13 +1,18 @@
 /**
- * 过大内容溢出落盘：`.local/spill/<id>.txt`
+ * 过大内容溢出落盘：`.tb/local/spill/<id>.txt`
  * HTTP：`/__tb_spill`
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { getDataRoot } from './space-context.mjs';
+import { LOCAL_REL } from './space-layout.mjs';
+
 const PREFIX = '/__tb_spill';
 const MAX_BYTES = 2_000_000;
 const MAX_FILES = 200;
+/** 溢出缓存的 posix 相对路径（同时用于落盘校验与前端展示） */
+const SPILL_REL = `${LOCAL_REL}/spill`;
 
 function sendJson(res, status, body) {
   res.statusCode = status;
@@ -25,7 +30,7 @@ function readBody(req) {
 }
 
 function spillDir(root) {
-  return path.join(root, '.local', 'spill');
+  return path.join(root, LOCAL_REL, 'spill');
 }
 
 function uid() {
@@ -67,14 +72,15 @@ export function tbSpillPlugin() {
   return {
     name: 'tb-spill',
     configureServer(server) {
-      const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const root = getDataRoot();
 
         try {
           if (url === `${PREFIX}/health` && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, mode: 'file', dir: '.local/spill' });
+            return sendJson(res, 200, { ok: true, mode: 'file', dir: SPILL_REL });
           }
 
           if (url === `${PREFIX}/write` && req.method === 'POST') {
@@ -98,7 +104,7 @@ export function tbSpillPlugin() {
             const fp = path.join(dir, name);
             fs.writeFileSync(fp, buf);
             pruneOld(dir);
-            const rel = path.join('.local', 'spill', name).replace(/\\/g, '/');
+            const rel = path.join(SPILL_REL, name).replace(/\\/g, '/');
             return sendJson(res, 200, {
               ok: true,
               id,
@@ -113,7 +119,7 @@ export function tbSpillPlugin() {
             const rel = String(body.path ?? '')
               .replace(/\\/g, '/')
               .trim();
-            if (!rel.startsWith('.local/spill/') || rel.includes('..')) {
+            if (!rel.startsWith(`${SPILL_REL}/`) || rel.includes('..')) {
               return sendJson(res, 400, { ok: false, error: 'invalid path' });
             }
             const fp = path.join(root, rel);

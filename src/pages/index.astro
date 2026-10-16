@@ -10,9 +10,7 @@ const slashDocs = buildSlashDocs(knowledge, templates);
 ---
 
 <Base title="我的工作台 · TestBench">
-  <div class="h-screen flex flex-col overflow-hidden">
-    <div class="flex-1 min-h-0">
-      <ChatApp client:only="react" slashDocs={slashDocs} />
-    </div>
+  <div class="tw-workbench-host">
+    <ChatApp client:only="react" slashDocs={slashDocs} />
   </div>
 </Base>

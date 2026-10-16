@@ -11,7 +11,10 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -117,10 +120,11 @@ function ensureRoot(absRoot, onReady, readyFlag) {
   fs.mkdirSync(absRoot, { recursive: true });
   const keep = path.join(absRoot, '.gitkeep');
   if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
-  // onReady 每个进程只跑一次，避免 health 反复执行种子逻辑
-  if (typeof onReady === 'function' && readyFlag && !readyFlag.done) {
+  // 每个空间各跑一次：切换空间后新目录也要补种子 / 做旧名迁移。
+  // 同一空间的后续 health 不再重复跑（种子写入是「目标已存在则跳过」）。
+  if (typeof onReady === 'function' && readyFlag && readyFlag.root !== absRoot) {
     onReady(absRoot);
-    readyFlag.done = true;
+    readyFlag.root = absRoot;
   }
 }
 
@@ -182,23 +186,32 @@ export function migrateLegacyRoot(projectRoot, legacyNames, dirName) {
 }
 
 /**
- * @param {{ prefix: string, dirName: string, name: string, legacyDirNames?: string[], onReady?: (absRoot: string) => void }} opts
+ * @param {{ prefix: string, dirName: string, name: string, legacyDirNames?: string[], onReady?: (absRoot: string) => void, shared?: boolean }} opts
  * @returns {import('vite').Plugin}
  */
 function createDocsPlugin(opts) {
-  const { prefix, dirName, name, legacyDirNames, onReady } = opts;
+  const { prefix, dirName, name, legacyDirNames, onReady, shared } = opts;
   return {
     name,
     configureServer(server) {
-      const projectRoot = server.config.root;
-      migrateLegacyRoot(projectRoot, legacyDirNames, dirName);
-      const absRoot = path.join(projectRoot, dirName);
       const readyFlag = { done: false };
-      ensureRoot(absRoot, onReady, readyFlag);
+
+      /** 每次请求按当前数据空间解析根目录（切换空间后自动生效） */
+      const resolveDocsRoot = () => {
+        // 提示词 / 知识库跨空间共用，落在公共空间，新建空间也能看到同一套
+        const projectRoot = shared ? getPublicSpaceRoot() : getDataRoot();
+        // 旧目录迁移必须在建目录之前做，否则搬迁逻辑再也触发不到
+        migrateLegacyRoot(projectRoot, legacyDirNames, dirName);
+        const absRoot = path.join(projectRoot, dirName);
+        ensureRoot(absRoot, onReady, readyFlag);
+        return absRoot;
+      };
 
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(prefix)) return next();
+
+        const absRoot = resolveDocsRoot();
 
         try {
           if (url === `${prefix}/health` && req.method === 'GET') {
@@ -564,9 +577,33 @@ const CHAT_SYSTEM_PROMPT_FILE = '系统提示词.md';
 /** prompts 下禁止删除的文件（含旧名，防止误删） */
 const PROTECTED_PROMPT_FILES = new Set([CHAT_SYSTEM_PROMPT_FILE, 'AI工作台系统提示词.md']);
 
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PROMPT_SEEDS = path.join(PKG_ROOT, 'config', 'seeds', DOC_ROOT_DIRS.prompts.dirName);
+
 const DEFAULT_CHAT_SYSTEM_PROMPT =
-  '你是一名资深测试工程师，擅长测试设计、用例编写、缺陷分析与质量风险评估。' +
-  '回答务实、结构化：先给结论，再给可执行的步骤或模板；涉及用例时使用规范的字段格式。\n';
+  '你是 TestBench 的 AI 助手：具备资深测试与软件工程能力，也能回答一般问题。\n\n' +
+  '回答原则：\n' +
+  '- 紧扣用户当前问题作答；问什么答什么，先给直接结论。\n' +
+  '- 用户没有问测试、用例、缺陷或质量风险时，不要主动展开测试设计、用例表、知识库套话或无关长文。\n' +
+  '- 仅在用户明确涉及测试/质量/用例时，再给出结构化建议（结论先行、可执行步骤、规范字段；技术问题交代前提、风险与验证方式）。\n' +
+  '- 需要联网或实时信息而你做不到时，直接说明限制；不要用无关内容凑篇幅。\n' +
+  '- 用户用 @ 引用了文档，或问题明显依赖知识库/模板时，再检索或阅读这些资料。\n';
+
+/** 把 config/seeds/提示词管理 里缺失的文件补进当前空间（不覆盖已有） */
+function plantPromptSeeds(absRoot) {
+  if (!fs.existsSync(PROMPT_SEEDS)) return;
+  for (const name of fs.readdirSync(PROMPT_SEEDS)) {
+    if (name.startsWith('.')) continue;
+    const from = path.join(PROMPT_SEEDS, name);
+    const to = path.join(absRoot, name);
+    try {
+      if (!fs.statSync(from).isFile() || fs.existsSync(to)) continue;
+      fs.copyFileSync(from, to);
+    } catch {
+      // 种子只是初始内容：失败不阻断访问
+    }
+  }
+}
 
 /** 已废弃的「默认用例提示词」文件名，启动时清理，避免与插件所选提示词混淆 */
 const LEGACY_CASE_DEFAULT_NAMES = ['默认提示词.md', '默认用例生成.md', '用例生成默认提示词.md'];
@@ -605,6 +642,7 @@ export function tbKnowledgePlugin() {
     prefix: '/__tb_knowledge',
     ...DOC_ROOT_DIRS.knowledge,
     name: 'tb-knowledge',
+    shared: true,
     // 知识库为平铺存储：分类只写在 frontmatter 的 category，不再按分类建子目录
   });
 }
@@ -614,8 +652,9 @@ export function tbPromptsPlugin() {
     prefix: '/__tb_prompts',
     ...DOC_ROOT_DIRS.prompts,
     name: 'tb-prompts',
+    shared: true,
     onReady(absRoot) {
-      // 不再种子「默认提示词」：用例生成须在插件面板中显式选择提示词
+      // 清理旧版「默认提示词」文件名，避免与插件所选提示词混淆
       for (const n of LEGACY_CASE_DEFAULT_NAMES) {
         const p = path.join(absRoot, n);
         if (fs.existsSync(p)) {
@@ -631,6 +670,8 @@ export function tbPromptsPlugin() {
         ['AI工作台系统提示词.md'],
         CHAT_SYSTEM_PROMPT_FILE,
       );
+      // 系统提示词 + 功能测试用例提示词：与 prepareSpaceDir 同源，切换空间后也能补上
+      plantPromptSeeds(absRoot);
       if (!fs.existsSync(chatSeed)) {
         fs.writeFileSync(chatSeed, DEFAULT_CHAT_SYSTEM_PROMPT, 'utf8');
       }

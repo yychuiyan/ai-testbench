@@ -1,10 +1,10 @@
 /**
  * 本地应用配置 + 会话历史：
- * - 默认：`config/app.defaults.json`（进仓库，绝不含 apiKey）
- * - 本地：`.local/app.config.json`（gitignore；可含 apiKey，页面改动自动写回）
+ * - 默认：包内 `config/app.defaults.json`，落到空间 `.tb/config/app.defaults.json`（绝不含 apiKey）
+ * - 本地：`.tb/local/app.config.json`（gitignore；可含 apiKey，页面改动自动写回）
  * - Key 优先级：`.env` 的 TW_API_KEY > 当前激活提供商 providers[].apiKey > 旧 model.apiKey
- * - 会话：`.local/sessions.json`
- * - 用例套件：`.local/case-suites.json`
+ * - 会话：`.tb/local/sessions.json`
+ * - 用例套件：`.tb/local/case-suites.json`
  * `astro dev` 与 `ai-testbench` CLI 本地服务均可。
  */
 import fs from 'node:fs';
@@ -17,6 +17,8 @@ import {
   readLatestCheckpoint,
 } from './session-persist.mjs';
 import { querySessionIndex, syncSessionQueryIndex } from './session-query-sqlite.mjs';
+import { getDataRoot } from '../builtin/session/space-context.mjs';
+import { spaceConfigFile, spaceLocalFile } from '../builtin/session/space-layout.mjs';
 import { listStorageDomains } from './storage-domain.mjs';
 
 const PREFIX = '/__tb_config';
@@ -52,23 +54,23 @@ function loadDotEnv(root) {
 }
 
 function defaultsPath(root) {
-  return path.join(root, 'config', 'app.defaults.json');
+  return spaceConfigFile(root, 'app.defaults.json');
 }
 
 function localConfigPath(root) {
-  return path.join(root, '.local', 'app.config.json');
+  return spaceLocalFile(root, 'app.config.json');
 }
 
 function sessionsPath(root) {
-  return path.join(root, '.local', 'sessions.json');
+  return spaceLocalFile(root, 'sessions.json');
 }
 
 function caseSuitesPath(root) {
-  return path.join(root, '.local', 'case-suites.json');
+  return spaceLocalFile(root, 'case-suites.json');
 }
 
 function caseSessionsPath(root) {
-  return path.join(root, '.local', 'case-sessions.json');
+  return spaceLocalFile(root, 'case-sessions.json');
 }
 
 function readJson(fp, fallback) {
@@ -142,7 +144,7 @@ function mergeWithDefaults(defaults, local) {
 function ensureLocalConfig(root) {
   const defaults = readJson(defaultsPath(root), null);
   if (!defaults) {
-    throw new Error('缺少 config/app.defaults.json');
+    throw new Error('缺少空间配置 .tb/config/app.defaults.json');
   }
   const fp = localConfigPath(root);
   let local = readJson(fp, null);
@@ -204,9 +206,10 @@ export function tbConfigPlugin() {
   return {
     name: 'tb-config',
     configureServer(server) {
-      const root = server.config.root;
+      // 数据根惰性读取：切换数据空间后无需重启即可生效
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
+        const root = getDataRoot();
 
         try {
           if (url === `${PREFIX}/health` && req.method === 'GET') {

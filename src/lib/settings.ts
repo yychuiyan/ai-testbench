@@ -1,6 +1,6 @@
 /**
  * 模型 / 通用 / 权限设置。
- * 本地 dev：落盘 `.local/app.config.json`；静态站回退 localStorage。
+ * 本地 dev：落盘 `.tb/local/app.config.json`；静态站回退 localStorage。
  */
 import {
   flushAppConfig,

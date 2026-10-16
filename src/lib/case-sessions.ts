@@ -2,6 +2,7 @@
  * 用例生成会话（与 AI 工作台会话隔离）
  */
 import { CASE_TYPE_OPTS, caseTypeMeta, listCaseTypes, type CaseType } from './case-types';
+import { spaceScopedKey } from './space-scope';
 
 export type CaseOutputFormat = 'md' | 'xlsx' | 'csv';
 
@@ -84,7 +85,7 @@ function normalize(raw: Partial<CaseSessionStore> | null | undefined): CaseSessi
 
 function readLs(): CaseSessionStore {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(spaceScopedKey(LS_KEY));
     if (!raw) return { sessions: [], activeId: '' };
     return normalize(JSON.parse(raw));
   } catch {
@@ -94,7 +95,7 @@ function readLs(): CaseSessionStore {
 
 function writeLs(store: CaseSessionStore) {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(store));
+    localStorage.setItem(spaceScopedKey(LS_KEY), JSON.stringify(store));
   } catch {
     // ignore
   }

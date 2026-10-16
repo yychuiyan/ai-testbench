@@ -4,9 +4,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { LOCAL_REL } from '../builtin/session/space-layout.mjs';
 
 export function sessionQueryDbPath(root) {
-  return path.join(root, '.local', 'session-query.sqlite');
+  return path.join(root, LOCAL_REL, 'session-query.sqlite');
 }
 
 function messageText(raw) {

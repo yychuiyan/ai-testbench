@@ -1,11 +1,14 @@
 /**
  * 主机级定时提醒：
- * - 落盘 `.local/schedules.json`
- * - 本地服务运行时 tick：到期写入 `.local/sessions.json` 对应会话
+ * - 落盘 `.tb/local/schedules.json`
+ * - 本地服务运行时 tick：到期写入 `.tb/local/sessions.json` 对应会话
  * - HTTP：`/__tb_schedule/*`
  */
 import fs from 'node:fs';
 import path from 'node:path';
+
+import { getDataRoot } from './space-context.mjs';
+import { LOCAL_REL } from './space-layout.mjs';
 
 const PREFIX = '/__tb_schedule';
 const TICK_MS = 15_000;
@@ -27,11 +30,11 @@ function readBody(req) {
 }
 
 function schedulesPath(root) {
-  return path.join(root, '.local', 'schedules.json');
+  return path.join(root, LOCAL_REL, 'schedules.json');
 }
 
 function sessionsPath(root) {
-  return path.join(root, '.local', 'sessions.json');
+  return path.join(root, LOCAL_REL, 'sessions.json');
 }
 
 function readJson(fp, fallback) {
@@ -228,23 +231,26 @@ export function tbSchedulePlugin() {
   return {
     name: 'tb-schedule',
     configureServer(server) {
-      const root = server.config.root;
-
       const tick = () => {
         try {
-          claimAndDeliverDue(root);
+          // 数据根惰性读取：切换数据空间后，定时扫描跟着切到新空间
+          claimAndDeliverDue(getDataRoot());
         } catch {
           // ignore tick errors
         }
       };
       if (timer) clearInterval(timer);
       timer = setInterval(tick, TICK_MS);
+      // 定时器只做后勤工作，不应阻止进程退出（否则测试 / 嵌入式调用会被永久挂住）
+      timer.unref?.();
       // 启动后稍晚扫一次
-      setTimeout(tick, 2_000);
+      setTimeout(tick, 2_000).unref?.();
 
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const root = getDataRoot();
 
         try {
           if (url === `${PREFIX}/health` && req.method === 'GET') {

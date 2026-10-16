@@ -3,13 +3,14 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { LOCAL_REL } from '../builtin/session/space-layout.mjs';
 
 export function sessionsJsonlPath(root) {
-  return path.join(root, '.local', 'sessions.jsonl');
+  return path.join(root, LOCAL_REL, 'sessions.jsonl');
 }
 
 export function checkpointsDir(root) {
-  return path.join(root, '.local', 'checkpoints');
+  return path.join(root, LOCAL_REL, 'checkpoints');
 }
 
 function writeJson(fp, data) {

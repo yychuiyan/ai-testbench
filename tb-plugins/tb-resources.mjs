@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { getDataRoot } from '../builtin/session/space-context.mjs';
 import { listStorageDomains } from './storage-domain.mjs';
 import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
 
@@ -143,10 +144,11 @@ export function tbResourcesPlugin() {
   return {
     name: 'tb-resources',
     configureServer(server) {
-      const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const root = getDataRoot();
         try {
           if (url === `${PREFIX}/health` && req.method === 'GET') {
             return sendJson(res, 200, { ok: true });

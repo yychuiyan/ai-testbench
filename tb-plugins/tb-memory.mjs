@@ -7,6 +7,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { getDataRoot } from '../builtin/session/space-context.mjs';
+import { LOCAL_REL } from '../builtin/session/space-layout.mjs';
+
 const PREFIX = '/__tb_memory';
 const SEP = '\n§\n';
 const TRACKS = ['user', 'memory', 'key', 'project', 'daily'];
@@ -39,7 +42,7 @@ function readBody(req) {
 }
 
 function memRoot(root) {
-  return path.join(root, '.local', 'memories');
+  return path.join(root, LOCAL_REL, 'memories');
 }
 
 function ensureDir(p) {
@@ -78,7 +81,7 @@ function trackPaths(root, cwd) {
     suggestions: path.join(base, 'SUGGESTIONS.jsonl'),
     scratch: path.join(base, 'scratch.md'),
     state: path.join(base, 'plugin-state.json'),
-    legacyGraph: path.join(root, '.local', 'memory', 'graph.json'),
+    legacyGraph: path.join(root, LOCAL_REL, 'memory', 'graph.json'),
   };
 }
 
@@ -323,10 +326,11 @@ export function tbMemoryPlugin() {
   return {
     name: 'tb-memory',
     configureServer(server) {
-      const root = server.config.root;
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(PREFIX)) return next();
+        // 数据根惰性读取：切换数据空间后无需重启即可生效
+        const root = getDataRoot();
 
         try {
           const method = req.method || 'GET';
