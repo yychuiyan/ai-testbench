@@ -1,0 +1,9 @@
+# 有本文件时 npm 不再套用 .gitignore。
+# dist 必须进包（由 package.json files 列出）；本机空间数据绝不能进包。
+**/.tb/**
+**/.local/**
+.env
+.env.*
+*.tgz
+空间池/**
+!空间池/.gitkeep

@@ -29,7 +29,7 @@
     "tb-plugins",
     "config",
     "docs",
-    "空间池",
+    "空间池/.gitkeep",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
