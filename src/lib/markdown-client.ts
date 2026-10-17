@@ -26,7 +26,7 @@ const md = new Marked({
       const href = escapeHtml(token.href || '');
       const titleAttr = token.title ? ` title="${escapeHtml(token.title)}"` : '';
       // marked 会把 this 绑到 Renderer，以正确渲染链接内加粗等
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const label = (this as any).parser.parseInline(token.tokens ?? []);
       return (
         `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">` + `${label}</a>`

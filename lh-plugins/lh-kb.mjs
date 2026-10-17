@@ -1,12 +1,13 @@
 /**
  * 本地知识库 / 模板检索（仿 dsh kb-sieve 能力子集）：
- * 仅 `astro dev` / 本地一体服务可用。知识库跨空间共用（公共空间），模板仍跟当前空间。
+ * 仅 `astro dev` / 本地一体服务可用。知识库与模板都跟当前空间。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
-import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
+import { getDataRoot } from '../builtin/session/space-context.mjs';
+import { resolveContentRoot } from '../builtin/session/space-layout.mjs';
+import { DOC_ROOT_DIRS } from './lh-project-docs.mjs';
 
 const PREFIX = '/__tb_kb';
 const ROOTS = [DOC_ROOT_DIRS.knowledge.dirName, DOC_ROOT_DIRS.templates.dirName];
@@ -54,14 +55,15 @@ function parseFrontmatter(raw) {
   return { title, description, category, body };
 }
 
-function rootForKbTop(top) {
-  return top === DOC_ROOT_DIRS.knowledge.dirName ? getPublicSpaceRoot() : getDataRoot();
+function rootForKbTop() {
+  return getDataRoot();
 }
 
 function listDocs() {
   const files = [];
   for (const root of ROOTS) {
-    walkMd(path.join(rootForKbTop(root), root), root, files);
+    // 内容目录可能被归进分组文件夹；rel 仍用内容根名，检索路径不受物理位置影响
+    walkMd(resolveContentRoot(rootForKbTop(root), root).abs, root, files);
   }
   return files.map(({ abs, rel }) => {
     let raw = '';
@@ -97,9 +99,9 @@ function safeRelPath(rel) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbKbPlugin() {
+export function lhKbPlugin() {
   return {
-    name: 'tb-kb',
+    name: 'lh-kb',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';

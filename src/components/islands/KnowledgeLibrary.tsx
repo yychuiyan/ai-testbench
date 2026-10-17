@@ -6,7 +6,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { docRootLabelPath } from '../../lib/doc-roots';
 import { readDocsListCache, writeDocsListCache } from '../../lib/docs-list-cache';
-import { isPluginEnabled, pluginDisabledMessage } from '../../lib/plugins';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged, pluginDisabledMessage } from '../../lib/plugins';
 import {
   deleteDocs,
   fetchDocsHealth,
@@ -45,6 +46,8 @@ type DeleteTarget = { kind: 'one'; entry: DocsEntry } | { kind: 'batch'; paths: 
 
 export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
   const boot = readDocsListCache('knowledge');
+  const [pluginReady, setPluginReady] = useState(false);
+  const [pluginOn, setPluginOn] = useState(true);
   const [live, setLive] = useState<boolean | null>(boot ? true : null);
   const [files, setFiles] = useState<DocsEntry[]>(() => boot ?? []);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +69,16 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
   }, []);
 
   useEffect(() => {
+    const off = onPluginEnabledChanged((map) => setPluginOn(Boolean(map.knowledgeLib)));
+    void hydrateAppConfig().then(() => {
+      setPluginOn(isPluginEnabled('knowledgeLib'));
+      setPluginReady(true);
+    });
+    return off;
+  }, []);
+
+  useEffect(() => {
+    if (!pluginReady || !pluginOn) return;
     void (async () => {
       const ok = await fetchDocsHealth('knowledge');
       if (!ok) {
@@ -76,7 +89,7 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
       await refresh();
       setLive(true);
     })();
-  }, [refresh]);
+  }, [pluginReady, pluginOn, refresh]);
 
   const selectedPaths = useMemo(() => Object.keys(selected).filter((p) => selected[p]), [selected]);
 
@@ -140,6 +153,28 @@ export default function KnowledgeLibrary({ staticCount = 0, base }: Props) {
       : deleteTarget?.kind === 'batch'
         ? `确认删除已选中的 ${deleteTarget.paths.length} 个知识库文件？此操作不可恢复。`
         : '';
+
+  if (!pluginReady) {
+    return (
+      <div
+        className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0"
+        aria-busy="true"
+        aria-label="正在读取插件开关"
+      >
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <span className="tw-lib-spin" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!pluginOn) {
+    return (
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+        {pluginDisabledMessage('knowledgeLib')}
+      </div>
+    );
+  }
 
   if (live === null) {
     return (

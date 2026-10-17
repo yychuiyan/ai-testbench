@@ -1,6 +1,7 @@
 dist
 node_modules
 .astro
+.lantern
 .tb
 空间池
 package-lock.json

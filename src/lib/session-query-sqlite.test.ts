@@ -6,7 +6,7 @@ import { after, before, describe, it } from 'node:test';
 import {
   querySessionIndex,
   syncSessionQueryIndex,
-} from '../../tb-plugins/session-query-sqlite.mjs';
+} from '../../lh-plugins/session-query-sqlite.mjs';
 
 describe('session-query-sqlite', () => {
   let tmp = '';

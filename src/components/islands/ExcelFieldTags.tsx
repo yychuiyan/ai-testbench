@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 interface Props {
   fields: string[];
@@ -16,7 +16,7 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
   const [visibleCount, setVisibleCount] = useState(fields.length);
   const [expanded, setExpanded] = useState(false);
 
-  function recalc() {
+  const recalc = useCallback(() => {
     const root = rootRef.current;
     const measure = measureRef.current;
     if (!root || !measure || fields.length === 0) return;
@@ -52,12 +52,14 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
       }
     }
     setVisibleCount(Math.max(1, Math.min(count, fields.length - 1)));
-  }
+  }, [fields.length]);
 
   useLayoutEffect(() => {
     setExpanded(false);
     recalc();
-  }, [fields.join('\0')]);
+    // 字段集合变化才重算：fields 每次渲染都是新数组，用拼接签名做等价比较
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fields.join('\0'), recalc]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -67,7 +69,8 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
     });
     ro.observe(root);
     return () => ro.disconnect();
-  }, [expanded, fields.join('\0')]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, fields.join('\0'), recalc]);
 
   if (!fields.length) return null;
 
@@ -92,7 +95,7 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
           <span
             key={`m-${f}`}
             data-chip
-            className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 max-w-[9rem] truncate"
+            className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 max-w-36 truncate"
           >
             {f}
           </span>
@@ -115,7 +118,7 @@ export default function ExcelFieldTags({ fields, sheetNames }: Props) {
         {shown.map((f) => (
           <span
             key={f}
-            className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 text-stone-500 max-w-[9rem] truncate shrink-0"
+            className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 text-stone-500 max-w-36 truncate shrink-0"
             data-hint={f}
           >
             {f}

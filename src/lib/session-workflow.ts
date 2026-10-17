@@ -262,7 +262,6 @@ export async function runWorkflowEngine(
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval -- intentional restricted orchestration VM
     const AsyncFunction = Object.getPrototypeOf(async function noop() {}).constructor as new (
       ...args: string[]
     ) => (...args: unknown[]) => Promise<unknown>;

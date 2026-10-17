@@ -27,6 +27,8 @@ export interface AskUserAnswer {
   /** 选项 label 列表，或自由文本 */
   selected?: string[];
   text?: string;
+  /** 用户跳过了这道题（关闭卡片或点「跳过本题」） */
+  skipped?: boolean;
 }
 
 export const SESSION_INTERACT_HINT =
@@ -157,4 +159,72 @@ export function parseAskUserArgs(argsJson: string): AskUserQuestion[] {
     });
   }
   return out;
+}
+
+/** 提问卡片里一题的作答草稿（点击 / 手打 / 跳过） */
+export interface AskUserDraft {
+  selected: string[];
+  text: string;
+  skipped?: boolean;
+}
+
+/**
+ * 「1」「1,3」「2、4」→ 选项 label；含非法序号或非纯数字返回 null（当作自由回答）。
+ * 手打序号与点击选项语义一致，只是给不想用鼠标的场景留的入口。
+ */
+export function parseAskSelection(q: AskUserQuestion, raw: string): string[] | null {
+  const options = q.options ?? [];
+  if (!options.length) return null;
+  const tokens = raw
+    .trim()
+    .split(/[,，、;；\s]+/)
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  const picked: string[] = [];
+  for (const token of tokens) {
+    const n = Number(token.replace(/^第/, '').replace(/[.。)]$/, ''));
+    if (!Number.isInteger(n) || n < 1 || n > options.length) return null;
+    const label = options[n - 1]?.label;
+    if (label && !picked.includes(label)) picked.push(label);
+  }
+  // 单选题不接受多个序号：这种输入更像自由回答，原样传文本
+  if (!q.multi_select && picked.length > 1) return null;
+  return picked.length ? picked : null;
+}
+
+/** 把一题草稿落成答案：序号/点选 → selected，自由文本 → text，跳过 → skipped */
+export function resolveAskAnswer(
+  q: AskUserQuestion,
+  draft: AskUserDraft | undefined,
+): AskUserAnswer {
+  const cur = draft ?? { selected: [], text: '' };
+  if (cur.skipped) return { id: q.id, selected: [], skipped: true };
+  const text = cur.text.trim();
+  if (text) {
+    const picked = q.options?.length ? parseAskSelection(q, text) : null;
+    return picked ? { id: q.id, selected: picked } : { id: q.id, text };
+  }
+  return { id: q.id, selected: [...cur.selected] };
+}
+
+/**
+ * 给模型的文案版本：按题号列出「问题 → 回答 / 跳过」。
+ * 工具结果里同时带结构化 answers 和这段 summary，模型可直接引用，省得自己拼句子。
+ */
+export function formatAskAnswersText(
+  questions: AskUserQuestion[],
+  answers: AskUserAnswer[],
+): string {
+  return questions
+    .map((q, i) => {
+      const a = answers[i];
+      const value = a?.skipped
+        ? '（跳过，未作答）'
+        : a?.text?.trim()
+          ? a.text.trim()
+          : (a?.selected ?? []).join('、') || '（跳过，未作答）';
+      const title = q.header ? `${q.header} / ${q.question}` : q.question;
+      return `${i + 1}. ${title}\n   → ${value}`;
+    })
+    .join('\n');
 }

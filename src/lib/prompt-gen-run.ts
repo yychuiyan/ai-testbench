@@ -1,6 +1,7 @@
 /**
  * 生成提示词插件：构建系统提示、解析结果、质检、写入 prompts/
  */
+import { isPluginEnabled, pluginDisabledMessage } from './plugins';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
 import { promptKindMeta } from './prompt-kinds';
 import { isProtectedPrompt } from './prompts-meta';
@@ -166,7 +167,7 @@ export function formatPromptGenResultSummary(opts: {
 }
 
 async function uniquePromptRel(fileBase: string): Promise<string> {
-  let rel = `${fileBase}.md`;
+  const rel = `${fileBase}.md`;
   try {
     const { entries } = await listDocs('prompts', '.');
     const names = new Set(entries.filter((e) => e.type === 'file').map((e) => e.name));
@@ -217,6 +218,15 @@ export async function tryFinishPromptGenFromAssistant(
         issues: qc.issues,
         qcNote: payload.qcNote,
       }),
+    };
+  }
+  if (!isPluginEnabled('prompts')) {
+    const error = pluginDisabledMessage('prompts');
+    return {
+      ok: false,
+      error,
+      issues: [],
+      summary: formatPromptGenResultSummary({ ok: false, error }),
     };
   }
   try {

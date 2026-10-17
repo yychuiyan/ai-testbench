@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { appendDeepseekSessionLog } from '../../tb-plugins/session-log-deepseek.mjs';
+import { appendDeepseekSessionLog } from '../../lh-plugins/session-log-deepseek.mjs';
 import { buildDeepseekTurnMessages } from './session-log-deepseek';
 
 describe('session-log-deepseek', () => {

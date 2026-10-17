@@ -99,11 +99,15 @@ export async function switchSpace(id: string): Promise<SpaceResult> {
   return out;
 }
 
-export function createSpace(name: string, opts?: { managedParent?: string; switch?: boolean }) {
+export function createSpace(
+  name: string,
+  opts?: { managedParent?: string; switch?: boolean; systemPrompt?: string },
+) {
   return postJson<SpaceResult>(`${API}/create`, {
     name,
     managedParent: opts?.managedParent,
     switch: opts?.switch === true,
+    systemPrompt: opts?.systemPrompt,
   });
 }
 

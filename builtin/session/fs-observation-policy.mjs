@@ -1,13 +1,14 @@
 /**
  * fs-observation-policy：文件系统观察/上报策略（跳过目录、读上限、搜索上限）。
  */
-import { META_DIR } from './space-layout.mjs';
+import { META_DIR, META_DIR_LEGACY } from './space-layout.mjs';
 
 export const FS_SKIP_DIRS = [
   'node_modules',
   '.git',
   'dist',
   META_DIR,
+  META_DIR_LEGACY,
   // 旧布局的元数据目录：老空间可能还没迁移
   '.local',
   '.astro',

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged, pluginDisabledMessage } from '../../lib/plugins';
 import { docRootLabelPath } from '../../lib/doc-roots';
 import {
   countTreeDirs,
@@ -182,6 +184,8 @@ function fmtSize(n?: number) {
 }
 
 export default function RequirementsLibrary() {
+  const [pluginOn, setPluginOn] = useState(() => isPluginEnabled('requirements'));
+  const [pluginReady, setPluginReady] = useState(false);
   const [live, setLive] = useState<boolean | null>(null);
   const [tree, setTree] = useState<DocsTreeNode[]>([]);
   const [totalFiles, setTotalFiles] = useState(0);
@@ -230,6 +234,16 @@ export default function RequirementsLibrary() {
   );
 
   useEffect(() => {
+    const off = onPluginEnabledChanged((map) => setPluginOn(Boolean(map.requirements)));
+    void hydrateAppConfig().then(() => {
+      setPluginOn(isPluginEnabled('requirements'));
+      setPluginReady(true);
+    });
+    return off;
+  }, []);
+
+  useEffect(() => {
+    if (!pluginReady || !pluginOn) return;
     void (async () => {
       const ok = await fetchDocsHealth('requirements');
       setLive(ok);
@@ -242,7 +256,7 @@ export default function RequirementsLibrary() {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [loadTree]);
+  }, [pluginReady, pluginOn, loadTree]);
 
   /** 「全部需求」箭头：一次性收起/展开整棵树，并清掉各节点的单独覆盖 */
   function toggleAll() {
@@ -401,6 +415,22 @@ export default function RequirementsLibrary() {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (!pluginReady) {
+    return (
+      <div className="tw-lib-probing" aria-busy="true" aria-label="正在读取插件开关">
+        <span className="tw-lib-spin" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (!pluginOn) {
+    return (
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+        {pluginDisabledMessage('requirements')}
+      </div>
+    );
   }
 
   if (live === null) {

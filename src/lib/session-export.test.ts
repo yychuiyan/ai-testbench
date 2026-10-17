@@ -37,7 +37,7 @@ describe('session-export', () => {
   it('builds json and jsonl', () => {
     const obj = buildSessionExportObject(sample);
     assert.equal(obj.session.id, 's1');
-    assert.match(sessionToJson(sample), /"format": "ai-testbench-session-v1"/);
+    assert.match(sessionToJson(sample), /"format": "lantern-harness-session-v1"/);
     const jl = sessionToJsonl(sample);
     const lines = jl.trim().split('\n');
     assert.equal(lines.length, 3);

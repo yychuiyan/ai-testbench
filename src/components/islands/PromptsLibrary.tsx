@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { docRootLabelPath } from '../../lib/doc-roots';
 import { readDocsListCache, writeDocsListCache } from '../../lib/docs-list-cache';
-import { isPluginEnabled, pluginDisabledMessage } from '../../lib/plugins';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged, pluginDisabledMessage } from '../../lib/plugins';
 import { isProtectedPrompt } from '../../lib/prompts-meta';
 import {
   deleteDocs,
@@ -32,6 +33,8 @@ type DeleteTarget = { kind: 'one'; entry: DocsEntry } | { kind: 'batch'; paths: 
 
 export default function PromptsLibrary() {
   const boot = readDocsListCache('prompts');
+  const [pluginReady, setPluginReady] = useState(false);
+  const [pluginOn, setPluginOn] = useState(true);
   const [live, setLive] = useState<boolean | null>(boot ? true : null);
   const [files, setFiles] = useState<DocsEntry[]>(() => boot ?? []);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +56,16 @@ export default function PromptsLibrary() {
   }, []);
 
   useEffect(() => {
+    const off = onPluginEnabledChanged((map) => setPluginOn(Boolean(map.prompts)));
+    void hydrateAppConfig().then(() => {
+      setPluginOn(isPluginEnabled('prompts'));
+      setPluginReady(true);
+    });
+    return off;
+  }, []);
+
+  useEffect(() => {
+    if (!pluginReady || !pluginOn) return;
     void (async () => {
       const ok = await fetchDocsHealth('prompts');
       if (!ok) {
@@ -63,7 +76,7 @@ export default function PromptsLibrary() {
       await refresh();
       setLive(true);
     })();
-  }, [refresh]);
+  }, [pluginReady, pluginOn, refresh]);
 
   const selectedPaths = useMemo(() => Object.keys(selected).filter((p) => selected[p]), [selected]);
 
@@ -92,7 +105,7 @@ export default function PromptsLibrary() {
 
   function onDelete(entry: DocsEntry) {
     if (isProtectedPrompt(entry.path)) {
-      setError('系统提示词不可删除');
+      setError('默认提示词不可删除');
       return;
     }
     setDeleteTarget({ kind: 'one', entry });
@@ -137,6 +150,28 @@ export default function PromptsLibrary() {
       : deleteTarget?.kind === 'batch'
         ? `确认删除已选中的 ${deleteTarget.paths.length} 个提示词？此操作不可恢复。`
         : '';
+
+  if (!pluginReady) {
+    return (
+      <div
+        className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0"
+        aria-busy="true"
+        aria-label="正在读取插件开关"
+      >
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <span className="tw-lib-spin" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!pluginOn) {
+    return (
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+        {pluginDisabledMessage('prompts')}
+      </div>
+    );
+  }
 
   if (live === null) {
     return (
@@ -247,7 +282,7 @@ export default function PromptsLibrary() {
               <button
                 type="button"
                 disabled={busy || locked}
-                data-hint={locked ? '系统提示词不可删除' : undefined}
+                data-hint={locked ? '默认提示词不可删除' : undefined}
                 onClick={() => onDelete(f)}
                 className="text-xs whitespace-nowrap text-red-600 hover:bg-red-50 px-2 py-1 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               >

@@ -4,24 +4,25 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import tailwindcss from '@tailwindcss/vite';
-import { tbMemoryPlugin } from './tb-plugins/tb-memory.mjs';
-import { tbKbPlugin } from './tb-plugins/tb-kb.mjs';
-import { tbBashPlugin } from './builtin/session/tb-bash.mjs';
-import { tbFsPlugin } from './builtin/session/tb-fs.mjs';
-import { tbSchedulePlugin } from './builtin/session/tb-schedule.mjs';
-import { tbSpillPlugin } from './builtin/session/tb-spill.mjs';
-import { tbWebPlugin } from './builtin/session/tb-web.mjs';
+import { lhMemoryPlugin } from './lh-plugins/lh-memory.mjs';
+import { lhKbPlugin } from './lh-plugins/lh-kb.mjs';
+import { lhBashPlugin } from './builtin/session/lh-bash.mjs';
+import { lhFsPlugin } from './builtin/session/lh-fs.mjs';
+import { lhSchedulePlugin } from './builtin/session/lh-schedule.mjs';
+import { lhSpillPlugin } from './builtin/session/lh-spill.mjs';
+import { lhWebPlugin } from './builtin/session/lh-web.mjs';
 import { tbSessionRunsPlugin } from './builtin/session/session-runs.mjs';
-import { tbSpacesPlugin } from './builtin/session/tb-spaces.mjs';
-import { tbConfigPlugin } from './tb-plugins/tb-config.mjs';
-import { tbResourcesPlugin } from './tb-plugins/tb-resources.mjs';
+import { lhSpacesPlugin } from './builtin/session/lh-spaces.mjs';
+import { lhNavGroupsPlugin } from './builtin/session/lh-nav-groups.mjs';
+import { lhConfigPlugin } from './lh-plugins/lh-config.mjs';
+import { lhResourcesPlugin } from './lh-plugins/lh-resources.mjs';
 import {
-  tbCasesPlugin,
-  tbKnowledgePlugin,
-  tbPromptsPlugin,
-  tbRequirementsPlugin,
-  tbTemplatesPlugin,
-} from './tb-plugins/tb-project-docs.mjs';
+  lhCasesPlugin,
+  lhKnowledgePlugin,
+  lhPromptsPlugin,
+  lhRequirementsPlugin,
+  lhTemplatesPlugin,
+} from './lh-plugins/lh-project-docs.mjs';
 import { prepareSpacesRoot } from './cli/data-root.mjs';
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,7 @@ export default defineConfig({
           '**/CLAUDE.local.md',
           '**/空间池/**',
           '**/公共空间/**',
+          '**/.lantern/**',
           '**/.tb/**',
           '**/.local/**',
           '**/用例管理/**',
@@ -73,21 +75,22 @@ export default defineConfig({
       tailwindcss(),
       tbSessionRunsPlugin(),
       // 数据空间上下文必须最先初始化，其余插件靠它取当前数据根
-      tbSpacesPlugin(),
-      tbConfigPlugin(),
-      tbResourcesPlugin(),
-      tbMemoryPlugin(),
-      tbKbPlugin(),
-      tbFsPlugin(),
-      tbBashPlugin(),
-      tbSchedulePlugin(),
-      tbSpillPlugin(),
-      tbWebPlugin(),
-      tbRequirementsPlugin(),
-      tbCasesPlugin(),
-      tbTemplatesPlugin(),
-      tbPromptsPlugin(),
-      tbKnowledgePlugin(),
+      lhSpacesPlugin(),
+      lhNavGroupsPlugin(),
+      lhConfigPlugin(),
+      lhResourcesPlugin(),
+      lhMemoryPlugin(),
+      lhKbPlugin(),
+      lhFsPlugin(),
+      lhBashPlugin(),
+      lhSchedulePlugin(),
+      lhSpillPlugin(),
+      lhWebPlugin(),
+      lhRequirementsPlugin(),
+      lhCasesPlugin(),
+      lhTemplatesPlugin(),
+      lhPromptsPlugin(),
+      lhKnowledgePlugin(),
     ],
   },
   markdown: {

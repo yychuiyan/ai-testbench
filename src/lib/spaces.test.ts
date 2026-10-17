@@ -39,7 +39,11 @@ import {
   setActiveRoot,
 } from '../../builtin/session/space-context.mjs';
 import { displaySpacePath, SPACE_POOL_DIR } from '../../builtin/session/space-layout.mjs';
-import { prepareSpaceDir, prepareSpacesRoot } from '../../cli/data-root.mjs';
+import {
+  prepareSpaceDir,
+  prepareSpacesRoot,
+  writeSpaceSystemPrompt,
+} from '../../cli/data-root.mjs';
 
 const ORIGINAL_XDG = process.env.XDG_CONFIG_HOME;
 
@@ -63,9 +67,9 @@ let base = '';
 let managed = '';
 
 before(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-spaces-home-'));
-  base = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-spaces-base-'));
-  managed = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-spaces-managed-'));
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-spaces-home-'));
+  base = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-spaces-base-'));
+  managed = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-spaces-managed-'));
   process.env.XDG_CONFIG_HOME = home;
   // 公共空间是 base 下的一个文件夹，需要先铺出来，否则 resolveSpace('public') 会判目录不存在
   prepareSpacesRoot(base);
@@ -85,7 +89,7 @@ after(() => {
 
 beforeEach(() => {
   // 每个用例从空注册表开始，但保留隔离的 XDG 目录
-  fs.rmSync(path.join(home, 'ai-testbench', 'spaces.json'), { force: true });
+  fs.rmSync(path.join(home, 'lantern-harness', 'spaces.json'), { force: true });
 });
 
 describe('sanitizeSpaceName 输入校验', () => {
@@ -102,6 +106,7 @@ describe('sanitizeSpaceName 输入校验', () => {
       '公共空间(默认)',
       'config',
       '.local',
+      '.lantern',
       '.tb',
       SPACE_POOL_DIR,
       'public',
@@ -147,7 +152,7 @@ describe('listSpaces / resolveSpace', () => {
     assert.equal(pub.exists, true);
 
     // 公共空间是虚拟项，不该写入注册表文件
-    const fp = path.join(home, 'ai-testbench', 'spaces.json');
+    const fp = path.join(home, 'lantern-harness', 'spaces.json');
     if (fs.existsSync(fp)) {
       const reg = JSON.parse(fs.readFileSync(fp, 'utf8')) as { spaces: unknown[] };
       assert.equal(reg.spaces.length, 0);
@@ -195,7 +200,7 @@ describe('createSpace / renameSpace / copySpace', () => {
     fs.rmSync(dir, { recursive: true, force: true });
     // 目录被手工重建、且清掉登记项后，同名新建仍应因目录存在而拒绝
     fs.mkdirSync(dir, { recursive: true });
-    fs.rmSync(path.join(home, 'ai-testbench', 'spaces.json'), { force: true });
+    fs.rmSync(path.join(home, 'lantern-harness', 'spaces.json'), { force: true });
 
     const again = createSpace({ name: '手建目录', managedParent: managed, baseRoot: base }) as {
       ok: boolean;
@@ -295,7 +300,7 @@ describe('removeSpace 与磁盘删除闸门', () => {
 
   it('托管目录之外的目录若不像数据空间则拒绝物理删除', () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-outside-'));
-    const fp = path.join(home, 'ai-testbench', 'spaces.json');
+    const fp = path.join(home, 'lantern-harness', 'spaces.json');
     fs.mkdirSync(path.dirname(fp), { recursive: true });
     fs.writeFileSync(
       fp,
@@ -321,7 +326,7 @@ describe('removeSpace 与磁盘删除闸门', () => {
     assert.equal((assertLooksLikeSpace(managed, managed) as { ok: boolean }).ok, true);
 
     const marker = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-marker-'));
-    fs.mkdirSync(path.join(marker, '.tb', 'local'), { recursive: true });
+    fs.mkdirSync(path.join(marker, '.lantern', 'local'), { recursive: true });
     assert.equal((assertLooksLikeSpace(marker, managed) as { ok: boolean }).ok, true);
 
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-plain-'));
@@ -406,7 +411,7 @@ describe('空间清单 space.json（自包含）', () => {
     const space = okSpace(
       createSpace({ name: '清单空间', managedParent: managed, baseRoot: base }),
     );
-    assert.equal(fs.existsSync(path.join(space.path, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(space.path, '.lantern', SPACE_MANIFEST_FILE)), true);
 
     const before = readSpaceManifest(space.path) as {
       ok: boolean;
@@ -426,7 +431,7 @@ describe('空间清单 space.json（自包含）', () => {
     assert.equal(after.manifest!.id, space.id, '重命名不应更换 id');
   });
 
-  it('根目录旧清单仍可读；写入或铺骨架后迁进 .tb/', () => {
+  it('根目录旧清单仍可读；写入或铺骨架后迁进 .lantern/', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-legacy-manifest-'));
     const payload = {
       kind: 'ai-testbench-space',
@@ -447,12 +452,16 @@ describe('空间清单 space.json（自包含）', () => {
 
     writeSpaceManifest(dir, { id: 'sp_legacy_root', name: '旧位置', createdAt: 1 });
     assert.equal(fs.existsSync(path.join(dir, SPACE_MANIFEST_FILE)), false);
-    assert.equal(fs.existsSync(path.join(dir, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(dir, '.lantern', SPACE_MANIFEST_FILE)), true);
+    const rewritten = JSON.parse(
+      fs.readFileSync(path.join(dir, '.lantern', SPACE_MANIFEST_FILE), 'utf8'),
+    ) as { kind: string };
+    assert.equal(rewritten.kind, 'lantern-harness-space', '写入一律用新 kind');
 
     fs.writeFileSync(path.join(dir, SPACE_MANIFEST_FILE), JSON.stringify(payload), 'utf8');
     prepareSpaceDir(dir);
     assert.equal(fs.existsSync(path.join(dir, SPACE_MANIFEST_FILE)), false);
-    assert.equal(fs.existsSync(path.join(dir, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(dir, '.lantern', SPACE_MANIFEST_FILE)), true);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -553,11 +562,11 @@ describe('discoverSpaces 扫描纳入', () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-backfill-'));
     const space = okSpace(createSpace({ name: '老空间', managedParent: parent, baseRoot: base }));
     // 模拟升级前创建的空间：目录里有数据但没有清单
-    fs.rmSync(path.join(space.path, '.tb', SPACE_MANIFEST_FILE), { force: true });
+    fs.rmSync(path.join(space.path, '.lantern', SPACE_MANIFEST_FILE), { force: true });
 
     const first = discoverSpaces({ managedParent: parent }) as { backfilled: string[] };
     assert.deepEqual(first.backfilled, ['老空间']);
-    assert.equal(fs.existsSync(path.join(space.path, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(space.path, '.lantern', SPACE_MANIFEST_FILE)), true);
 
     // 把带清单的空间整体复制成另一个目录：清单 id 与原空间相同，必须换新
     const clone = path.join(parent, '克隆空间');
@@ -603,7 +612,7 @@ describe('discoverSpaces 扫描纳入', () => {
     };
     assert.equal(out.added.length, 1);
     assert.equal(out.added[0]!.name, '老空间目录');
-    assert.equal(fs.existsSync(path.join(legacy, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(legacy, '.lantern', SPACE_MANIFEST_FILE)), true);
 
     fs.rmSync(parent, { recursive: true, force: true });
   });
@@ -620,16 +629,16 @@ describe('导出范围：内容库 vs 完整备份', () => {
     fs.writeFileSync(path.join(p, '需求文档库', 'keep.md'), '# keep', 'utf8');
 
     fs.writeFileSync(path.join(p, '.env'), 'TW_API_KEY=sk-secret\n', 'utf8');
-    fs.mkdirSync(path.join(p, '.tb', 'local', 'memories'), { recursive: true });
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'memories', 'USER.md'), 'private', 'utf8');
-    fs.mkdirSync(path.join(p, '.tb', 'local', 'spill'), { recursive: true });
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'spill', 'big.txt'), 'x', 'utf8');
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'sessions.json'), '[]', 'utf8');
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'sessions.jsonl'), 'x', 'utf8');
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'session-query.sqlite'), 'x', 'utf8');
-    fs.writeFileSync(path.join(p, '.tb', 'local', 'workspaces.json'), '{}', 'utf8');
+    fs.mkdirSync(path.join(p, '.lantern', 'local', 'memories'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'memories', 'USER.md'), 'private', 'utf8');
+    fs.mkdirSync(path.join(p, '.lantern', 'local', 'spill'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'spill', 'big.txt'), 'x', 'utf8');
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'sessions.json'), '[]', 'utf8');
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'sessions.jsonl'), 'x', 'utf8');
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'session-query.sqlite'), 'x', 'utf8');
+    fs.writeFileSync(path.join(p, '.lantern', 'local', 'workspaces.json'), '{}', 'utf8');
     fs.writeFileSync(
-      path.join(p, '.tb', 'local', 'app.config.json'),
+      path.join(p, '.lantern', 'local', 'app.config.json'),
       JSON.stringify({
         model: {
           baseUrl: 'https://api.example.com',
@@ -650,21 +659,23 @@ describe('导出范围：内容库 vs 完整备份', () => {
     assert.ok(names.includes('需求文档库/keep.md'), '内容目录必须保留');
     for (const gone of [
       '.env',
-      '.tb/local/sessions.json',
-      '.tb/local/sessions.jsonl',
-      '.tb/local/session-query.sqlite',
-      '.tb/local/workspaces.json',
+      '.lantern/local/sessions.json',
+      '.lantern/local/sessions.jsonl',
+      '.lantern/local/session-query.sqlite',
+      '.lantern/local/workspaces.json',
     ]) {
       assert.equal(names.includes(gone), false, `${gone} 不应被打包`);
     }
     assert.equal(
-      names.some((n) => n.startsWith('.tb/local/memories/') || n.startsWith('.tb/local/spill/')),
+      names.some(
+        (n) => n.startsWith('.lantern/local/memories/') || n.startsWith('.lantern/local/spill/'),
+      ),
       false,
       '记忆与溢出缓存不应被打包',
     );
 
     // 模型配置保留（非敏感字段还在），但密钥必须被剔除
-    const cfgFile = content.file('.tb/local/app.config.json');
+    const cfgFile = content.file('.lantern/local/app.config.json');
     assert.ok(cfgFile, '模型配置应保留（脱敏后）');
     const cfgText = await cfgFile!.async('string');
     assert.equal(/sk-live|sk-p1/.test(cfgText), false, '脱敏后不应残留密钥');
@@ -676,9 +687,9 @@ describe('导出范围：内容库 vs 完整备份', () => {
     const full = await JSZip.loadAsync(fs.readFileSync(fullZip));
     const fullNames = Object.keys(full.files);
     assert.ok(fullNames.includes('.env'));
-    assert.ok(fullNames.includes('.tb/local/sessions.json'));
-    assert.ok(fullNames.includes('.tb/local/memories/USER.md'));
-    assert.ok(fullNames.includes('.tb/local/app.config.json'));
+    assert.ok(fullNames.includes('.lantern/local/sessions.json'));
+    assert.ok(fullNames.includes('.lantern/local/memories/USER.md'));
+    assert.ok(fullNames.includes('.lantern/local/app.config.json'));
   });
 });
 
@@ -728,11 +739,11 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
       '用户数据目录下公共空间应直接落在选中的文件夹',
     );
     assert.equal(fs.existsSync(path.join(root, SPACE_POOL_DIR)), false, '不应出现空间池文件夹');
-    // 元数据统一收进隐藏目录 .tb（config 与 local 各自归位）
+    // 元数据统一收进隐藏目录 .lantern（config 与 local 各自归位）
     for (const name of [
-      '.tb',
-      '.tb/config/app.defaults.json',
-      '.tb/local',
+      '.lantern',
+      '.lantern/config/app.defaults.json',
+      '.lantern/local',
       '需求文档库',
       '用例管理',
       '测试模板库',
@@ -742,18 +753,18 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
       assert.equal(fs.existsSync(path.join(pub, name)), true, `公共空间缺少 ${name}`);
     }
     // 内容目录在空间根可见，元数据不再与内容混在一起
-    assert.equal(fs.existsSync(path.join(pub, 'config')), false, 'config 应改名为 .tb/config');
-    assert.equal(fs.existsSync(path.join(pub, '.local')), false, '.local 应改名为 .tb/local');
+    assert.equal(fs.existsSync(path.join(pub, 'config')), false, 'config 应改名为 .lantern/config');
+    assert.equal(fs.existsSync(path.join(pub, '.local')), false, '.local 应改名为 .lantern/local');
     assert.equal(fs.readFileSync(path.join(pub, '需求文档库', 'a.md'), 'utf8'), '# a');
     assert.equal(fs.existsSync(path.join(root, '需求文档库')), false, '旧目录应被搬走');
     assert.equal(fs.existsSync(path.join(root, '.local')), false, '旧 .local 应被搬走');
     assert.equal(
-      fs.readFileSync(path.join(pub, '.tb', 'local', 'sessions.json'), 'utf8'),
+      fs.readFileSync(path.join(pub, '.lantern', 'local', 'sessions.json'), 'utf8'),
       '[]',
       '既有会话数据必须保留',
     );
     assert.equal(
-      fs.readFileSync(path.join(pub, '.tb', 'config', 'app.defaults.json'), 'utf8'),
+      fs.readFileSync(path.join(pub, '.lantern', 'config', 'app.defaults.json'), 'utf8'),
       '{"mine":true}',
       '池根里的自定义配置应被搬走，而不是被默认值覆盖',
     );
@@ -765,7 +776,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('选中的文件夹下已有公共空间时就地收进 .tb（幂等）', () => {
+  it('选中的文件夹下已有公共空间时就地收进 .lantern（幂等）', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-prepare-legacy-'));
     const pub = path.join(root, '公共空间');
     fs.mkdirSync(path.join(pub, '.local'), { recursive: true });
@@ -778,7 +789,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     assert.equal(path.resolve(publicSpacePath(root)), path.resolve(pub));
     assert.equal(fs.existsSync(path.join(root, SPACE_POOL_DIR)), false);
     assert.equal(
-      fs.readFileSync(path.join(pub, '.tb', 'local', 'sessions.json'), 'utf8'),
+      fs.readFileSync(path.join(pub, '.lantern', 'local', 'sessions.json'), 'utf8'),
       '["keep"]',
       '旧元数据必须保留',
     );
@@ -786,6 +797,40 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
 
     prepareSpacesRoot(root);
     assert.equal(fs.readFileSync(path.join(pub, '用例管理', 'x.md'), 'utf8'), 'x');
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('启动时把空间内旧 .tb 收进 .lantern/', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-meta-rename-'));
+    const pub = path.join(root, '公共空间');
+    fs.mkdirSync(path.join(pub, '.tb', 'local'), { recursive: true });
+    fs.mkdirSync(path.join(pub, '.tb', 'config'), { recursive: true });
+    fs.writeFileSync(path.join(pub, '.tb', 'local', 'sessions.json'), '["legacy"]', 'utf8');
+    fs.writeFileSync(path.join(pub, '.tb', 'config', 'app.defaults.json'), '{"from":"tb"}', 'utf8');
+    fs.writeFileSync(
+      path.join(pub, '.tb', 'space.json'),
+      JSON.stringify({
+        kind: 'ai-testbench-space',
+        id: 'public',
+        name: '公共空间',
+        createdAt: 1,
+      }),
+      'utf8',
+    );
+
+    prepareSpacesRoot(root);
+
+    assert.equal(fs.existsSync(path.join(pub, '.tb')), false, '旧 .tb 应被搬走');
+    assert.equal(
+      fs.readFileSync(path.join(pub, '.lantern', 'local', 'sessions.json'), 'utf8'),
+      '["legacy"]',
+    );
+    assert.equal(
+      fs.readFileSync(path.join(pub, '.lantern', 'config', 'app.defaults.json'), 'utf8'),
+      '{"from":"tb"}',
+    );
+    assert.equal(fs.existsSync(path.join(pub, '.lantern', 'space.json')), true);
 
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -818,7 +863,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     const nested = path.join(root, SPACE_POOL_DIR, '旧空间');
     fs.mkdirSync(nested, { recursive: true });
     prepareSpacesRoot(root);
-    const fp = path.join(home, 'ai-testbench', 'spaces.json');
+    const fp = path.join(home, 'lantern-harness', 'spaces.json');
     fs.mkdirSync(path.dirname(fp), { recursive: true });
     fs.writeFileSync(
       fp,
@@ -850,6 +895,47 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-src-pool-'));
     fs.writeFileSync(
       path.join(root, 'package.json'),
+      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'cli', 'lantern.mjs'), '', 'utf8');
+
+    prepareSpacesRoot(root);
+    const pub = publicSpacePath(root);
+    assert.equal(path.basename(path.dirname(pub)), SPACE_POOL_DIR);
+    assert.equal(fs.existsSync(path.join(root, '公共空间')), false);
+    assert.equal(fs.existsSync(pub), true);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('源码仓库根误摊的公共空间空壳会收回空间池并删掉', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-src-flat-shell-'));
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'cli', 'lantern.mjs'), '', 'utf8');
+    prepareSpacesRoot(root);
+
+    const leftover = path.join(root, '公共空间');
+    fs.mkdirSync(path.join(leftover, '.lantern', 'local'), { recursive: true });
+    fs.writeFileSync(path.join(leftover, '.lantern', 'local', 'stale.txt'), 'stale', 'utf8');
+
+    prepareSpacesRoot(root);
+    assert.equal(fs.existsSync(leftover), false, '仓库根不应再留平铺的公共空间空壳');
+    assert.equal(fs.existsSync(publicSpacePath(root)), true);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('旧包名 ai-testbench + 旧入口 cli/tbench.mjs 同样把空间放进空间池', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-src-pool-legacy-'));
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
       JSON.stringify({ name: 'ai-testbench', bin: { tbench: 'cli/tbench.mjs' } }),
       'utf8',
     );
@@ -859,8 +945,6 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     prepareSpacesRoot(root);
     const pub = publicSpacePath(root);
     assert.equal(path.basename(path.dirname(pub)), SPACE_POOL_DIR);
-    assert.equal(fs.existsSync(path.join(root, '公共空间')), false);
-    assert.equal(fs.existsSync(pub), true);
 
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -892,29 +976,93 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it('合并后只剩撞名副本的重复空间会被删掉，有独有内容的则保留', () => {
+    // 需要「包根」形态才会走 空间池/ 分支
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-prepare-dupe-'));
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'cli', 'lantern.mjs'), '', 'utf8');
+    prepareSpacesRoot(root);
+    const pub = publicSpacePath(root);
+    assert.equal(path.basename(path.dirname(pub)), SPACE_POOL_DIR, '应使用 空间池 布局');
+
+    // 1) 内容与池里完全一致：合并后应整份删掉，不再挂在仓库根
+    const dup = path.join(root, '公共空间');
+    fs.mkdirSync(path.join(dup, '提示词管理'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dup, '提示词管理', '默认提示词.md'),
+      fs.readFileSync(path.join(pub, '提示词管理', '默认提示词.md'), 'utf8'),
+      'utf8',
+    );
+    prepareSpacesRoot(root);
+    assert.equal(fs.existsSync(dup), false, '纯重复副本不应留在池根');
+
+    // 2) 有独有文件：必须保留，不能被当成重复副本删掉
+    const dup2 = path.join(root, '公共空间');
+    fs.mkdirSync(path.join(dup2, '提示词管理'), { recursive: true });
+    fs.writeFileSync(path.join(dup2, '提示词管理', '默认提示词.md'), 'different', 'utf8');
+    prepareSpacesRoot(root);
+    assert.equal(fs.existsSync(dup2), true, '有独有内容的空间不能删');
+    assert.equal(
+      fs.readFileSync(path.join(pub, '提示词管理', '默认提示词.md'), 'utf8') === 'different',
+      false,
+      '同名文件仍不得被覆盖',
+    );
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it('prepareSpaceDir 只处理单个空间目录，不再往下嵌套公共空间，并播下种子文档', () => {
     const space = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-spacedir-'));
     prepareSpaceDir(space);
-    assert.equal(fs.existsSync(path.join(space, '.tb', 'config', 'app.defaults.json')), true);
-    assert.equal(fs.existsSync(path.join(space, '.tb', 'local')), true);
+    assert.equal(fs.existsSync(path.join(space, '.lantern', 'config', 'app.defaults.json')), true);
+    assert.equal(fs.existsSync(path.join(space, '.lantern', 'local')), true);
     assert.equal(fs.existsSync(path.join(space, 'config')), false, '不应在空间根留下 config');
     assert.equal(fs.existsSync(path.join(space, '.local')), false, '不应在空间根留下 .local');
     assert.equal(fs.existsSync(path.join(space, '公共空间')), false, '单空间目录不应再嵌套');
-    // 仓库不再跟踪内容目录，默认内容靠 config/seeds 运行时播种
+    // 非公共空间：只播默认提示词，不从公共空间同步其它提示词 / 知识库文件
     assert.equal(
-      fs.existsSync(path.join(space, '知识库管理', '功能测试用例编写规范.md')),
+      fs.existsSync(path.join(space, '提示词管理', '默认提示词.md')),
       true,
-      '知识库种子应被播种',
-    );
-    assert.equal(
-      fs.existsSync(path.join(space, '提示词管理', '系统提示词.md')),
-      true,
-      '系统提示词应被播种',
+      '默认提示词应被播种',
     );
     assert.equal(
       fs.existsSync(path.join(space, '提示词管理', '功能测试用例提示词v1.0.md')),
-      true,
-      '默认用例提示词应被播种',
+      false,
+      '新空间不应带上公共空间的其它提示词',
+    );
+    assert.equal(
+      fs.existsSync(path.join(space, '知识库管理', '功能测试用例编写规范.md')),
+      false,
+      '新空间不应同步公共空间知识库文件',
+    );
+    assert.equal(writeSpaceSystemPrompt(space, '  你是本空间助手。\n'), true, '非空提示词应当写入');
+    assert.equal(
+      fs.readFileSync(path.join(space, '提示词管理', '默认提示词.md'), 'utf8').trim(),
+      '你是本空间助手。',
+      '创建时生成的提示词应覆盖种子',
+    );
+    {
+      const promptFile = path.join(space, '提示词管理', '默认提示词.md');
+      const fileSt = fs.statSync(promptFile);
+      const dirSt = fs.statSync(path.dirname(promptFile));
+      const born = Number(fileSt.birthtimeMs) || 0;
+      const dirBorn = Number(dirSt.birthtimeMs) || 0;
+      if (born && dirBorn) {
+        assert.ok(
+          born + 50 >= dirBorn,
+          '默认提示词的创建时间不应早于所在目录（不能沿用种子文件时间）',
+        );
+      }
+    }
+    assert.equal(writeSpaceSystemPrompt(space, '   '), false, '空串不得覆盖已有提示词');
+    assert.equal(
+      fs.readFileSync(path.join(space, '提示词管理', '默认提示词.md'), 'utf8').trim(),
+      '你是本空间助手。',
     );
     // 模板库按分类分层，子目录里的种子同样要落位
     assert.equal(
@@ -923,16 +1071,16 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
       '模板库分层种子应被播种',
     );
 
-    // 用户改动过的种子不被覆盖
-    const seeded = path.join(space, '知识库管理', '功能测试用例编写规范.md');
-    fs.writeFileSync(seeded, 'mine', 'utf8');
+    // 用户改动过的文件不被覆盖
+    const customKb = path.join(space, '知识库管理', '本空间笔记.md');
+    fs.writeFileSync(customKb, 'mine', 'utf8');
     prepareSpaceDir(space);
-    assert.equal(fs.readFileSync(seeded, 'utf8'), 'mine', '已存在的文件不得被覆盖');
+    assert.equal(fs.readFileSync(customKb, 'utf8'), 'mine', '已存在的文件不得被覆盖');
 
     fs.rmSync(space, { recursive: true, force: true });
   });
 
-  it('启动时把池内其它空间根目录的旧清单收进 .tb/', () => {
+  it('启动时把池内其它空间根目录的旧清单收进 .lantern/', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-pool-manifest-'));
     const sibling = path.join(root, '侧空间');
     fs.mkdirSync(sibling, { recursive: true });
@@ -949,7 +1097,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
 
     prepareSpacesRoot(root);
     assert.equal(fs.existsSync(path.join(sibling, SPACE_MANIFEST_FILE)), false);
-    assert.equal(fs.existsSync(path.join(sibling, '.tb', SPACE_MANIFEST_FILE)), true);
+    assert.equal(fs.existsSync(path.join(sibling, '.lantern', SPACE_MANIFEST_FILE)), true);
 
     fs.rmSync(root, { recursive: true, force: true });
   });

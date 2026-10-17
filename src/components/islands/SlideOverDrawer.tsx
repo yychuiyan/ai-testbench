@@ -54,7 +54,7 @@ export default function SlideOverDrawer({
   if (!mounted) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex justify-end" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-60 flex justify-end" role="dialog" aria-modal="true">
       <button
         type="button"
         className={`absolute inset-0 bg-stone-900/30 transition-opacity duration-200 ease-out ${

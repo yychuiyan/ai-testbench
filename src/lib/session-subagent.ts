@@ -244,7 +244,7 @@ async function executeSubagent(
     const access = effectiveAccess(preset, ctx.access);
     const tools: ToolDef[] = [];
     let system =
-      `你是 TestBench 子代理「${preset.id}」（${preset.label}）。\n` +
+      `你是 Lantern Harness 子代理「${preset.id}」（${preset.label}）。\n` +
       `任务：独立完成用户交给你的子任务，给出简洁可核对的结论。\n` +
       `- 不要声称自己是主会话；不要尝试再派生子代理或执行 shell\n` +
       `- 工具轮次有限，优先检索再结论`;

@@ -12,7 +12,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-/** 气泡层级：低于 ConfirmDialog 的 z-[90]，保证弹窗仍可覆盖气泡 */
+/** 气泡层级：低于 ConfirmDialog 的 z-90，保证弹窗仍可覆盖气泡 */
 const Z_INDEX = 80;
 /** 气泡最大宽度（px）：长文件名 / 长路径需要换行，避免撑破视口 */
 const MAX_WIDTH = 420;

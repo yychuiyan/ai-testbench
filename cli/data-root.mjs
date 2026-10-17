@@ -2,32 +2,39 @@
  * 数据空间目录初始化与旧布局迁移。
  *
  * 单独成模块的原因：服务端（`cli/server.mjs`）与数据空间管理（`cli/spaces.mjs`
- * / `tb-plugins/tb-spaces.mjs`）都要用，但这几个模块之间不能互相 import（会成环）。
+ * / `builtin/session/lh-spaces.mjs`）都要用，但这几个模块之间不能互相 import（会成环）。
  *
  * 两个层级要分清（命名与相对路径统一来自 `builtin/session/space-layout.mjs`）：
- * - 池根（spaces root）：用户选中的文件夹；打包模式 = tbench 记住的目录，dev = 仓库根
+ * - 池根（spaces root）：用户选中的文件夹；打包模式 = lantern 记住的目录，dev = 仓库根
  * - 空间目录：用户数据目录下直接是「公共空间」；源码仓库根则在 `空间池/` 里
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   CONFIG_REL,
   LOCAL_REL,
   META_CONFIG_NAME,
   META_LOCAL_NAME,
+  META_DIR,
+  META_DIR_LEGACY,
   PUBLIC_SPACE_DIR,
+  SPACE_MANIFEST_FILE,
   SPACE_POOL_DIR,
   poolPath,
   publicSpacePath,
+  resolveContentRoot,
   usesNestedSpacePool,
   spaceConfigDir,
   spaceConfigFile,
   spaceLocalDir,
   spaceManifestFile,
   spaceManifestLegacyFile,
+  spaceMetaDir,
 } from '../builtin/session/space-layout.mjs';
-import { DOC_ROOT_DIRS, migrateLegacyRoot } from '../tb-plugins/tb-project-docs.mjs';
+import { DOC_ROOT_DIRS, migrateLegacyRoot } from '../lh-plugins/lh-project-docs.mjs';
+import { markNavRootsDetected } from '../builtin/session/lh-nav-groups.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(__dirname, '..');
@@ -36,9 +43,51 @@ const PKG_DEFAULTS = path.join(PKG_ROOT, 'config', 'app.defaults.json');
 const PKG_SEEDS = path.join(PKG_ROOT, 'config', 'seeds');
 
 /**
+ * 两个文件内容是否一致（先比大小，再比 sha256）。
+ * 用于判断「合并后源目录里已经没有任何独有内容」。
+ */
+function sameFileContent(a, b) {
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+    const hash = (fp) => crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex');
+    return hash(a) === hash(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `from` 里的每一项在 `to` 里是否都有内容相同的对应项。
+ *
+ * 逐条目 merge 不会覆盖同名文件，因此合并后源目录往往还留着撞名的旧副本；
+ * 这些副本没有任何信息量，却会让仓库根/数据目录长期挂着一个重复的「公共空间」。
+ * 只有全部一致（或源侧为空）才返回 true，调用方才敢删源。
+ */
+function fullyPresentIn(from, to, rel = '') {
+  const src = rel ? path.join(from, rel) : from;
+  const dst = rel ? path.join(to, rel) : to;
+  let st;
+  try {
+    st = fs.statSync(src);
+  } catch {
+    return true;
+  }
+  if (!st.isDirectory()) return sameFileContent(src, dst);
+  let names;
+  try {
+    names = fs.readdirSync(src);
+  } catch {
+    return false;
+  }
+  return names.every((n) => fullyPresentIn(from, to, rel ? path.join(rel, n) : n));
+}
+
+/**
  * 把 `from` 目录里的内容并进 `to`（幂等，绝不覆盖已存在条目，也绝不删源）。
  *
- * 为什么不用整目录 rename：目标目录常常已经被骨架铺出来了（例如先建了 `.tb/config`
+ * 为什么不用整目录 rename：目标目录常常已经被骨架铺出来了（例如先建了 `.lantern/config`
  * 再迁移旧 `config`），此时 rename 会直接失败并丢掉迁移机会。逐条目搬更稳妥。
  * @param {string} from
  * @param {string} to
@@ -75,9 +124,19 @@ function mergeDirInto(from, to) {
 }
 
 /**
- * 把空间内的 `config/` 与 `.local/` 收进隐藏元数据目录 `.tb/`（幂等）。
+ * 把上一世代隐藏目录 `.lantern/` 并进 `.lantern/`（幂等，不覆盖已有文件）。
+ * @param {string} spaceDir
+ * @returns {string[]}
+ */
+export function migrateLegacyHiddenMetaDir(spaceDir) {
+  const root = path.resolve(spaceDir);
+  return mergeDirInto(path.join(root, META_DIR_LEGACY), spaceMetaDir(root));
+}
+
+/**
+ * 把空间内的 `config/` 与 `.local/` 收进隐藏元数据目录 `.lantern/`（幂等）。
  *
- * 历史布局里两者散在空间根目录，和内容目录混在一起；统一收进 `.tb/` 后内容一眼看全。
+ * 历史布局里两者散在空间根目录，和内容目录混在一起；统一收进 `.lantern/` 后内容一眼看全。
  * 两个世代的名字都要认：早期的 `.local`（点开头）与后来的 `local`。
  * @param {string} spaceDir
  * @returns {{ config: string[], local: string[] }} 各自搬迁的条目
@@ -85,6 +144,7 @@ function mergeDirInto(from, to) {
 export function migrateMetaIntoHiddenDir(spaceDir) {
   const root = path.resolve(spaceDir);
   const moved = { config: [], local: [] };
+  migrateLegacyHiddenMetaDir(root);
   for (const name of [META_CONFIG_NAME, `.${META_CONFIG_NAME}`]) {
     moved.config.push(...mergeDirInto(path.join(root, name), spaceConfigDir(root)));
   }
@@ -94,7 +154,7 @@ export function migrateMetaIntoHiddenDir(spaceDir) {
   return moved;
 }
 
-/** 根目录旧清单收进 `.tb/`（目标已存在则只删旧文件） */
+/** 根目录旧清单收进 `.lantern/`（目标已存在则只删旧文件） */
 function migrateLegacySpaceManifest(root) {
   const canon = spaceManifestFile(root);
   const legacy = spaceManifestLegacyFile(root);
@@ -121,15 +181,16 @@ export function prepareSpaceDir(spaceDir) {
   const root = path.resolve(spaceDir);
   fs.mkdirSync(root, { recursive: true });
 
-  // 先迁移再建：一旦先建出 .tb/config，旧 config/ 里的用户配置就得靠逐条目合并来救
+  // 先迁移再建：一旦先建出 .lantern/config，旧 config/ 里的用户配置就得靠逐条目合并来救
   migrateMetaIntoHiddenDir(root);
   fs.mkdirSync(spaceLocalDir(root), { recursive: true });
   fs.mkdirSync(spaceConfigDir(root), { recursive: true });
-  // 根目录旧 space.json 收进 .tb/（清单属于元数据，不应和内容目录并列）
+  // 根目录旧 space.json 收进 .lantern/（清单属于元数据，不应和内容目录并列）
   migrateLegacySpaceManifest(root);
 
   const destDefaults = spaceConfigFile(root, 'app.defaults.json');
-  if (!fs.existsSync(destDefaults)) {
+  const freshSpace = !fs.existsSync(destDefaults);
+  if (freshSpace) {
     if (!fs.existsSync(PKG_DEFAULTS)) {
       throw new Error(`缺少包内默认配置：${PKG_DEFAULTS}`);
     }
@@ -139,7 +200,8 @@ export function prepareSpaceDir(spaceDir) {
   for (const { dirName, legacyDirNames } of Object.values(DOC_ROOT_DIRS)) {
     // 必须先迁移：一旦先建出中文目录，旧目录里的文件就再也不会被搬过来
     migrateLegacyRoot(root, legacyDirNames, dirName);
-    const dir = path.join(root, dirName);
+    // 内容目录可能被归进了分组文件夹：跟着分组走，别在根上再铺一个空壳
+    const dir = resolveContentRoot(root, dirName).abs;
     fs.mkdirSync(dir, { recursive: true });
     const keep = path.join(dir, '.gitkeep');
     if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
@@ -148,20 +210,41 @@ export function prepareSpaceDir(spaceDir) {
   // 种子晚于建目录：这样「目标目录已存在」不会阻止种子落位
   seedSpaceDir(root);
 
+  // 新建空间：种子不算「用户搬进来的内容」，别让它触发插件自动开启
+  if (freshSpace) markNavRootsDetected(root);
+
   return root;
 }
+
+/** 与提示词管理页、工作台读取的文件名一致 */
+export const SPACE_SYSTEM_PROMPT_FILE = '默认提示词.md';
+const LEGACY_SPACE_PROMPT_FILES = [
+  '空间提示词.md',
+  '空间默认提示词.md',
+  '系统提示词.md',
+  'AI工作台系统提示词.md',
+];
 
 /**
  * 把包内种子文档补进空间（只在目标缺失时写入），支持分类子目录（模板库按分类分层）。
  *
  * 公共空间是忽略入库的本地文件夹，种子若只存在于其中，新克隆的仓库 / 新装包就没有默认内容；
  * 因此种子源放在随包发布的 `config/seeds/`，铺骨架时播种 —— dev、build、打包运行都覆盖到。
+ * 非公共空间：提示词只播「默认提示词」，知识库不播公共空间那套规范文档。
  * @param {string} spaceDir
  * @returns {string[]} 本次播种的相对路径
  */
 export function seedSpaceDir(spaceDir) {
   const root = path.resolve(spaceDir);
+  const isPublic = path.basename(root) === PUBLIC_SPACE_DIR;
   const planted = [];
+
+  /** 写成新文件，避免 copyFile 带上种子的创建时间 */
+  function copyFileNew(from, to) {
+    const buf = fs.readFileSync(from);
+    if (fs.existsSync(to)) fs.unlinkSync(to);
+    fs.writeFileSync(to, buf);
+  }
 
   /** @param {string} srcDir @param {string} destDir @param {string} relPrefix */
   function walk(srcDir, destDir, relPrefix) {
@@ -178,7 +261,7 @@ export function seedSpaceDir(spaceDir) {
       if (fs.existsSync(to)) continue;
       try {
         fs.mkdirSync(path.dirname(to), { recursive: true });
-        fs.copyFileSync(from, to);
+        copyFileNew(from, to);
         planted.push(rel);
       } catch {
         // 种子只是初始内容：失败不阻断启动
@@ -189,10 +272,57 @@ export function seedSpaceDir(spaceDir) {
   for (const { dirName } of Object.values(DOC_ROOT_DIRS)) {
     const seedDir = path.join(PKG_SEEDS, dirName);
     if (!fs.existsSync(seedDir)) continue;
-    fs.mkdirSync(path.join(root, dirName), { recursive: true });
-    walk(seedDir, path.join(root, dirName), '');
+    // 内容目录可能已在分组文件夹里：种子要播到实际位置
+    const destDir = resolveContentRoot(root, dirName).abs;
+    fs.mkdirSync(destDir, { recursive: true });
+    if (!isPublic && dirName === DOC_ROOT_DIRS.knowledge.dirName) continue;
+    if (!isPublic && dirName === DOC_ROOT_DIRS.prompts.dirName) {
+      const from = path.join(seedDir, SPACE_SYSTEM_PROMPT_FILE);
+      const to = path.join(destDir, SPACE_SYSTEM_PROMPT_FILE);
+      if (fs.existsSync(from) && !fs.existsSync(to)) {
+        try {
+          copyFileNew(from, to);
+          planted.push(SPACE_SYSTEM_PROMPT_FILE);
+        } catch {
+          // 种子只是初始内容：失败不阻断启动
+        }
+      }
+      continue;
+    }
+    walk(seedDir, destDir, '');
   }
   return planted;
+}
+
+/**
+ * 把生成/手写的提示词写成该空间的默认提示词（覆盖种子，不覆盖空串）。
+ * @param {string} spaceDir
+ * @param {string} content
+ * @returns {boolean} 是否写入
+ */
+export function writeSpaceSystemPrompt(spaceDir, content) {
+  const text = String(content ?? '')
+    .replace(/\r\n/g, '\n')
+    .trim();
+  if (!text) return false;
+  const dir = resolveContentRoot(path.resolve(spaceDir), DOC_ROOT_DIRS.prompts.dirName).abs;
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, SPACE_SYSTEM_PROMPT_FILE);
+  const body = text.endsWith('\n') ? text : `${text}\n`;
+  // 先删再建，创建时间是这条提示词写入本空间的时间，而不是种子文件的时间
+  if (fs.existsSync(dest)) fs.unlinkSync(dest);
+  fs.writeFileSync(dest, body, 'utf8');
+  for (const name of LEGACY_SPACE_PROMPT_FILES) {
+    const leftover = path.join(dir, name);
+    if (leftover !== dest && fs.existsSync(leftover)) {
+      try {
+        fs.unlinkSync(leftover);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -235,6 +365,19 @@ export function migrateIntoPublicSpace(root, publicRoot) {
   return moved;
 }
 
+/** 摊平收回后只剩 `.lantern` / `.lantern` / 占位的空壳，可以删，避免仓库根再挂一份「公共空间」 */
+function isLeftoverSpaceShell(dir) {
+  try {
+    const rest = fs.readdirSync(dir).filter((n) => n !== '.gitkeep' && n !== '.DS_Store');
+    return (
+      rest.length === 0 ||
+      (rest.length === 1 && (rest[0] === META_DIR || rest[0] === META_DIR_LEGACY))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 误摊平到池根的空间文件夹：有清单 / 元数据，或就是「公共空间」。
  * 不把 src、config、node_modules 这类包目录当成空间。
@@ -246,9 +389,16 @@ function looksLikeLiftedSpace(dir, name) {
   if (fs.existsSync(spaceManifestFile(dir)) || fs.existsSync(spaceManifestLegacyFile(dir))) {
     return true;
   }
+  if (fs.existsSync(path.join(dir, META_DIR_LEGACY, SPACE_MANIFEST_FILE))) {
+    return true;
+  }
   try {
     const local = spaceLocalDir(dir);
-    return fs.existsSync(local) && fs.statSync(local).isDirectory();
+    const legacyLocal = path.join(dir, META_DIR_LEGACY, META_LOCAL_NAME);
+    return (
+      (fs.existsSync(local) && fs.statSync(local).isDirectory()) ||
+      (fs.existsSync(legacyLocal) && fs.statSync(legacyLocal).isDirectory())
+    );
   } catch {
     return false;
   }
@@ -281,6 +431,11 @@ function migrateFlattenedSpacesIntoPool(root) {
         if (fs.statSync(from).isDirectory() && fs.statSync(to).isDirectory()) {
           mergeDirInto(from, to);
           moved.push(ent.name);
+          // 源侧剩下的都是撞名副本（或只剩 `.lantern` 空壳）时删掉源目录，
+          // 否则仓库根会长期挂着一份看起来「没搬走」的重复空间。
+          if (isLeftoverSpaceShell(from) || fullyPresentIn(from, to)) {
+            fs.rmSync(from, { recursive: true, force: true });
+          }
         }
       } catch {
         // 两边类型不一致时保持原状
@@ -293,6 +448,7 @@ function migrateFlattenedSpacesIntoPool(root) {
     } catch {
       mergeDirInto(from, to);
       moved.push(ent.name);
+      if (fullyPresentIn(from, to)) fs.rmSync(from, { recursive: true, force: true });
     }
   }
   return moved;
@@ -324,6 +480,8 @@ function migrateNestedPoolDir(root) {
         if (fs.statSync(from).isDirectory() && fs.statSync(to).isDirectory()) {
           mergeDirInto(from, to);
           moved.push(name);
+          // 撞名副本没有信息量：合并后确认源侧无独有内容就删掉这一份
+          if (fullyPresentIn(from, to)) fs.rmSync(from, { recursive: true, force: true });
         }
       } catch {
         // 两边类型不一致时保持原状
@@ -350,7 +508,7 @@ function migrateNestedPoolDir(root) {
 /**
  * 确保「池根」就绪：公共空间骨架就位，并把旧布局的内容搬进去。
  *
- * dest = 仓库根，空间进「空间池」；npm / tbench 选中的文件夹里空间直接铺开。
+ * dest = 仓库根，空间进「空间池」；npm / lantern 选中的文件夹里空间直接铺开。
  * @param {string} root 池根
  * @returns {string} 解析后的绝对路径
  */
@@ -381,5 +539,5 @@ export function prepareSpacesRoot(root) {
   return abs;
 }
 
-// 供其它模块与测试复用的相对路径常量（避免各处再硬编码 `.tb/...`）
+// 供其它模块与测试复用的相对路径常量（避免各处再硬编码 `.lantern/...`）
 export { CONFIG_REL, LOCAL_REL };

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as XLSX from 'xlsx';
 import type { CollectionEntry } from 'astro:content';
-import { PUBLIC_SPACE_REL } from '../../builtin/session/space-layout.mjs';
+import { PUBLIC_SPACE_REL, resolveContentRoot } from '../../builtin/session/space-layout.mjs';
 import {
   TEMPLATE_CATEGORY_ORDER,
   isTemplateCategory,
@@ -127,7 +127,8 @@ export function listBinaryTemplates(): Array<{
   sheets?: ExcelSheetSummary[];
   fieldSummary?: string;
 }> {
-  const root = path.join(publicSpaceDir(), '测试模板库');
+  // 模板可能被归进分组文件夹，按实际位置取
+  const root = resolveContentRoot(publicSpaceDir(), '测试模板库').abs;
   const out: ReturnType<typeof listBinaryTemplates> = [];
   if (!fs.existsSync(root)) return out;
 

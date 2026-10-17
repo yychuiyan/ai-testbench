@@ -13,6 +13,7 @@ __pycache__/
 blogs/
 # 本地会话记忆（不提交）
 .local/
+.lantern/
 .tb/
 .cursor/
 # 临时工作区（决策清单等，不提交）
@@ -20,7 +21,7 @@ temp/
 # 本地文档库内容（磁盘中文目录；界面中文 label）
 #
 # 空间池容器随源码发布；其中的本机空间数据不入库。
-# tbench init 选中的文件夹里不会出现这一层。
+# tbench / lantern init 选中的文件夹里不会出现这一层。
 空间池/**
 !空间池/.gitkeep
 

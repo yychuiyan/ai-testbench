@@ -61,7 +61,7 @@ const inputCls =
   'focus:outline-none focus:ring-2 focus:ring-[#4176e6]/35 focus:border-[#4176e6] transition-colors';
 
 const pillBtnCls =
-  'inline-flex items-center gap-1.5 h-9 min-w-[7.5rem] px-3 rounded-lg bg-stone-100 text-sm text-stone-700 ' +
+  'inline-flex items-center gap-1.5 h-9 min-w-30 px-3 rounded-lg bg-stone-100 text-sm text-stone-700 ' +
   'hover:bg-stone-200/80 transition-colors outline-none focus:outline-none';
 
 function ChevronDown({ className = 'w-3.5 h-3.5' }: { className?: string }) {
@@ -189,7 +189,7 @@ function PrefSelect<T extends string>({
       <ListboxOptions
         transition
         anchor={{ to: 'bottom end', gap: 6 }}
-        className="tw-select-menu tw-menu-anim z-[60] min-w-[10rem] rounded-xl py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+        className="tw-select-menu tw-menu-anim z-60 min-w-40 rounded-xl py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
       >
         {options.map((o) => (
           <ListboxOption
@@ -471,7 +471,7 @@ export default function SettingsDialog() {
           data-hint={configured ? '设置（已配置模型）' : '设置'}
         >
           <svg
-            className="tw-nav-ico w-[18px] h-[18px] shrink-0"
+            className="tw-nav-ico w-4.5 h-4.5 shrink-0"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -495,7 +495,7 @@ export default function SettingsDialog() {
       </div>
 
       <Transition show={open}>
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-110 flex items-center justify-center p-4">
           <TransitionChild>
             <div
               className="tw-dialog-backdrop-anim absolute inset-0 bg-stone-950/45"
@@ -529,7 +529,7 @@ export default function SettingsDialog() {
               </div>
 
               <div className="flex-1 min-h-0 flex">
-                <aside className="w-[9.5rem] shrink-0 border-r border-stone-100 bg-[#f4f5f7] py-3 px-2 space-y-0.5">
+                <aside className="w-38 shrink-0 border-r border-stone-100 bg-[#f4f5f7] py-3 px-2 space-y-0.5">
                   {nav.map((item) => {
                     const active = tab === item.id;
                     return (
@@ -595,7 +595,7 @@ export default function SettingsDialog() {
                                   key={o.value}
                                   type="button"
                                   onClick={() => patchPrefs({ appearance: o.value })}
-                                  className={`flex flex-col items-center justify-center gap-2 h-[4.75rem] rounded-xl border transition-colors ${
+                                  className={`flex flex-col items-center justify-center gap-2 h-19 rounded-xl border transition-colors ${
                                     active
                                       ? 'border-[#4176e6] bg-[#edf3fe] text-[#4176e6] ring-1 ring-[#4176e6]/30'
                                       : 'border-stone-200 text-stone-500 hover:border-stone-300 hover:bg-stone-50'
@@ -823,7 +823,7 @@ export default function SettingsDialog() {
                               <ListboxOptions
                                 transition
                                 anchor={{ to: 'bottom start', gap: 6 }}
-                                className="tw-select-menu tw-menu-anim z-[60] w-[var(--button-width)] max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+                                className="tw-select-menu tw-menu-anim z-60 w-(--button-width) max-h-60 overflow-auto rounded-lg py-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
                               >
                                 {modelOptions.map((m) => (
                                   <ListboxOption

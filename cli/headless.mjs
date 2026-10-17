@@ -4,8 +4,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { publicSpacePath } from '../builtin/session/space-context.mjs';
-import { spaceConfigFile, spaceLocalFile, META_DIR } from '../builtin/session/space-layout.mjs';
+import {
+  spaceConfigFile,
+  spaceLocalFile,
+  META_DIR,
+  META_DIR_LEGACY,
+} from '../builtin/session/space-layout.mjs';
 import { prepareSpacesRoot } from './server.mjs';
+import { getGlobalModelsPath } from './user-config.mjs';
 
 function readJson(fp, fallback) {
   try {
@@ -50,13 +56,16 @@ export function loadHeadlessSettings(dataRoot) {
   const root = publicSpacePath(prepareSpacesRoot(dataRoot));
   const defaults = readJson(spaceConfigFile(root, 'app.defaults.json'), {});
   const local = readJson(spaceLocalFile(root, 'app.config.json'), {});
-  const model = { ...(defaults.model || {}), ...(local.model || {}) };
-  const providers = Array.isArray(local.model?.providers)
-    ? local.model.providers
-    : Array.isArray(defaults.model?.providers)
-      ? defaults.model.providers
-      : [];
-  const activeId = local.model?.activeId || defaults.model?.activeId || '';
+  const global = readJson(getGlobalModelsPath(), {});
+  const model = { ...(defaults.model || {}), ...(local.model || {}), ...(global || {}) };
+  const providers = Array.isArray(global?.providers)
+    ? global.providers
+    : Array.isArray(local.model?.providers)
+      ? local.model.providers
+      : Array.isArray(defaults.model?.providers)
+        ? defaults.model.providers
+        : [];
+  const activeId = global?.activeId || local.model?.activeId || defaults.model?.activeId || '';
   const active = providers.find((p) => p && p.id === activeId) || providers[0] || null;
   const env = loadDotEnv(root);
   const apiKey = String(
@@ -65,7 +74,9 @@ export function loadHeadlessSettings(dataRoot) {
   const baseURL = String(active?.baseURL || model.baseURL || '').trim();
   const modelId = String(active?.model || model.model || '').trim();
   if (!baseURL || !modelId) {
-    throw new Error('未配置模型：请在数据空间设置页或 .tb/local/app.config.json 填写提供商');
+    throw new Error(
+      '未配置模型：请在设置页填写提供商，或写入 ~/.config/lantern-harness/models.json',
+    );
   }
   if (!apiKey) {
     throw new Error('未配置 API Key：请设置 TW_API_KEY 或写入提供商 apiKey');
@@ -140,6 +151,7 @@ function walkFiles(dir, acc, limit) {
       ent.name === 'node_modules' ||
       ent.name === '.git' ||
       ent.name === META_DIR ||
+      ent.name === META_DIR_LEGACY ||
       ent.name === '.local'
     ) {
       continue;

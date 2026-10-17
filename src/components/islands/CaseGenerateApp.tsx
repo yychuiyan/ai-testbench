@@ -763,8 +763,8 @@ export default function CaseGenerateApp() {
                 setSelectedReq(v);
                 patchSession({ reqPaths: v ? [v] : [] });
               }}
-              placeholder={reqOptions.length ? '搜索并选择需求文档…' : '暂无需求文件'}
-              emptyLabel="不引用需求文档"
+              allowEmpty={false}
+              placeholder="未选择需求文档"
             />
           </div>
           <div>
@@ -860,13 +860,13 @@ export default function CaseGenerateApp() {
                 const result = turn.assistant?.result;
                 return (
                   <div key={i} className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-stretch">
-                    <div className="rounded-xl border border-stone-200 bg-white px-3 py-3 min-h-[88px]">
+                    <div className="rounded-xl border border-stone-200 bg-white px-3 py-3 min-h-22">
                       <div className="text-[11px] font-medium text-stone-400 mb-1.5">提问</div>
                       <div className="text-sm text-stone-800 whitespace-pre-wrap leading-6">
                         {turn.user?.content || '—'}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-stone-200 bg-white px-3 py-3 min-h-[88px]">
+                    <div className="rounded-xl border border-stone-200 bg-white px-3 py-3 min-h-22">
                       <div className="text-[11px] font-medium text-stone-400 mb-1.5">生成结果</div>
                       {pending ? (
                         <div className="text-sm text-[#4176e6]">生成中…</div>

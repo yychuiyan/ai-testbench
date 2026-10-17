@@ -1,7 +1,7 @@
 /**
  * 数据空间注册表：多空间数据隔离的元数据层。
  *
- * 文件位置：`~/.config/ai-testbench/spaces.json`（与 CLI 的 config.json 同目录）
+ * 文件位置：`~/.config/lantern-harness/spaces.json`（与 CLI 的 config.json 同目录）
  *
  * 「公共空间」是内建虚拟项，不入库：用户数据目录下直接是 `公共空间/`，源码仓库则在 `空间池/公共空间/`。
  * 新建空间会自动归进同一层（与公共空间同级）。界面路径隐去「空间池」。
@@ -15,10 +15,12 @@ import {
   LOCAL_REL,
   META_CONFIG_NAME,
   META_DIR,
+  META_DIR_LEGACY,
   META_LOCAL_NAME,
   PUBLIC_SPACE_DIR,
   SPACE_MANIFEST_FILE,
   SPACE_MANIFEST_REL,
+  SPACE_MANIFEST_REL_LEGACY,
   SPACE_POOL_DIR,
   poolPath,
   publicSpacePath,
@@ -45,17 +47,25 @@ const RESERVED_NAMES = new Set([
   META_LOCAL_NAME,
   `.${META_LOCAL_NAME}`,
   META_DIR,
+  META_DIR_LEGACY,
   SPACE_POOL_DIR,
 ]);
 
 /**
  * 空间文件夹内的自包含清单：让空间目录本身可整体拷贝到任意位置。
- * 落在 `.tb/space.json`（与配置、本机状态同级）；根目录的旧 `space.json` 仍可读，写入时迁走。
- * 注册表（~/.config/ai-testbench/spaces.json）只记「有哪些空间」，清单记「这个文件夹是谁」，
+ * 落在 `.lantern/space.json`（与配置、本机状态同级）；根目录的旧 `space.json` 仍可读，写入时迁走。
+ * 注册表（~/.config/lantern-harness/spaces.json）只记「有哪些空间」，清单记「这个文件夹是谁」，
  * 两者互为兜底：丢了注册表还能靠清单 + discoverSpaces 重新纳入。
  */
 export { SPACE_MANIFEST_FILE, SPACE_MANIFEST_REL };
-const MANIFEST_KIND = 'ai-testbench-space';
+const MANIFEST_KIND = 'lantern-harness-space';
+/** 旧清单 kind：只读兼容，写入一律用新 kind */
+const LEGACY_MANIFEST_KINDS = ['ai-testbench-space'];
+
+function isSpaceManifestKind(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  return raw.kind === MANIFEST_KIND || LEGACY_MANIFEST_KINDS.includes(raw.kind);
+}
 const MANIFEST_SCHEMA = 1;
 
 /** 导出范围：「完整备份」含密钥与会话；「内容库」排除敏感项 */
@@ -204,16 +214,18 @@ function nameTaken(reg, name) {
 
 // ── 空间清单（自包含） ────────────────────────────────────────
 
-/** 现有清单路径：优先 `.tb/space.json`，兼容根目录旧文件 */
+/** 现有清单路径：优先 `.lantern/space.json`，兼容 `.lantern/space.json` 与根目录旧文件 */
 function resolveManifestPath(dir) {
   const canon = spaceManifestFile(dir);
   if (fs.existsSync(canon)) return canon;
+  const hiddenLegacy = path.join(dir, META_DIR_LEGACY, SPACE_MANIFEST_FILE);
+  if (fs.existsSync(hiddenLegacy)) return hiddenLegacy;
   const legacy = spaceManifestLegacyFile(dir);
   if (fs.existsSync(legacy)) return legacy;
   return null;
 }
 
-/** 根目录旧清单迁进 `.tb/`（目标已存在则只删旧文件） */
+/** 根目录旧清单迁进 `.lantern/`（目标已存在则只删旧文件） */
 export function migrateLegacyManifest(dir) {
   const canon = spaceManifestFile(dir);
   const legacy = spaceManifestLegacyFile(dir);
@@ -236,7 +248,7 @@ export function readSpaceManifest(dir) {
   try {
     if (!fp) return { ok: false, error: '没有 space.json 清单' };
     const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
-    if (!raw || typeof raw !== 'object' || raw.kind !== MANIFEST_KIND) {
+    if (!isSpaceManifestKind(raw)) {
       return { ok: false, error: 'space.json 不是本应用的数据空间清单' };
     }
     const id = String(raw.id || '').trim();
@@ -273,7 +285,7 @@ export function writeSpaceManifest(dir, entry) {
  * 「这是不是一个数据空间目录」的老空间判据。
  *
  * 升级前创建的空间没有清单，但 `prepareSpaceDir` 一定会写配置默认值，
- * 拿 `空间/.tb/local` 与 `空间/.tb/config/app.defaults.json` 一起认，
+ * 拿 `空间/.lantern/local` 与 `空间/.lantern/config/app.defaults.json` 一起认，
  * 既能捞回老空间，又不会把无关目录误纳入。
  *
  * 也兼容更早的散装布局（`config/`、`.local/` 直接放在空间根）。
@@ -281,10 +293,12 @@ export function writeSpaceManifest(dir, entry) {
 function looksLikeSpaceDir(abs) {
   const hasLocal =
     isDir(spaceLocalDir(abs)) ||
+    isDir(path.join(abs, META_DIR_LEGACY, META_LOCAL_NAME)) ||
     isDir(path.join(abs, META_LOCAL_NAME)) ||
     isDir(path.join(abs, '.local'));
   const hasDefaults =
     fs.existsSync(spaceConfigFile(abs, 'app.defaults.json')) ||
+    fs.existsSync(path.join(abs, META_DIR_LEGACY, META_CONFIG_NAME, 'app.defaults.json')) ||
     fs.existsSync(path.join(abs, META_CONFIG_NAME, 'app.defaults.json')) ||
     fs.existsSync(path.join(abs, 'config', 'app.defaults.json'));
   return hasLocal && hasDefaults;
@@ -294,7 +308,7 @@ function looksLikeSpaceDir(abs) {
  * 扫描空间池，把「空间文件夹」纳入注册表。
  *
  * 这是「空间 = 一个自包含文件夹」的落地动作：把空间文件夹整体拷进池里，扫描一次即可识别。
- * - 带 `.tb/space.json`（或根目录旧清单）的目录：按清单识别，并把清单同步为目录名 / 新 id
+ * - 带 `.lantern/space.json`（或旧 `.lantern/space.json` / 根目录清单）的目录：按清单识别，并把清单同步为目录名 / 新 id
  * - 不带清单但形如数据空间的老目录：一并纳入并补写清单
  * - 已登记但缺清单的空间：只补写清单
  * @param {{ managedParent?: string, baseRoot?: string }} [opts]
@@ -802,13 +816,16 @@ export async function importSpaceFromZip({ zipFile, name, managedParent, baseRoo
   return { ok: true, space: entry };
 }
 
-/** 从 zip 里读空间清单（优先 `.tb/space.json`，兼容根目录旧文件）；读不到不报错，只是没有名称可参考 */
+/** 从 zip 里读空间清单（优先 `.lantern/space.json`，兼容 `.lantern/` 与根目录旧文件）；读不到不报错，只是没有名称可参考 */
 async function readManifestFromZip(zip) {
-  const file = zip.file(SPACE_MANIFEST_REL) || zip.file(SPACE_MANIFEST_FILE);
+  const file =
+    zip.file(SPACE_MANIFEST_REL) ||
+    zip.file(SPACE_MANIFEST_REL_LEGACY) ||
+    zip.file(SPACE_MANIFEST_FILE);
   if (!file) return null;
   try {
     const raw = JSON.parse(await file.async('string'));
-    if (!raw || typeof raw !== 'object' || raw.kind !== MANIFEST_KIND) return null;
+    if (!isSpaceManifestKind(raw)) return null;
     const name = String(raw.name || '').trim();
     return name ? { id: String(raw.id || ''), name } : null;
   } catch {

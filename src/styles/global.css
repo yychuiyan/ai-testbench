@@ -190,6 +190,37 @@ html[data-nav-collapsed='1'] .tw-main {
   animation: tw-route-spin 0.7s linear infinite;
 }
 
+.tw-busy-status {
+  font-size: 11px;
+  line-height: 1.25rem;
+  color: var(--tw-accent);
+}
+
+/* 生成中状态：固定宽度的动态省略号，避免 . / .. / ... 把后面布局顶动 */
+.tw-busy-ellipsis::after {
+  display: inline-block;
+  width: 1.25em;
+  text-align: left;
+  content: '';
+  animation: tw-busy-ellipsis 1.2s steps(4, end) infinite;
+}
+
+@keyframes tw-busy-ellipsis {
+  0% {
+    content: '';
+  }
+  25% {
+    content: '.';
+  }
+  50% {
+    content: '..';
+  }
+  75%,
+  100% {
+    content: '...';
+  }
+}
+
 /* ── dsh 风格会话 / 工作区行 ── */
 .tw-project-row,
 .tw-session-row {
@@ -706,7 +737,7 @@ html[data-theme='dark'] .tw-session-preview {
 .tw-nav-brand-link {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   text-decoration: none;
   color: inherit;
@@ -714,9 +745,9 @@ html[data-theme='dark'] .tw-session-preview {
 
 .tw-nav-brand-mark {
   flex: none;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -729,7 +760,6 @@ html[data-theme='dark'] .tw-session-preview {
   height: 100%;
   object-fit: contain;
   display: block;
-  border-radius: 10px;
 }
 
 .tw-nav-brand-text {
@@ -871,6 +901,278 @@ html[data-nav-collapsed='1'] .tw-nav-toggle-icon.is-expand {
   transition:
     background-color 120ms ease,
     color 120ms ease;
+}
+
+html[data-plugin-off-cases] [data-plugin-nav='cases'],
+html[data-plugin-off-prompts] [data-plugin-nav='prompts'],
+html[data-plugin-off-knowledge-lib] [data-plugin-nav='knowledgeLib'],
+html[data-plugin-off-requirements] [data-plugin-nav='requirements'],
+html[data-plugin-off-templates] [data-plugin-nav='templates'] {
+  display: none;
+}
+
+.tw-nav-libraries {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tw-nav-libraries:has(> astro-island:not(:empty)) .tw-nav-libraries-ph {
+  display: none;
+}
+
+/*
+ * 用户已存过菜单布局（本地缓存里有 navOrder / navGroups）时，
+ * 静态占位按固定顺序平铺，和真实布局不一致，会闪一下「排序前」的样子。
+ * 这种情况先让占位透明（仍占高度，避免跳动），等 React 岛按缓存渲染完再隐藏。
+ */
+html[data-nav-cached] .tw-nav-libraries-ph {
+  visibility: hidden;
+}
+
+.tw-nav-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
+}
+
+.tw-nav-hover-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  pointer-events: none;
+  flex: none;
+}
+
+.tw-nav-item:hover .tw-nav-hover-btn,
+.tw-nav-item:focus-within .tw-nav-hover-btn,
+.tw-nav-item.is-action-open .tw-nav-hover-btn,
+.tw-nav-summary:hover .tw-nav-hover-btn,
+.tw-nav-summary:focus-within .tw-nav-hover-btn,
+.tw-nav-summary.is-action-open .tw-nav-hover-btn {
+  opacity: 0.62;
+  pointer-events: auto;
+}
+
+.tw-nav-item:hover .tw-nav-hover-btn:hover,
+.tw-nav-summary:hover .tw-nav-hover-btn:hover,
+.tw-nav-hover-btn:focus-visible {
+  opacity: 1;
+  color: var(--tw-accent);
+  background: var(--tw-accent-soft);
+}
+
+.tw-nav-hover-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tw-nav-group-pop {
+  position: fixed;
+  z-index: 120;
+  min-width: 200px;
+  max-width: 240px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid var(--tw-border);
+  background: var(--tw-surface-panel);
+  box-shadow: 0 12px 32px rgb(15 17 21 / 0.16);
+  transform-origin: top left;
+  animation: tw-nav-pop-in 120ms ease-out both;
+}
+
+/* 关闭：先播退场动画，再由 React 卸载 */
+.tw-nav-group-pop.is-closing {
+  animation: tw-nav-pop-out 120ms ease-in both;
+}
+
+@keyframes tw-nav-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tw-nav-pop-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-nav-group-pop,
+  .tw-nav-group-pop.is-closing {
+    animation: none;
+  }
+}
+
+.tw-nav-group-pop-head {
+  padding: 4px 8px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--tw-label-primary);
+}
+
+.tw-nav-group-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tw-nav-group-pop-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tw-label-primary);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tw-nav-group-pop-item:hover {
+  background: var(--tw-session-hover-bg);
+}
+
+.tw-nav-group-pop-item.is-current {
+  background: var(--tw-accent-soft);
+  color: var(--tw-accent);
+}
+
+.tw-nav-group-pop-item.is-child {
+  padding-left: 22px;
+}
+
+.tw-nav-group-pop-ico {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--tw-label-muted, #a8a29e);
+}
+
+.tw-nav-group-pop-ico svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.tw-nav-group-pop-item.is-current .tw-nav-group-pop-ico {
+  color: var(--tw-accent);
+}
+
+.tw-nav-group-pop-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tw-nav-group-pop-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--tw-accent);
+}
+
+.tw-nav-group-pop-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--tw-label-muted, #a8a29e);
+}
+
+.tw-nav-group-pop-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--tw-border);
+}
+
+.tw-nav-group-pop-item.is-create {
+  color: var(--tw-accent);
+}
+
+.tw-nav-group-pop-item.is-create .tw-nav-group-pop-ico {
+  color: var(--tw-accent);
+}
+
+.tw-nav-group-pop-item.is-leave {
+  color: #c24141;
+}
+
+.tw-nav-group-pop-item.is-leave .tw-nav-group-pop-ico {
+  color: #c24141;
+}
+
+html[data-theme='dark'] .tw-nav-group-pop-item.is-leave,
+html[data-theme='dark'] .tw-nav-group-pop-item.is-leave .tw-nav-group-pop-ico {
+  color: #f2a4a4;
+}
+
+.tw-nav-drag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tw-nav-drag-row.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+  background: var(--tw-accent-soft);
+}
+
+.tw-nav-drag-grip {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--tw-label-muted, #a8a29e);
+}
+
+.tw-nav-drag-row:active {
+  cursor: grabbing;
+}
+
+.tw-nav-drag-row--nested {
+  padding-left: 26px;
+}
+
+html[data-nav-collapsed='1'] .tw-nav-hover-btn {
+  display: none;
 }
 
 .tw-nav-item:hover {
@@ -1035,13 +1337,15 @@ html[data-theme='dark'] .tw-toggle-knob {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
+  /* 裁住子项外边距：收起时不留缝，也让重绘范围限制在这一块 */
+  overflow: hidden;
+  contain: layout paint;
   transition:
     grid-template-rows 0.3s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.22s ease;
 }
 
-.tw-nav-details[open] > .tw-nav-subtree-anim,
-.tw-nav-details.is-opening > .tw-nav-subtree-anim {
+.tw-nav-details[open] > .tw-nav-subtree-anim {
   grid-template-rows: 1fr;
   opacity: 1;
 }
@@ -1057,7 +1361,8 @@ html[data-theme='dark'] .tw-toggle-knob {
 }
 
 .tw-nav-subtree {
-  margin: 2px 0 4px 14px;
+  /* 收起时高度要真的为 0：这里不能有上下外边距 / 内边距（border-box 下 padding 仍占高） */
+  margin-left: 14px;
   padding-left: 12px;
   border-left: 1px solid var(--tw-border);
   display: flex;
@@ -1068,20 +1373,13 @@ html[data-theme='dark'] .tw-toggle-knob {
 .tw-nav-subtree .tw-nav-item {
   min-height: 32px;
   padding-left: 8px;
-  transform: translateX(-4px);
   opacity: 0.65;
-  transition:
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.22s ease;
+  /* 只做透明度过渡：和高度动画同时跑时，位移过渡最容易看起来「卡」 */
+  transition: opacity 0.2s ease;
 }
 
 .tw-nav-details[open]:not(.is-closing) > .tw-nav-subtree-anim .tw-nav-item {
-  transform: none;
   opacity: 1;
-}
-
-.tw-nav-details[open]:not(.is-closing) > .tw-nav-subtree-anim .tw-nav-item:nth-child(2) {
-  transition-delay: 0.04s;
 }
 
 /* 路由 loading：暂隐藏（需要时去掉本规则即可恢复） */
@@ -1089,8 +1387,93 @@ html[data-theme='dark'] .tw-toggle-knob {
   display: none !important;
 }
 
+/* 分组内菜单：图标略小，避免缩进后文字被挤 */
+.tw-nav-subtree .tw-nav-item-main {
+  gap: 8px;
+}
+
 .tw-nav-subtree .tw-nav-ico {
-  display: none;
+  width: 15px;
+  height: 15px;
+}
+
+/* 图标选择弹层：网格 */
+/* 图标选择：二级弹窗 */
+.tw-nav-group-pop-arrow {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--tw-label-muted, #a8a29e);
+  margin-left: auto;
+}
+
+.tw-nav-icon-pop {
+  z-index: 130;
+  /* 从父菜单那侧滑出，和一级卡片区分开 */
+  transform-origin: left top;
+  animation-name: tw-nav-sub-in;
+}
+
+.tw-nav-icon-pop.is-closing {
+  animation-name: tw-nav-pop-out;
+}
+
+@keyframes tw-nav-sub-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tw-nav-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 34px);
+  gap: 4px;
+  padding: 2px;
+}
+
+.tw-nav-icon-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tw-label-secondary);
+  cursor: pointer;
+}
+
+.tw-nav-icon-cell:hover {
+  background: var(--tw-session-hover-bg);
+  color: var(--tw-label-primary);
+}
+
+.tw-nav-icon-cell.is-current {
+  border-color: var(--tw-accent);
+  color: var(--tw-accent);
+  background: var(--tw-accent-soft);
+}
+
+.tw-nav-icon-cell .tw-nav-ico {
+  width: 16px;
+  height: 16px;
+}
+
+.tw-nav-editor-ico {
+  flex: none;
+  display: inline-flex;
+  color: var(--tw-label-muted, #a8a29e);
+}
+
+.tw-nav-editor-ico .tw-nav-ico {
+  width: 15px;
+  height: 15px;
 }
 
 /* 主导航与设置之间：版本日志 + 外链 */
@@ -1268,6 +1651,11 @@ html[data-nav-collapsed='1'] .tw-nav-item {
   padding: 0;
   width: 40px;
   margin-inline: auto;
+}
+
+html[data-nav-collapsed='1'] .tw-nav-item-main {
+  justify-content: center;
+  flex: none;
 }
 
 html[data-nav-collapsed='1'] .tw-nav-list {
@@ -2427,13 +2815,15 @@ html[data-theme='dark'] .tw-settings-dialog .bg-\[\#4176e6\] {
 
 /* 数据空间面板：与 SettingsDialog 同样的输入控件 / accent 实心按钮处理。
    面板落在侧栏 aside 内，不在 main 作用域里，所以这里显式指定。 */
-html[data-theme='dark'] .tw-space-dialog input {
+html[data-theme='dark'] .tw-space-dialog input,
+html[data-theme='dark'] .tw-space-dialog textarea {
   background-color: var(--tw-surface-recessed) !important;
   border-color: #3a3f4d !important;
   color: var(--tw-label-primary) !important;
 }
 
-html[data-theme='dark'] .tw-space-dialog input::placeholder {
+html[data-theme='dark'] .tw-space-dialog input::placeholder,
+html[data-theme='dark'] .tw-space-dialog textarea::placeholder {
   color: var(--tw-label-tertiary) !important;
 }
 
@@ -2445,6 +2835,17 @@ html[data-theme='dark'] .tw-space-dialog .bg-\[\#4176e6\] {
 
 html[data-theme='dark'] .tw-space-dialog [class~='hover:bg-[#3565c7]']:hover {
   background-color: color-mix(in srgb, var(--tw-accent) 88%, #000) !important;
+}
+
+html[data-theme='dark'] .tw-space-dialog .tw-space-prompt-composer {
+  background-color: var(--tw-surface-recessed) !important;
+  border-color: #3a3f4d !important;
+  box-shadow: none;
+}
+
+html[data-theme='dark'] .tw-space-dialog .tw-space-prompt-composer textarea {
+  background-color: transparent !important;
+  border-color: transparent !important;
 }
 
 /* 插件页 toast */
@@ -2593,6 +2994,12 @@ html[data-theme='dark'] .tw-select-menu {
   border-color: color-mix(in srgb, #059669 40%, transparent);
 }
 
+.tw-composer-mode-chip.is-plugin-dev {
+  color: #5b21b6;
+  background: color-mix(in srgb, #8b5cf6 20%, var(--tw-surface-panel));
+  border-color: color-mix(in srgb, #7c3aed 40%, transparent);
+}
+
 .tw-composer-mode-chip button {
   display: inline-flex;
   align-items: center;
@@ -2624,6 +3031,12 @@ html[data-theme='dark'] .tw-composer-mode-chip.is-plan.is-approved {
   color: #6ee7b7;
   background: color-mix(in srgb, #10b981 18%, #1a1d24);
   border-color: color-mix(in srgb, #10b981 40%, transparent);
+}
+
+html[data-theme='dark'] .tw-composer-mode-chip.is-plugin-dev {
+  color: #c4b5fd;
+  background: color-mix(in srgb, #8b5cf6 22%, #1a1d24);
+  border-color: color-mix(in srgb, #8b5cf6 45%, transparent);
 }
 
 /* 输入区 @ / 插件浮层：选中态不被深色 stone 覆盖抹平 */

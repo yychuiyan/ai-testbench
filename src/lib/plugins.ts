@@ -2,70 +2,176 @@
  * 内置插件注册表：开关存应用配置（本地文件 / localStorage 回退）。
  * 插件随仓库发布，不提供远程安装/更新。
  * 新增插件：更新 PLUGIN_CATALOG，并在 config/app.defaults.json 的 plugins 中补默认值。
+ *
+ * 注意 `defaultEnabled` 只是「配置里没有这个开关时」的回退值（兼容老空间）；
+ * 新建空间的默认开关以 config/app.defaults.json 为准（目前全部默认关闭）。
+ * 新插件同样写 false：升级后不会悄悄打开，由用户在「我的插件」里手动开启。
  */
 import { getCachedAppConfig, updateAppConfig, flushAppConfig } from './app-config';
 
-export type PluginId = 'memory' | 'knowledge' | 'caseGen' | 'promptGen' | 'knowledgeGen';
+export type PluginId =
+  | 'cases'
+  | 'prompts'
+  | 'knowledgeLib'
+  | 'requirements'
+  | 'templates'
+  | 'memory'
+  | 'knowledge'
+  | 'caseGen'
+  | 'promptGen'
+  | 'knowledgeGen'
+  | 'pluginDev';
+
+/** 插件页的分类（声明顺序即展示顺序） */
+export const PLUGIN_CATEGORIES = ['内容库', '生成能力', '记忆与检索', '开发工具'] as const;
+export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
 
 export interface PluginMeta {
   id: PluginId;
   name: string;
   description: string;
   version: string;
+  /** 插件页分组标题 */
+  category: PluginCategory;
   /** 是否依赖本地中间件 */
   requiresDev: boolean;
   /** 首次访问时的默认开关 */
   defaultEnabled: boolean;
   /** 可在输入框「/」唤起并打开面板 */
   hasPanel?: boolean;
+  /** 依赖的插件：依赖关闭时本项视为关闭 */
+  requires?: PluginId;
 }
 
 export const PLUGIN_CATALOG: PluginMeta[] = [
   {
-    id: 'caseGen',
-    name: '生成测试用例',
-    description: '在工作台用「/」打开配置：选类型、模板与提示词后生成用例并写入用例库。',
+    id: 'cases',
+    category: '内容库',
+    name: '用例管理',
+    description:
+      '侧栏进入用例库：浏览、搜索、打开与删除用例。关闭后入口隐藏，「生成测试用例」一并关闭；磁盘文件仍保留。',
     version: '0.1.0',
     requiresDev: true,
-    defaultEnabled: true,
+    defaultEnabled: false,
+  },
+  {
+    id: 'caseGen',
+    category: '生成能力',
+    name: '生成测试用例',
+    description:
+      '在工作台用「/」打开配置：选类型、模板与提示词后生成用例并写入用例库。需同时开启「用例管理」。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
     hasPanel: true,
+    requires: 'cases',
+  },
+  {
+    id: 'prompts',
+    category: '内容库',
+    name: '提示词管理',
+    description:
+      '侧栏进入提示词库：浏览、搜索、打开与删除提示词。关闭后入口隐藏，「生成提示词」一并关闭；磁盘文件仍保留。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
   },
   {
     id: 'promptGen',
+    category: '生成能力',
     name: '生成提示词',
-    description: '用「/」打开配置后对话生成提示词；质检通过后写入提示词库，可在提示词管理中查看。',
+    description:
+      '用「/」打开配置后对话生成提示词；质检通过后写入提示词库。需同时开启「提示词管理」。',
     version: '0.1.0',
     requiresDev: true,
-    defaultEnabled: true,
+    defaultEnabled: false,
     hasPanel: true,
+    requires: 'prompts',
+  },
+  {
+    id: 'knowledgeLib',
+    category: '内容库',
+    name: '知识库管理',
+    description:
+      '侧栏进入知识库：浏览、搜索、打开与删除文档。关闭后入口隐藏，「生成知识库」一并关闭；磁盘文件仍保留。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
   },
   {
     id: 'knowledgeGen',
+    category: '生成能力',
     name: '生成知识库',
-    description: '用「/」打开配置后对话生成规范、方法论或环境约定；质检通过后写入知识库。',
+    description:
+      '用「/」打开配置后对话生成规范、方法论或环境约定；质检通过后写入知识库。需同时开启「知识库管理」。',
     version: '0.1.0',
     requiresDev: true,
-    defaultEnabled: true,
+    defaultEnabled: false,
     hasPanel: true,
+    requires: 'knowledgeLib',
+  },
+  {
+    id: 'requirements',
+    category: '内容库',
+    name: '需求文档库',
+    description:
+      '侧栏进入需求文档库：浏览、搜索、上传与整理需求文档。关闭后入口隐藏；磁盘文件仍保留，生成用例时也不再引用。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
+  },
+  {
+    id: 'templates',
+    category: '内容库',
+    name: '测试模板库',
+    description:
+      '侧栏进入测试模板库：浏览、上传与整理用例 / 报告模板。关闭后入口隐藏；磁盘文件仍保留，生成用例时不再选用模板。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
   },
   {
     id: 'knowledge',
+    category: '记忆与检索',
     name: '知识库检索',
-    description: '工作台输入「@」引用知识库与模板文档；发送后由模型按需读取。',
+    description:
+      '工作台输入「@」引用知识库与模板文档；发送后由模型按需读取。关闭后 @ 只列工作区文件。',
     version: '1.4.0',
     requiresDev: false,
-    defaultEnabled: true,
+    defaultEnabled: false,
   },
   {
     id: 'memory',
+    category: '记忆与检索',
     name: '会话记忆',
     description:
       '五轨记忆（用户档案 / 全局事实 / 项目关键 / 项目日志 / 每日）：待确认、归档与便签，在工作台「记忆」Tab 管理。',
     version: '2.0.0',
     requiresDev: true,
-    defaultEnabled: true,
+    defaultEnabled: false,
+  },
+  {
+    id: 'pluginDev',
+    category: '开发工具',
+    name: '插件开发',
+    description:
+      '用固定提示词开发扩展插件：先评估形态与范围并用选项确认，确认后才改代码，完成后并入「扩展插件」。需要读写项目源码。',
+    version: '0.1.0',
+    requiresDev: true,
+    defaultEnabled: false,
+    hasPanel: true,
   },
 ];
+
+/** 按分类分组，用于插件页的段落标题（空分类不出现） */
+export function groupPluginsByCategory(
+  list: readonly PluginMeta[] = PLUGIN_CATALOG,
+): { category: PluginCategory; items: PluginMeta[] }[] {
+  return PLUGIN_CATEGORIES.map((category) => ({
+    category,
+    items: list.filter((p) => p.category === category),
+  })).filter((g) => g.items.length > 0);
+}
 
 const EVENT = 'tw-plugins-changed';
 
@@ -75,13 +181,36 @@ function defaults(): Record<PluginId, boolean> {
   return map;
 }
 
+/** 应用依赖：打开子项时带上父项；关闭父项时关掉子项；父项关着则子项视为关 */
+export function applyPluginDependencies(
+  map: Record<PluginId, boolean>,
+  changed?: { id: PluginId; enabled: boolean },
+): Record<PluginId, boolean> {
+  const next = { ...map };
+  if (changed) {
+    next[changed.id] = changed.enabled;
+    if (changed.enabled) {
+      const req = getPluginMeta(changed.id)?.requires;
+      if (req) next[req] = true;
+    } else {
+      for (const p of PLUGIN_CATALOG) {
+        if (p.requires === changed.id) next[p.id] = false;
+      }
+    }
+  }
+  for (const p of PLUGIN_CATALOG) {
+    if (p.requires && !next[p.requires]) next[p.id] = false;
+  }
+  return next;
+}
+
 export function loadPluginEnabled(): Record<PluginId, boolean> {
   const base = defaults();
   const fromFile = getCachedAppConfig().plugins ?? {};
   for (const p of PLUGIN_CATALOG) {
     if (typeof fromFile[p.id] === 'boolean') base[p.id] = fromFile[p.id]!;
   }
-  return base;
+  return applyPluginDependencies(base);
 }
 
 export function isPluginEnabled(id: PluginId): boolean {
@@ -89,7 +218,7 @@ export function isPluginEnabled(id: PluginId): boolean {
 }
 
 export function setPluginEnabled(id: PluginId, enabled: boolean): Record<PluginId, boolean> {
-  const next = { ...loadPluginEnabled(), [id]: enabled };
+  const next = applyPluginDependencies(loadPluginEnabled(), { id, enabled });
   updateAppConfig({ plugins: next });
   void flushAppConfig();
   if (typeof window !== 'undefined') {
@@ -116,6 +245,11 @@ export function getPluginMeta(id: PluginId): PluginMeta | undefined {
 
 /** 插件未启用时的拦截文案 */
 export function pluginDisabledMessage(id: PluginId): string {
-  const name = getPluginMeta(id)?.name ?? id;
+  const meta = getPluginMeta(id);
+  const name = meta?.name ?? id;
+  if (meta?.requires && !isPluginEnabled(meta.requires)) {
+    const parent = getPluginMeta(meta.requires)?.name ?? meta.requires;
+    return `请先在「我的插件」中启用「${parent}」`;
+  }
   return `请先在「我的插件」中启用「${name}」`;
 }

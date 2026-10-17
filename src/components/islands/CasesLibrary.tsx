@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { docRootLabelPath } from '../../lib/doc-roots';
 import { readDocsListCache, writeDocsListCache } from '../../lib/docs-list-cache';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged, pluginDisabledMessage } from '../../lib/plugins';
 import {
   deleteDocs,
   fetchDocsHealth,
@@ -38,6 +40,8 @@ async function walkCaseFiles(dir = '.'): Promise<DocsEntry[]> {
 export default function CasesLibrary() {
   /** 有缓存则首帧直接画列表，避免刷新时探测卡 ↔ 内容卡切换闪一下 */
   const boot = readDocsListCache('cases');
+  const [pluginReady, setPluginReady] = useState(false);
+  const [pluginOn, setPluginOn] = useState(true);
   const [live, setLive] = useState<boolean | null>(boot ? true : null);
   const [files, setFiles] = useState<DocsEntry[]>(() => boot ?? []);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -64,6 +68,16 @@ export default function CasesLibrary() {
   }, []);
 
   useEffect(() => {
+    const off = onPluginEnabledChanged((map) => setPluginOn(Boolean(map.cases)));
+    void hydrateAppConfig().then(() => {
+      setPluginOn(isPluginEnabled('cases'));
+      setPluginReady(true);
+    });
+    return off;
+  }, []);
+
+  useEffect(() => {
+    if (!pluginReady || !pluginOn) return;
     void (async () => {
       const ok = await fetchDocsHealth('cases');
       if (!ok) {
@@ -80,7 +94,7 @@ export default function CasesLibrary() {
         setLive(true);
       }
     })();
-  }, [refresh]);
+  }, [pluginReady, pluginOn, refresh]);
 
   const selectedPaths = useMemo(() => Object.keys(selected).filter((p) => selected[p]), [selected]);
 
@@ -114,6 +128,15 @@ export default function CasesLibrary() {
         ? `确认删除已选中的 ${deleteTarget.paths.length} 个用例文件？此操作不可恢复。`
         : '';
 
+  function goGenerateCase() {
+    if (!isPluginEnabled('caseGen')) {
+      setError(pluginDisabledMessage('caseGen'));
+      return;
+    }
+    const base = import.meta.env.BASE_URL || '/';
+    window.location.href = `${base}?plugin=caseGen`;
+  }
+
   async function openInSession(entry: DocsEntry) {
     setBusy(true);
     setError(null);
@@ -133,6 +156,28 @@ export default function CasesLibrary() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  if (!pluginReady) {
+    return (
+      <div
+        className="rounded-xl border border-stone-200 bg-white overflow-hidden flex flex-col min-h-0"
+        aria-busy="true"
+        aria-label="正在读取插件开关"
+      >
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <span className="tw-lib-spin" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!pluginOn) {
+    return (
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+        {pluginDisabledMessage('cases')}
+      </div>
+    );
   }
 
   if (live === null) {
@@ -184,6 +229,14 @@ export default function CasesLibrary() {
         >
           批量删除
         </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={goGenerateCase}
+          className="h-8 px-3 shrink-0 whitespace-nowrap text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
+        >
+          生成用例
+        </button>
       </div>
 
       {error ? (
@@ -206,7 +259,7 @@ export default function CasesLibrary() {
         onPage={list.setPage}
         onPageSize={list.setPageSize}
         busy={busy}
-        emptyText="暂无用例文件。请在「我的工作台」通过「生成测试用例」插件生成并自动入库。"
+        emptyText="暂无用例文件，点击「生成用例」前往我的工作台。"
         searchPlaceholder="搜索文件名或路径…"
         selected={selected}
         onToggleRow={(path) => setSelected((m) => ({ ...m, [path]: !m[path] }))}

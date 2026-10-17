@@ -68,7 +68,7 @@ export default function DocsPager({
           disabled={busy}
           ariaLabel="每页条数"
           showCheck={false}
-          className="w-[4.5rem]"
+          className="w-18"
         />
         <span>条</span>
       </span>

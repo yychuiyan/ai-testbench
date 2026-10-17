@@ -10,7 +10,7 @@ import {
   maybeWriteCheckpoint,
   readLatestCheckpoint,
   sessionsJsonlPath,
-} from '../../tb-plugins/session-persist.mjs';
+} from '../../lh-plugins/session-persist.mjs';
 
 describe('session-persist', () => {
   let tmp = '';

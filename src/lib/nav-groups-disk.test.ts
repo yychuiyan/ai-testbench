@@ -1,0 +1,143 @@
+/**
+ * 分组 = 物理归档：菜单分组的成员在磁盘上应搬进分组文件夹，取消分组后搬回空间根。
+ * 这些用例直接用临时空间目录跑 syncNavGroups / scanNavGroups，不启动服务。
+ */
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { after, before, describe, it } from 'node:test';
+
+import {
+  autoEnableDetectedPlugins,
+  scanNavGroups,
+  syncNavGroups,
+} from '../../builtin/session/lh-nav-groups.mjs';
+import { prepareSpaceDir } from '../../cli/data-root.mjs';
+import { resolveContentRoot } from '../../builtin/session/space-layout.mjs';
+import { DOC_ROOT_DIRS } from '../../lh-plugins/lh-project-docs.mjs';
+
+const REQ = DOC_ROOT_DIRS.requirements.dirName;
+const CASES = DOC_ROOT_DIRS.cases.dirName;
+
+let space = '';
+
+function write(rel: string, body: string) {
+  const abs = path.join(space, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, body, 'utf8');
+}
+
+function exists(rel: string) {
+  return fs.existsSync(path.join(space, rel));
+}
+
+describe('分组文件夹与内容目录', () => {
+  before(() => {
+    space = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-nav-'));
+    write(`${REQ}/a.md`, '# a');
+    write(`${CASES}/b.md`, '# b');
+  });
+
+  after(() => {
+    try {
+      fs.rmSync(space, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('组内菜单对应的内容目录搬进分组文件夹', () => {
+    const out = syncNavGroups(space, [{ id: 'g_docs', name: '文档组', items: ['requirements'] }]);
+    assert.deepEqual(out.warnings, []);
+    assert.equal(exists(`文档组/${REQ}/a.md`), true, '内容应跟着分组走');
+    assert.equal(exists(`${REQ}`), false, '空间根上不应再留同名目录');
+    assert.equal(exists(`${CASES}/b.md`), true, '未分组的内容不动');
+    assert.equal(resolveContentRoot(space, REQ).grouped, true);
+    assert.equal(exists(`${CASES}`), true);
+  });
+
+  it('从文件夹结构也能还原出组内菜单', () => {
+    const scanned = scanNavGroups(space);
+    const g = scanned.groups.find((x) => x.name === '文档组');
+    assert.ok(g, '应识别出文档组');
+    assert.deepEqual(g!.items, ['requirements']);
+  });
+
+  it('取消分组后内容目录搬回空间根', () => {
+    const out = syncNavGroups(space, []);
+    assert.deepEqual(out.warnings, []);
+    assert.equal(exists(`${REQ}/a.md`), true);
+    assert.equal(exists(`文档组/${REQ}`), false);
+    assert.equal(resolveContentRoot(space, REQ).grouped, false);
+  });
+
+  it('删除分组时组内内容先搬出来，再删空的分组目录', () => {
+    syncNavGroups(space, [{ id: 'g_cases', name: '用例组', items: ['cases'] }]);
+    assert.equal(exists(`用例组/${CASES}/b.md`), true);
+
+    const out = syncNavGroups(space, []);
+    assert.deepEqual(out.warnings, []);
+    assert.equal(exists(`${CASES}/b.md`), true, '内容不能跟着分组一起消失');
+    assert.equal(exists('用例组'), false, '只剩清单的分组目录应被删掉');
+  });
+});
+
+describe('新建空间的插件默认开关', () => {
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  let fresh = '';
+  let defaults: Record<string, boolean> = {};
+
+  before(() => {
+    // 隔离识别账本，避免写进真实的 ~/.config
+    process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-user-cfg-'));
+    fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-fresh-space-'));
+    prepareSpaceDir(fresh);
+    const raw = fs.readFileSync(
+      path.join(fresh, '.lantern', 'config', 'app.defaults.json'),
+      'utf8',
+    );
+    defaults = (JSON.parse(raw).plugins ?? {}) as Record<string, boolean>;
+  });
+
+  after(() => {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+    try {
+      fs.rmSync(fresh, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('所有插件默认关闭', () => {
+    for (const id of [
+      'cases',
+      'caseGen',
+      'prompts',
+      'promptGen',
+      'knowledgeLib',
+      'knowledgeGen',
+      'requirements',
+      'templates',
+      'knowledge',
+      'memory',
+      'pluginDev',
+    ]) {
+      assert.equal(defaults[id], false, `${id} 新建空间默认应关闭`);
+    }
+  });
+
+  it('种子文件不触发自动开插件，用户放入内容后仍会', () => {
+    const seeded = autoEnableDetectedPlugins(fresh, defaults, []);
+    assert.equal(seeded.changed, false, '种子文件不应让插件自动打开');
+    assert.equal(seeded.plugins.prompts, false);
+    assert.equal(seeded.plugins.templates, false);
+
+    const dir = path.join(fresh, DOC_ROOT_DIRS.cases.dirName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.md'), '# a', 'utf8');
+    const out = autoEnableDetectedPlugins(fresh, defaults, []);
+    assert.equal(out.plugins.cases, true, '用户放入的内容仍应自动打开对应插件');
+  });
+});

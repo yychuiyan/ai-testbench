@@ -1,5 +1,5 @@
 /**
- * storage-domain：列举空间元数据目录下已知存储域（`.tb/local` 子集）。
+ * storage-domain：列举空间元数据目录下已知存储域（`.lantern/local` 子集）。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +31,12 @@ export const KNOWN_STORAGE_DOMAINS = [
   { id: 'spill', rel: `${LOCAL_REL}/spill`, kind: 'dir', roleZh: '工具结果溢出' },
   { id: 'memories', rel: `${LOCAL_REL}/memories`, kind: 'dir', roleZh: '会话记忆' },
   { id: 'workspaces', rel: `${LOCAL_REL}/workspaces.json`, kind: 'file', roleZh: '工作区注册表' },
-  { id: 'app-config', rel: `${LOCAL_REL}/app.config.json`, kind: 'file', roleZh: '本机应用配置' },
+  {
+    id: 'app-config',
+    rel: `${LOCAL_REL}/app.config.json`,
+    kind: 'file',
+    roleZh: '本机应用配置（不含模型）',
+  },
   { id: 'case-suites', rel: `${LOCAL_REL}/case-suites.json`, kind: 'file', roleZh: '用例套件' },
   { id: 'case-sessions', rel: `${LOCAL_REL}/case-sessions.json`, kind: 'file', roleZh: '用例会话' },
 ];

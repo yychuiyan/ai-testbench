@@ -1,5 +1,5 @@
 /**
- * 本地网页搜索 / 获取代理：仅 `astro dev` 与 ai-testbench 一体服务可用。
+ * 本地网页搜索 / 获取代理：仅 `astro dev` 与 lantern-harness 一体服务可用。
  * 服务端代抓，绕过浏览器 CORS；搜索走 DuckDuckGo HTML。
  */
 
@@ -7,7 +7,7 @@ const PREFIX = '/__tb_web';
 const MAX_FETCH = 400_000;
 const MAX_TEXT = 24_000;
 const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TestBench/0.1';
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 LanternHarness/0.1';
 
 function sendJson(res, status, body) {
   res.statusCode = status;
@@ -169,9 +169,9 @@ async function fetchPage(rawUrl) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbWebPlugin() {
+export function lhWebPlugin() {
   return {
-    name: 'tb-web',
+    name: 'lh-web',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';

@@ -8,6 +8,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { assertCommandAllowed, buildChildEnv, resolveSandboxPolicy } from './sandbox-policy.mjs';
 import { getDataRoot } from './space-context.mjs';
@@ -89,11 +90,27 @@ function isAncestorPath(maybeAncestor, dir) {
   return d !== a && d.startsWith(a + path.sep);
 }
 
+/**
+ * harness 包根（`pnpm dev` 时即仓库根）。
+ *
+ * 插件开发会把工作区切到这里；它是空间目录的上级，默认会被下面的过滤剔除，
+ * 进而让 bash 的 cwd 回落到空间目录。与 `lh-fs.mjs` 保持一致，单独放行包根。
+ */
+const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function isHarnessRoot(abs) {
+  const a = path.resolve(String(abs ?? ''));
+  if (a !== HARNESS_ROOT) return false;
+  return fs.existsSync(path.join(a, 'package.json'));
+}
+
 function ensureWorkspaceRegistry(projectRoot) {
   const rootAbs = path.resolve(projectRoot);
   const fp = workspaceFile(projectRoot);
   let items = [];
   let active = rootAbs;
+  /** 与 lh-fs 一致：插件开发期间临时借用包根，不写进 items */
+  let activeHarness = false;
 
   try {
     if (fs.existsSync(fp)) {
@@ -111,6 +128,7 @@ function ensureWorkspaceRegistry(projectRoot) {
               it.id && it.path && fs.existsSync(it.path) && fs.statSync(it.path).isDirectory(),
           );
       }
+      if (raw.activeHarness === true) activeHarness = true;
       if (raw.active) active = path.resolve(String(raw.active));
     } else if (fs.existsSync(legacyWorkspaceFile(projectRoot))) {
       const legacy = JSON.parse(fs.readFileSync(legacyWorkspaceFile(projectRoot), 'utf8'));
@@ -131,7 +149,10 @@ function ensureWorkspaceRegistry(projectRoot) {
     // ignore
   }
 
-  items = items.filter((it) => it.path === rootAbs || !isAncestorPath(it.path, rootAbs));
+  // 包根只临时当工作区，不进列表；其它上级目录继续剔除
+  items = items.filter(
+    (it) => it.path === rootAbs || (!isHarnessRoot(it.path) && !isAncestorPath(it.path, rootAbs)),
+  );
   for (const it of items) {
     if (it.path === rootAbs) it.id = 'ws_project';
     else if (it.id === 'ws_project') {
@@ -146,10 +167,12 @@ function ensureWorkspaceRegistry(projectRoot) {
       addedAt: 0,
     });
   }
-  if (!items.some((it) => it.path === active)) {
+  if (activeHarness && isHarnessRoot(HARNESS_ROOT)) {
+    active = HARNESS_ROOT;
+  } else if (!items.some((it) => it.path === active)) {
     active = rootAbs;
   }
-  return { active, items, projectRoot: rootAbs };
+  return { active, items, projectRoot: rootAbs, activeHarness };
 }
 
 function readWorkspace(projectRoot) {
@@ -624,9 +647,9 @@ async function handleSessionRoutes(shell, req, res, projectRoot, url) {
 /**
  * Vite / connect 中间件插件（bash + pwsh + jobs）
  */
-export function tbBashPlugin() {
+export function lhBashPlugin() {
   return {
-    name: 'tb-bash',
+    name: 'lh-bash',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = (req.url || '').split('?')[0];

@@ -6,47 +6,43 @@ import { after, before, describe, it } from 'node:test';
 import { loadHeadlessSettings } from '../../cli/headless.mjs';
 
 describe('headless settings', () => {
+  const originalXdg = process.env.XDG_CONFIG_HOME;
   let tmp = '';
+  let home = '';
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-headless-'));
-    fs.mkdirSync(path.join(tmp, 'config'), { recursive: true });
-    fs.mkdirSync(path.join(tmp, '.local'), { recursive: true });
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-headless-home-'));
+    process.env.XDG_CONFIG_HOME = home;
+    const modelsDir = path.join(home, 'lantern-harness');
+    fs.mkdirSync(modelsDir, { recursive: true });
     fs.writeFileSync(
-      path.join(tmp, 'config', 'app.defaults.json'),
+      path.join(modelsDir, 'models.json'),
       JSON.stringify({
-        version: 1,
-        model: { activeId: 'p1', providers: [], reasoningEffort: 'high' },
-        access: 'readonly',
-        general: {},
-        plugins: {},
-      }),
-    );
-    fs.writeFileSync(
-      path.join(tmp, '.local', 'app.config.json'),
-      JSON.stringify({
-        version: 1,
-        model: {
-          activeId: 'p1',
-          providers: [
-            {
-              id: 'p1',
-              name: 't',
-              baseURL: 'https://api.example.com/v1',
-              model: 'demo-model',
-              apiKey: 'sk-test',
-            },
-          ],
-        },
+        activeId: 'p1',
+        reasoningEffort: 'high',
+        providers: [
+          {
+            id: 'p1',
+            name: 't',
+            baseURL: 'https://api.example.com/v1',
+            model: 'demo-model',
+            apiKey: 'sk-test',
+          },
+        ],
       }),
     );
   });
 
   after(() => {
-    try {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    } catch {
-      // ignore
+    if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalXdg;
+    for (const d of [tmp, home]) {
+      try {
+        fs.rmSync(d, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
     }
   });
 

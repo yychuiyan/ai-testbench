@@ -4,8 +4,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDataRoot } from '../builtin/session/space-context.mjs';
+import { resolveContentRoot } from '../builtin/session/space-layout.mjs';
 import { listStorageDomains } from './storage-domain.mjs';
-import { DOC_ROOT_DIRS } from './tb-project-docs.mjs';
+import { DOC_ROOT_DIRS } from './lh-project-docs.mjs';
 
 const PREFIX = '/__tb_resources';
 const DOC_DIRS = Object.values(DOC_ROOT_DIRS).map((d) => d.dirName);
@@ -19,7 +20,8 @@ function sendJson(res, status, body) {
 
 function listDocRoots(root) {
   return DOC_DIRS.map((name) => {
-    const abs = path.join(root, name);
+    const found = resolveContentRoot(root, name);
+    const abs = found.abs;
     let exists = false;
     let entries = 0;
     try {
@@ -33,7 +35,7 @@ function listDocRoots(root) {
     return {
       uri: `tb://docs/${name}`,
       id: name,
-      path: name,
+      path: found.rel,
       kind: 'dir',
       roleZh: `文档库 · ${name}`,
       exists,
@@ -109,7 +111,8 @@ export function readResourceByUri(root, uri) {
 
   if (scheme === 'docs') {
     if (!DOC_DIRS.includes(id)) return { ok: false, error: `unknown docs id: ${id}` };
-    const abs = path.join(root, id);
+    const found = resolveContentRoot(root, id);
+    const abs = found.abs;
     if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
       return {
         ok: true,
@@ -117,7 +120,7 @@ export function readResourceByUri(root, uri) {
         mimeType: 'application/json',
         text: '[]',
         exists: false,
-        path: id,
+        path: found.rel,
       };
     }
     const names = fs
@@ -128,9 +131,9 @@ export function readResourceByUri(root, uri) {
       ok: true,
       uri: raw,
       mimeType: 'application/json',
-      text: JSON.stringify({ kind: 'dir', path: id, entries: names }, null, 2),
+      text: JSON.stringify({ kind: 'dir', path: found.rel, entries: names }, null, 2),
       exists: true,
-      path: id,
+      path: found.rel,
     };
   }
 
@@ -140,9 +143,9 @@ export function readResourceByUri(root, uri) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbResourcesPlugin() {
+export function lhResourcesPlugin() {
   return {
-    name: 'tb-resources',
+    name: 'lh-resources',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';

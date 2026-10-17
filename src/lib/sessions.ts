@@ -1,11 +1,12 @@
 /**
  * 多会话存档：
- * - 本地 dev：`.tb/local/sessions.json`（换浏览器打开同一项目仍可见）
+ * - 本地 dev：`.lantern/local/sessions.json`（换浏览器打开同一项目仍可见）
  * - 静态站：回退 localStorage
  * 兼容旧版单列表键 `tw-chat-history`：首次加载时自动迁入「默认会话」。
  */
 import type { CaseGenPluginConfig } from './case-gen-config';
 import type { KnowledgeGenPluginConfig } from './knowledge-gen-config';
+import type { PluginDevPluginConfig } from './plugin-dev';
 import type { PromptGenPluginConfig } from './prompt-gen-config';
 import type { TodoItem } from './session-interact';
 import type { SessionGoal } from './session-goal';
@@ -42,6 +43,8 @@ export interface ChatSession {
   promptGen?: PromptGenPluginConfig;
   /** AI 工作台「生成知识库」插件：确认后挂到当前会话 */
   knowledgeGen?: KnowledgeGenPluginConfig;
+  /** AI 工作台「插件开发」插件：确认后挂到当前会话（固定提示词） */
+  pluginDev?: PluginDevPluginConfig;
   /** 会话待办（todo_write） */
   todos?: TodoItem[];
   /** 会话目标（tool-goal / command-goal） */
@@ -545,6 +548,7 @@ type SessionMetaPatch = Partial<
     | 'caseGen'
     | 'promptGen'
     | 'knowledgeGen'
+    | 'pluginDev'
     | 'title'
     | 'workspacePath'
     | 'todos'
@@ -640,7 +644,7 @@ export function sortSessionsInGroup(list: ChatSession[]): ChatSession[] {
 
 export function loadRailOpen(): boolean {
   try {
-    return localStorage.getItem(RAIL_KEY) !== '0';
+    return localStorage.getItem(spaceScopedKey(RAIL_KEY)) !== '0';
   } catch {
     return true;
   }
@@ -648,7 +652,7 @@ export function loadRailOpen(): boolean {
 
 export function saveRailOpen(open: boolean): void {
   try {
-    localStorage.setItem(RAIL_KEY, open ? '1' : '0');
+    localStorage.setItem(spaceScopedKey(RAIL_KEY), open ? '1' : '0');
   } catch {
     // ignore
   }

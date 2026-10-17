@@ -7,6 +7,7 @@ import {
   type KnowledgeGenPluginConfig,
 } from './knowledge-gen-config';
 import { listKnowledgeCategories } from './knowledge-categories';
+import { isPluginEnabled, pluginDisabledMessage } from './plugins';
 import { listDocs, writeDocsText } from './project-docs';
 
 export interface KnowledgeGenPayload {
@@ -272,6 +273,15 @@ export async function tryFinishKnowledgeGenFromAssistant(
         issues: qc.issues,
         qcNote: payload.qcNote,
       }),
+    };
+  }
+  if (!isPluginEnabled('knowledgeLib')) {
+    const error = pluginDisabledMessage('knowledgeLib');
+    return {
+      ok: false,
+      error,
+      issues: [],
+      summary: formatKnowledgeGenResultSummary({ ok: false, error }),
     };
   }
   try {

@@ -12,6 +12,7 @@ import { after, before, describe, it } from 'node:test';
 
 import {
   __resetSpaceContext,
+  ensureSpaceContext,
   getDataRoot,
   publicSpacePath,
 } from '../../builtin/session/space-context.mjs';
@@ -60,6 +61,18 @@ async function postJson(
   return { status: res.status, data: (await res.json()) as Record<string, unknown> };
 }
 
+async function putJson(
+  p: string,
+  body: unknown,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const res = await fetch(api(p), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  return { status: res.status, data: (await res.json()) as Record<string, unknown> };
+}
+
 before(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-api-home-'));
   base = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-api-base-'));
@@ -67,7 +80,7 @@ before(async () => {
   managed = base;
   process.env.XDG_CONFIG_HOME = home;
 
-  const regPath = path.join(home, 'ai-testbench', 'spaces.json');
+  const regPath = path.join(home, 'lantern-harness', 'spaces.json');
   fs.mkdirSync(path.dirname(regPath), { recursive: true });
   fs.writeFileSync(regPath, JSON.stringify({ activeId: 'public', spaces: [] }, null, 2));
 
@@ -126,11 +139,11 @@ describe('POST /__tb_spaces/create 与 switch', () => {
     assert.equal(data.switched, true);
 
     const space = data.space as { path: string };
-    // prepareSpaceDir 应铺好隐藏元数据目录（.tb/config + .tb/local）与五个内容目录
+    // prepareSpaceDir 应铺好隐藏元数据目录（.lantern/config + .lantern/local）与五个内容目录
     for (const dirName of [
-      '.tb',
-      '.tb/config',
-      '.tb/local',
+      '.lantern',
+      '.lantern/config',
+      '.lantern/local',
       '需求文档库',
       '用例管理',
       '提示词管理',
@@ -152,6 +165,39 @@ describe('POST /__tb_spaces/create 与 switch', () => {
       true,
       '配置路径应指向新空间',
     );
+  });
+
+  it('创建时可写入默认提示词，提示词接口按当前空间读取且不可删除', async () => {
+    const custom = '你是接口测试助手，只回答本空间的接口问题。';
+    const created = await postJson('/__tb_spaces/create', {
+      name: '带提示词空间',
+      switch: true,
+      systemPrompt: custom,
+    });
+    assert.equal(created.data.ok, true);
+    const space = created.data.space as { path: string };
+    const onDisk = fs.readFileSync(path.join(space.path, '提示词管理', '默认提示词.md'), 'utf8');
+    assert.equal(onDisk.trim(), custom);
+
+    const read = await postJson('/__tb_prompts/read', { path: '默认提示词.md' });
+    assert.equal(read.status, 200);
+    assert.equal(String(read.data.content ?? '').trim(), custom);
+
+    const del = await postJson('/__tb_prompts/delete', { path: '默认提示词.md' });
+    assert.equal(del.status, 403);
+
+    const listed = await postJson('/__tb_prompts/list', { path: '.' });
+    const names = ((listed.data.entries as Array<{ name: string; type: string }>) ?? [])
+      .filter((e) => e.type === 'file')
+      .map((e) => e.name);
+    assert.equal(names.includes('默认提示词.md'), true);
+    assert.equal(names.includes('功能测试用例提示词v1.0.md'), false);
+
+    const kb = await postJson('/__tb_knowledge/list', { path: '.' });
+    const kbNames = ((kb.data.entries as Array<{ name: string; type: string }>) ?? [])
+      .filter((e) => e.type === 'file')
+      .map((e) => e.name);
+    assert.equal(kbNames.includes('功能测试用例编写规范.md'), false);
   });
 
   it('名称非法 / 重名返回 400', async () => {
@@ -224,6 +270,78 @@ describe('POST /__tb_spaces/delete 安全语义', () => {
   });
 });
 
+describe('GET/PUT /__tb_config 模型全局', () => {
+  it('首次读取时把空间里的旧模型迁到全局', async () => {
+    const modelsPath = path.join(home, 'lantern-harness', 'models.json');
+    if (fs.existsSync(modelsPath)) fs.unlinkSync(modelsPath);
+
+    const fp = path.join(getDataRoot(), '.lantern', 'local', 'app.config.json');
+    const local = fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, 'utf8')) : {};
+    local.model = {
+      activeId: 'p_legacy',
+      providers: [
+        {
+          id: 'p_legacy',
+          name: '旧',
+          baseURL: 'https://legacy.example/v1',
+          model: 'old',
+          apiKey: 'sk-old',
+        },
+      ],
+    };
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, JSON.stringify(local, null, 2));
+
+    const got = await getJson('/__tb_config');
+    const gotModel = (got.config as { model: { activeId: string } }).model;
+    assert.equal(gotModel.activeId, 'p_legacy');
+    const disk = JSON.parse(fs.readFileSync(modelsPath, 'utf8')) as { activeId: string };
+    assert.equal(disk.activeId, 'p_legacy');
+    const spaceCfg = JSON.parse(fs.readFileSync(fp, 'utf8')) as { model?: unknown };
+    assert.equal(spaceCfg.model, undefined);
+  });
+
+  it('模型写入本机 models.json，切换空间后仍可读', async () => {
+    const current = await getJson('/__tb_config');
+    const cfg = current.config as Record<string, unknown>;
+    const model = {
+      activeId: 'p_global',
+      reasoningEffort: 'high',
+      providers: [
+        {
+          id: 'p_global',
+          name: '共享',
+          baseURL: 'https://api.example.com/v1',
+          model: 'demo',
+          apiKey: 'sk-shared',
+        },
+      ],
+    };
+    const saved = await putJson('/__tb_config', { config: { ...cfg, model } });
+    assert.equal(saved.status, 200);
+    assert.equal((saved.data.config as { model: { activeId: string } }).model.activeId, 'p_global');
+
+    const modelsPath = path.join(home, 'lantern-harness', 'models.json');
+    assert.equal(fs.existsSync(modelsPath), true);
+    const disk = JSON.parse(fs.readFileSync(modelsPath, 'utf8')) as { activeId: string };
+    assert.equal(disk.activeId, 'p_global');
+
+    const spaceLocal = String((current.paths as { local: string }).local);
+    const spaceCfg = JSON.parse(fs.readFileSync(spaceLocal, 'utf8')) as { model?: unknown };
+    assert.equal(spaceCfg.model, undefined);
+
+    const created = await postJson('/__tb_spaces/create', { name: '模型共用空间', switch: true });
+    assert.equal(created.data.ok, true);
+    const again = await getJson('/__tb_config');
+    const againModel = (
+      again.config as { model: { activeId: string; providers: { id: string }[] } }
+    ).model;
+    assert.equal(againModel.activeId, 'p_global');
+    assert.equal(againModel.providers[0]?.id, 'p_global');
+    assert.equal(String((again.paths as { models: string }).models), modelsPath);
+  });
+});
+
 describe('POST /__tb_spaces/validate-name', () => {
   it('透传名称校验结果', async () => {
     assert.equal((await postJson('/__tb_spaces/validate-name', { name: 'ok名' })).data.ok, true);
@@ -238,8 +356,12 @@ describe('GET /__tb_spaces/export 范围', () => {
     assert.equal(created.data.ok, true);
 
     fs.writeFileSync(path.join(space.path, '.env'), 'TW_API_KEY=sk-x\n', 'utf8');
-    fs.mkdirSync(path.join(space.path, '.tb', 'local', 'memories'), { recursive: true });
-    fs.writeFileSync(path.join(space.path, '.tb', 'local', 'memories', 'USER.md'), 'p', 'utf8');
+    fs.mkdirSync(path.join(space.path, '.lantern', 'local', 'memories'), { recursive: true });
+    fs.writeFileSync(
+      path.join(space.path, '.lantern', 'local', 'memories', 'USER.md'),
+      'p',
+      'utf8',
+    );
     fs.writeFileSync(path.join(space.path, '需求文档库', 'a.md'), '# a', 'utf8');
 
     const JSZip = (await import('jszip')).default;
@@ -251,7 +373,7 @@ describe('GET /__tb_spaces/export 范围', () => {
     assert.ok(names.includes('需求文档库/a.md'));
     assert.equal(names.includes('.env'), false);
     assert.equal(
-      names.some((n) => n.startsWith('.tb/local/memories/')),
+      names.some((n) => n.startsWith('.lantern/local/memories/')),
       false,
     );
 
@@ -266,9 +388,9 @@ describe('POST /__tb_spaces/discover', () => {
   it('纳入空间池内带 space.json 清单的文件夹', async () => {
     // 模拟「整体拷进来」：手工造一个带清单的目录
     const incoming = path.join(managed, '外部拷入');
-    fs.mkdirSync(path.join(incoming, '.tb', 'local'), { recursive: true });
+    fs.mkdirSync(path.join(incoming, '.lantern', 'local'), { recursive: true });
     fs.writeFileSync(
-      path.join(incoming, '.tb', 'space.json'),
+      path.join(incoming, '.lantern', 'space.json'),
       JSON.stringify({
         kind: 'ai-testbench-space',
         schema: 1,
@@ -291,5 +413,26 @@ describe('POST /__tb_spaces/discover', () => {
     const listed = await getJson('/__tb_spaces');
     const names = (listed.spaces as Array<Record<string, unknown>>).map((s) => s.name);
     assert.ok(names.includes('外部拷入'));
+  });
+});
+
+describe('空间上下文自愈', () => {
+  it('进程重启后 GET /__tb_spaces 把数据根恢复成注册表里的活动空间', async () => {
+    const created = await postJson('/__tb_spaces/create', { name: '自愈空间', switch: true });
+    assert.equal(created.data.ok, true);
+    const space = created.data.space as { id: string; path: string };
+
+    // 模拟重启：内存上下文清空后只按池根初始化，activeRoot 会退回公共空间
+    __resetSpaceContext();
+    ensureSpaceContext(base);
+    assert.equal(path.resolve(getDataRoot()), path.resolve(publicSpacePath(base)));
+
+    const healed = await getJson('/__tb_spaces');
+    assert.equal(healed.activeId, space.id);
+    assert.equal(
+      path.resolve(getDataRoot()),
+      path.resolve(space.path),
+      '不恢复的话，分组目录 / 配置都会写进公共空间',
+    );
   });
 });

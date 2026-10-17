@@ -1,7 +1,8 @@
 /**
  * 应用配置客户端：
- * - 本地 dev：读写 `.local/app.config.json`
- * - 静态站：回退 localStorage
+ * - 空间配置：读写 `.lantern/local/app.config.json`（权限 / 插件 / 用例类型等）
+ * - 模型：全局 `~/.config/lantern-harness/models.json`，不跟空间走
+ * - 静态站：空间项回退 space-scoped localStorage；模型 / Key 用未加空间前缀的键
  * - 模型：多提供商列表，activeId 为当前使用的一项
  */
 import type {
@@ -18,6 +19,18 @@ import {
   type KnowledgeCategory,
 } from './knowledge-category-defs';
 import { DEFAULT_PROMPT_KINDS, normalizePromptKinds, type PromptKindDef } from './prompt-kind-defs';
+import {
+  DEFAULT_NAV_GROUPS,
+  DEFAULT_NAV_ICONS,
+  defaultNavOrder,
+  normalizeNavGroups,
+  normalizeNavIcons,
+  normalizeNavOrder,
+  type NavIconId,
+  type NavMenuGroup,
+  type NavOrderKey,
+  type NavEntryId,
+} from './nav-menu';
 import { spaceScopedKey } from './space-scope';
 
 export interface ModelConfigBlock {
@@ -43,16 +56,25 @@ export interface AppFileConfig {
   promptKinds: PromptKindDef[];
   /** 知识库分类 */
   knowledgeCategories: KnowledgeCategory[];
+  /** 侧栏菜单分组（默认不预置） */
+  navGroups: NavMenuGroup[];
+  /** 侧栏每个菜单项用的图标 */
+  navIcons: Record<NavEntryId, NavIconId>;
+  /** 侧栏顶层顺序（item:id / group:id） */
+  navOrder: NavOrderKey[];
 }
 
 const CONFIG_API = '/__tb_config';
 const LS_CONFIG = 'tw.app.config.v1';
 const LS_API_KEY = 'tw.app.apikey.v1';
+const LS_MODEL = 'tw.app.model.v1';
 
 let fileMode = false;
 let ready = false;
 let cache: AppFileConfig | null = null;
 let apiKeyCache = '';
+/** 首帧是否已经从 localStorage 抢先填过 cache（只影响首屏，不改变 ready） */
+let primedFromLs = false;
 
 const DEFAULT_GENERAL: GeneralPrefs = {
   language: 'zh-CN',
@@ -137,15 +159,24 @@ export function emptyAppConfig(): AppFileConfig {
     access: 'readonly',
     general: { ...DEFAULT_GENERAL },
     plugins: {
-      caseGen: true,
-      promptGen: true,
-      knowledgeGen: true,
-      knowledge: true,
-      memory: true,
+      cases: false,
+      caseGen: false,
+      prompts: false,
+      promptGen: false,
+      knowledgeLib: false,
+      knowledgeGen: false,
+      requirements: false,
+      templates: false,
+      knowledge: false,
+      memory: false,
+      pluginDev: false,
     },
     caseTypes: DEFAULT_CASE_TYPES.map((x) => ({ ...x })),
     promptKinds: DEFAULT_PROMPT_KINDS.map((x) => ({ ...x })),
     knowledgeCategories: [...DEFAULT_KNOWLEDGE_CATEGORIES],
+    navGroups: DEFAULT_NAV_GROUPS.map((g) => ({ ...g, items: [...g.items] })),
+    navIcons: { ...DEFAULT_NAV_ICONS },
+    navOrder: defaultNavOrder(DEFAULT_NAV_GROUPS),
   };
 }
 
@@ -155,6 +186,7 @@ function normalizeConfig(raw: Partial<AppFileConfig> | null | undefined): AppFil
   const general: Partial<GeneralPrefs> =
     raw.general && typeof raw.general === 'object' ? raw.general : {};
   const plugins = { ...base.plugins, ...(raw.plugins ?? {}) };
+  const navGroups = normalizeNavGroups(raw.navGroups);
   return {
     version: typeof raw.version === 'number' ? raw.version : 1,
     model: normalizeModelBlock(raw.model),
@@ -190,14 +222,49 @@ function normalizeConfig(raw: Partial<AppFileConfig> | null | undefined): AppFil
     caseTypes: normalizeCaseTypes(raw.caseTypes),
     promptKinds: normalizePromptKinds(raw.promptKinds),
     knowledgeCategories: normalizeKnowledgeCategories(raw.knowledgeCategories),
+    navGroups,
+    navIcons: normalizeNavIcons(raw.navIcons),
+    navOrder: normalizeNavOrder(raw.navOrder, navGroups),
   };
+}
+
+function readLsModel(): ModelConfigBlock | null {
+  try {
+    const raw = localStorage.getItem(LS_MODEL);
+    if (raw) return normalizeModelBlock(JSON.parse(raw) as Partial<ModelConfigBlock>);
+  } catch {
+    // ignore
+  }
+  try {
+    const scoped = localStorage.getItem(spaceScopedKey(LS_CONFIG));
+    if (scoped) {
+      const cfg = JSON.parse(scoped) as Partial<AppFileConfig>;
+      if (cfg?.model) return normalizeModelBlock(cfg.model);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function writeLsModel(model: ModelConfigBlock) {
+  try {
+    localStorage.setItem(LS_MODEL, JSON.stringify(model));
+  } catch {
+    // ignore
+  }
 }
 
 function readLsConfig(): AppFileConfig | null {
   try {
     const raw = localStorage.getItem(spaceScopedKey(LS_CONFIG));
-    if (!raw) return null;
-    return normalizeConfig(JSON.parse(raw) as Partial<AppFileConfig>);
+    const model = readLsModel();
+    if (!raw) {
+      return model ? normalizeConfig({ ...emptyAppConfig(), model }) : null;
+    }
+    const cfg = normalizeConfig(JSON.parse(raw) as Partial<AppFileConfig>);
+    if (model) cfg.model = model;
+    return cfg;
   } catch {
     return null;
   }
@@ -205,7 +272,9 @@ function readLsConfig(): AppFileConfig | null {
 
 function writeLsConfig(cfg: AppFileConfig) {
   try {
-    localStorage.setItem(spaceScopedKey(LS_CONFIG), JSON.stringify(cfg));
+    const { model, ...rest } = cfg;
+    localStorage.setItem(spaceScopedKey(LS_CONFIG), JSON.stringify(rest));
+    writeLsModel(model);
   } catch {
     // ignore
   }
@@ -213,7 +282,11 @@ function writeLsConfig(cfg: AppFileConfig) {
 
 function readLsApiKey(): string {
   try {
-    return localStorage.getItem(spaceScopedKey(LS_API_KEY))?.trim() ?? '';
+    return (
+      localStorage.getItem(LS_API_KEY)?.trim() ||
+      localStorage.getItem(spaceScopedKey(LS_API_KEY))?.trim() ||
+      ''
+    );
   } catch {
     return '';
   }
@@ -221,8 +294,9 @@ function readLsApiKey(): string {
 
 function writeLsApiKey(key: string) {
   try {
-    if (key) localStorage.setItem(spaceScopedKey(LS_API_KEY), key);
-    else localStorage.removeItem(spaceScopedKey(LS_API_KEY));
+    if (key) localStorage.setItem(LS_API_KEY, key);
+    else localStorage.removeItem(LS_API_KEY);
+    localStorage.removeItem(spaceScopedKey(LS_API_KEY));
   } catch {
     // ignore
   }
@@ -288,7 +362,23 @@ export function isAppConfigReady(): boolean {
 }
 
 export function getCachedAppConfig(): AppFileConfig {
+  // 首帧（hydrateAppConfig 还没回来）先用上次写进 localStorage 的整份配置占位，
+  // 否则菜单会先按默认顺序画一遍、等文件配置回来后重排，看起来像「刷新后闪一下」。
+  if (!cache) primeCacheFromStorage();
   return cache ?? emptyAppConfig();
+}
+
+/** 同步读 localStorage 填充缓存：只用于首屏，权威值仍由 hydrateAppConfig 覆盖 */
+function primeCacheFromStorage(): void {
+  if (primedFromLs) return;
+  primedFromLs = true;
+  if (typeof window === 'undefined') return;
+  try {
+    const cfg = readLsConfig();
+    if (cfg) cache = cfg;
+  } catch {
+    // 隐私模式等，退回内存默认值
+  }
 }
 
 export function getCachedApiKey(): string {
@@ -372,6 +462,9 @@ export function updateAppConfig(patch: Partial<AppFileConfig>): AppFileConfig {
     caseTypes: patch.caseTypes ?? cur.caseTypes,
     promptKinds: patch.promptKinds ?? cur.promptKinds,
     knowledgeCategories: patch.knowledgeCategories ?? cur.knowledgeCategories,
+    navGroups: patch.navGroups ?? cur.navGroups,
+    navIcons: patch.navIcons ?? cur.navIcons,
+    navOrder: patch.navOrder ?? cur.navOrder,
   });
   cache = next;
   const active = activeProvider(next);

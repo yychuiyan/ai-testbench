@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # 自定义域名根路径（如 https://testbench.yychuiyan.com/）用 /
+      # 自定义域名根路径（如 https://lantern.yychuiyan.com/）用 /
       # 若改回 github.io 项目页（…/testing-workbench/），改为：/${{ github.event.repository.name }}
       BASE_PATH: /
     steps:

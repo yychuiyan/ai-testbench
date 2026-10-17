@@ -50,7 +50,7 @@ export async function runAcpServer(opts) {
 
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   process.stderr.write(
-    `TestBench ACP ready (protocol=${PROTOCOL_VERSION} model=${settings.model} tools=${toolsDefault} data=${settings.dataRoot})\n`,
+    `Lantern Harness ACP ready (protocol=${PROTOCOL_VERSION} model=${settings.model} tools=${toolsDefault} data=${settings.dataRoot})\n`,
   );
 
   for await (const line of rl) {
@@ -73,7 +73,7 @@ export async function runAcpServer(opts) {
         ok(id, {
           protocolVersion: PROTOCOL_VERSION,
           serverInfo: {
-            name: 'ai-testbench-acp',
+            name: 'lantern-harness-acp',
             version: '0.1.1',
           },
           capabilities: {
@@ -98,7 +98,7 @@ export async function runAcpServer(opts) {
         const system =
           typeof params.system === 'string' && params.system.trim()
             ? params.system.trim()
-            : '你是 TestBench headless 助手，简洁回答。';
+            : '你是 Lantern Harness headless 助手，简洁回答。';
         const tools = typeof params.tools === 'boolean' ? params.tools : toolsDefault;
         sessions.set(sid, {
           id: sid,

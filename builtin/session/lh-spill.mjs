@@ -1,5 +1,5 @@
 /**
- * 过大内容溢出落盘：`.tb/local/spill/<id>.txt`
+ * 过大内容溢出落盘：`.lantern/local/spill/<id>.txt`
  * HTTP：`/__tb_spill`
  */
 import fs from 'node:fs';
@@ -68,9 +68,9 @@ function pruneOld(dir) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbSpillPlugin() {
+export function lhSpillPlugin() {
   return {
-    name: 'tb-spill',
+    name: 'lh-spill',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';

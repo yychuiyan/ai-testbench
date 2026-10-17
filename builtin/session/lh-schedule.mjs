@@ -1,7 +1,7 @@
 /**
  * 主机级定时提醒：
- * - 落盘 `.tb/local/schedules.json`
- * - 本地服务运行时 tick：到期写入 `.tb/local/sessions.json` 对应会话
+ * - 落盘 `.lantern/local/schedules.json`
+ * - 本地服务运行时 tick：到期写入 `.lantern/local/sessions.json` 对应会话
  * - HTTP：`/__tb_schedule/*`
  */
 import fs from 'node:fs';
@@ -224,12 +224,12 @@ export function claimAndDeliverDue(root, now = Date.now()) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbSchedulePlugin() {
+export function lhSchedulePlugin() {
   /** @type {ReturnType<typeof setInterval> | null} */
   let timer = null;
 
   return {
-    name: 'tb-schedule',
+    name: 'lh-schedule',
     configureServer(server) {
       const tick = () => {
         try {

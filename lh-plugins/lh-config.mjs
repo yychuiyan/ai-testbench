@@ -1,11 +1,12 @@
 /**
  * 本地应用配置 + 会话历史：
- * - 默认：包内 `config/app.defaults.json`，落到空间 `.tb/config/app.defaults.json`（绝不含 apiKey）
- * - 本地：`.tb/local/app.config.json`（gitignore；可含 apiKey，页面改动自动写回）
+ * - 默认：包内 `config/app.defaults.json`，落到空间 `.lantern/config/app.defaults.json`（绝不含 apiKey）
+ * - 本地：`.lantern/local/app.config.json`（gitignore；不含模型密钥）
+ * - 模型：`~/.config/lantern-harness/models.json`（全局，不跟空间走；可含 apiKey）
  * - Key 优先级：`.env` 的 TW_API_KEY > 当前激活提供商 providers[].apiKey > 旧 model.apiKey
- * - 会话：`.tb/local/sessions.json`
- * - 用例套件：`.tb/local/case-suites.json`
- * `astro dev` 与 `ai-testbench` CLI 本地服务均可。
+ * - 会话：`.lantern/local/sessions.json`
+ * - 用例套件：`.lantern/local/case-suites.json`
+ * `astro dev` 与 `lantern` CLI 本地服务均可。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,8 +18,10 @@ import {
   readLatestCheckpoint,
 } from './session-persist.mjs';
 import { querySessionIndex, syncSessionQueryIndex } from './session-query-sqlite.mjs';
-import { getDataRoot } from '../builtin/session/space-context.mjs';
+import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
 import { spaceConfigFile, spaceLocalFile } from '../builtin/session/space-layout.mjs';
+import { autoEnableDetectedPlugins } from '../builtin/session/lh-nav-groups.mjs';
+import { getGlobalModelsPath } from '../cli/user-config.mjs';
 import { listStorageDomains } from './storage-domain.mjs';
 
 const PREFIX = '/__tb_config';
@@ -59,6 +62,64 @@ function defaultsPath(root) {
 
 function localConfigPath(root) {
   return spaceLocalFile(root, 'app.config.json');
+}
+
+function emptyModelBlock() {
+  return { activeId: '', reasoningEffort: 'high', providers: [] };
+}
+
+function modelHasProviders(model) {
+  return Boolean(model && Array.isArray(model.providers) && model.providers.length);
+}
+
+function readGlobalModel() {
+  const raw = readJson(getGlobalModelsPath(), null);
+  if (!raw || typeof raw !== 'object') return null;
+  return raw;
+}
+
+function writeGlobalModel(model) {
+  const next = {
+    activeId: typeof model?.activeId === 'string' ? model.activeId : '',
+    reasoningEffort: model?.reasoningEffort || 'high',
+    providers: Array.isArray(model?.providers) ? model.providers : [],
+  };
+  writeJson(getGlobalModelsPath(), next);
+}
+
+function findLegacySpaceModel(currentRoot) {
+  const candidates = [currentRoot];
+  try {
+    const pub = getPublicSpaceRoot();
+    if (pub && path.resolve(pub) !== path.resolve(currentRoot)) candidates.push(pub);
+  } catch {
+    // ignore
+  }
+  for (const root of candidates) {
+    const local = readJson(localConfigPath(root), null);
+    const model = local?.model;
+    if (modelHasProviders(model)) return model;
+    if (model && (model.apiKey || model.baseURL || model.model)) return model;
+  }
+  return null;
+}
+
+function resolveGlobalModel(currentRoot) {
+  const existing = readGlobalModel();
+  if (modelHasProviders(existing)) return { ...emptyModelBlock(), ...existing };
+  const legacy = findLegacySpaceModel(currentRoot);
+  if (legacy) {
+    const next = { ...emptyModelBlock(), ...legacy };
+    writeGlobalModel(next);
+    return next;
+  }
+  return existing ? { ...emptyModelBlock(), ...existing } : emptyModelBlock();
+}
+
+function stripModel(config) {
+  if (!config || typeof config !== 'object') return config;
+  const { model: _m, ...rest } = config;
+  return rest;
 }
 
 function sessionsPath(root) {
@@ -144,17 +205,17 @@ function mergeWithDefaults(defaults, local) {
 function ensureLocalConfig(root) {
   const defaults = readJson(defaultsPath(root), null);
   if (!defaults) {
-    throw new Error('缺少空间配置 .tb/config/app.defaults.json');
+    throw new Error('缺少空间配置 .lantern/config/app.defaults.json');
   }
   const fp = localConfigPath(root);
   let local = readJson(fp, null);
   if (!local) {
-    local = structuredClone(defaults);
+    local = stripModel(structuredClone(defaults));
     writeJson(fp, local);
   } else {
-    const merged = mergeWithDefaults(defaults, local);
-    // 若补了新字段则写回
-    if (JSON.stringify(merged) !== JSON.stringify(local)) {
+    const merged = stripModel(mergeWithDefaults(defaults, local));
+    // 补字段或清掉已迁走的 model
+    if (local.model || JSON.stringify(merged) !== JSON.stringify(stripModel(local))) {
       writeJson(fp, merged);
       local = merged;
     }
@@ -202,9 +263,9 @@ function readBody(req) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbConfigPlugin() {
+export function lhConfigPlugin() {
   return {
-    name: 'tb-config',
+    name: 'lh-config',
     configureServer(server) {
       // 数据根惰性读取：切换数据空间后无需重启即可生效
       server.middlewares.use(async (req, res, next) => {
@@ -225,7 +286,19 @@ export function tbConfigPlugin() {
           }
 
           if (url === PREFIX && req.method === 'GET') {
-            const config = ensureLocalConfig(root);
+            const model = resolveGlobalModel(root);
+            const spaceCfg = ensureLocalConfig(root);
+            // 从别的机器拷进来的空间：有内容的内容目录 / 已被分组引用的目录就是插件开关的依据
+            const auto = autoEnableDetectedPlugins(
+              root,
+              spaceCfg.plugins ?? {},
+              spaceCfg.navGroups ?? [],
+            );
+            if (auto.changed) {
+              spaceCfg.plugins = auto.plugins;
+              writeJson(localConfigPath(root), stripModel(spaceCfg));
+            }
+            const config = { ...spaceCfg, model };
             return sendJson(res, 200, {
               ok: true,
               config,
@@ -233,6 +306,7 @@ export function tbConfigPlugin() {
               paths: {
                 defaults: defaultsPath(root),
                 local: localConfigPath(root),
+                models: getGlobalModelsPath(),
               },
             });
           }
@@ -242,11 +316,13 @@ export function tbConfigPlugin() {
             const defaults = readJson(defaultsPath(root), {});
             const incoming = body.config ?? body;
             const merged = sanitizeForLocalWrite(mergeWithDefaults(defaults, incoming));
-            writeJson(localConfigPath(root), merged);
+            if (incoming?.model) writeGlobalModel(incoming.model);
+            writeJson(localConfigPath(root), stripModel(merged));
+            const config = { ...merged, model: resolveGlobalModel(root) };
             return sendJson(res, 200, {
               ok: true,
-              config: merged,
-              apiKey: readApiKey(root, merged),
+              config,
+              apiKey: readApiKey(root, config),
             });
           }
 

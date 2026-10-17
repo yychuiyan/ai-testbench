@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * tbench CLI：数据空间 init + 本地服务启停 / 版本与排障。
+ * lantern CLI：数据空间 init + 本地服务启停 / 版本与排障。
  *
- * 用法见 `tbench help`。
+ * 用法见 `lantern help`。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -11,7 +11,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { stdin as input, stdout as output } from 'node:process';
-import { nativePickDirectory } from '../builtin/session/tb-fs.mjs';
+import { nativePickDirectory } from '../builtin/session/lh-fs.mjs';
 import { runAcpServer } from './acp-server.mjs';
 import { headlessAsk, loadHeadlessSettings } from './headless.mjs';
 import { runJsonRpcServer } from './jsonrpc-server.mjs';
@@ -48,8 +48,15 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(__dirname, '..');
 const PKG_JSON = path.join(PKG_ROOT, 'package.json');
-const CLI_PATH = path.join(__dirname, 'tbench.mjs');
-const PKG_NAME = 'ai-testbench';
+const CLI_PATH = path.join(__dirname, 'lantern.mjs');
+const APP_NAME = 'Lantern Harness';
+const PKG_NAME = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(PKG_JSON, 'utf8')).name || 'lantern-harness';
+  } catch {
+    return 'lantern-harness';
+  }
+})();
 
 function readPkgVersion() {
   try {
@@ -59,7 +66,7 @@ function readPkgVersion() {
   }
 }
 
-/** 是否运行在 npx 临时缓存里（形如 ~/.npm/_npx/<hash>/…），此时本机还没有 tbench 命令 */
+/** 是否运行在 npx 临时缓存里（形如 ~/.npm/_npx/<hash>/…），此时本机还没有 lantern 命令 */
 function isNpxRun() {
   return __dirname.split(path.sep).includes('_npx');
 }
@@ -95,13 +102,13 @@ function pmGlobalArgs(pm, action, target) {
 }
 
 /**
- * 裸跑 `tbench`（无子命令）且来自 npx 时：先把全局命令装上，
- * 之后 `tbench init` / `tbench web` 才可用。
+ * 裸跑 `lantern`（无子命令）且来自 npx 时：先把全局命令装上，
+ * 之后 `lantern init` / `lantern web` 才可用。
  */
 function installGlobalCli() {
   const pm = getPackageManager();
   console.log('');
-  console.log('正在安装全局命令 tbench');
+  console.log('正在安装全局命令 lantern');
   const r = spawnSync(pm, pmGlobalArgs(pm, 'install', PKG_NAME), {
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -115,52 +122,52 @@ function installGlobalCli() {
   console.log('✓ 安装完成。');
   console.log('');
   console.log('下一步：');
-  console.log('  tbench init     选择并记住数据空间');
-  console.log('  tbench web      启动本地 Web 服务');
+  console.log('  lantern init     选择并记住数据空间');
+  console.log('  lantern web      启动本地 Web 服务');
   console.log('');
 }
 
 function printHelp() {
-  console.log(`TestBench · tbench
+  console.log(`${APP_NAME} · lantern
 
 用法:
-  tbench init              选择并记住数据空间
-  tbench web               后台启动本地 Web 服务
-  tbench stop              停止服务
-  tbench restart           重启服务
-  tbench status            运行状态、端口、数据空间
-  tbench open              在浏览器中打开工作台
-  tbench path              显示当前数据空间路径
-  tbench config            显示配置文件地址
-  tbench logs              查看服务日志
-  tbench doctor            检查运行环境与配置
-  tbench help              显示本帮助
-  tbench version           显示当前版本号
-  tbench list              显示可安装的版本列表
-  tbench install [版本]    安装/更新（默认 latest）
-  tbench uninstall         卸载本机 tbench（保留数据空间）
-  tbench wipe              删除当前数据空间（需确认）
+  lantern init              选择并记住数据空间
+  lantern web               后台启动本地 Web 服务
+  lantern stop              停止服务
+  lantern restart           重启服务
+  lantern status            运行状态、端口、数据空间
+  lantern open              在浏览器中打开工作台
+  lantern path              显示当前数据空间路径
+  lantern config            显示配置文件地址
+  lantern logs              查看服务日志
+  lantern doctor            检查运行环境与配置
+  lantern help              显示本帮助
+  lantern version           显示当前版本号
+  lantern list              显示可安装的版本列表
+  lantern install [版本]    安装/更新（默认 latest）
+  lantern uninstall         卸载本机 lantern（保留数据空间）
+  lantern wipe              删除当前数据空间（需确认）
 
 数据空间:
-  tbench space list        列出全部数据空间与当前项
-  tbench space add <名称>  新建数据空间（--use 顺带设为当前）
-  tbench space use <名称>  切换当前数据空间（重启服务后生效）
-  tbench space rename <旧> <新>   重命名数据空间
-  tbench space copy <源> <新名称> 复制数据空间（含全部内容）
-  tbench space rm <名称>   仅从列表移除（--purge --yes 连数据删除）
-  tbench space export <名称> [输出.zip] [--content-only]  导出为 zip
-  tbench space import <file.zip> [新名称] 从 zip 导入
-  tbench space discover    扫描托管目录，纳入带 .tb/space.json 清单的空间文件夹
+  lantern space list        列出全部数据空间与当前项
+  lantern space add <名称>  新建数据空间（--use 顺带设为当前）
+  lantern space use <名称>  切换当前数据空间（重启服务后生效）
+  lantern space rename <旧> <新>   重命名数据空间
+  lantern space copy <源> <新名称> 复制数据空间（含全部内容）
+  lantern space rm <名称>   仅从列表移除（--purge --yes 连数据删除）
+  lantern space export <名称> [输出.zip] [--content-only]  导出为 zip
+  lantern space import <file.zip> [新名称] 从 zip 导入
+  lantern space discover    扫描托管目录，纳入带 .lantern/space.json 清单的空间文件夹
                            （--parent <目录> 指定要扫描的目录）
 
 进阶:
-  tbench ask <提示词>      无界面单轮问答，直接输出结果
-  tbench rpc               以 stdio JSON-RPC 暴露本地问答能力
-  tbench acp               以 ACP 子集供外部编排驱动无 UI Agent
+  lantern ask <提示词>      无界面单轮问答，直接输出结果
+  lantern rpc               以 stdio JSON-RPC 暴露本地问答能力
+  lantern acp               以 ACP 子集供外部编排驱动无 UI Agent
 
 说明:
-  首次请执行 tbench init；之后 tbench web 使用已记住的数据空间。
-  若数据空间被移动/重命名/删除，请重新 tbench init 初始化或选择已有数据空间。
+  首次请执行 lantern init；之后 lantern web 使用已记住的数据空间。
+  若数据空间被移动/重命名/删除，请重新 lantern init 初始化或选择已有数据空间。
 `);
 }
 
@@ -169,9 +176,7 @@ async function promptDataRoot() {
   const rl = readline.createInterface({ input, output });
   try {
     console.log('');
-    console.log(
-      '选择数据目录（其下直接放置「公共空间」与其它空间；知识库 / 用例 / 提示词 / 记忆等写入其中）：',
-    );
+    console.log('选择数据目录：');
     console.log('  1) 打开系统文件夹选择器');
     console.log(`  2) 当前目录（当前终端所在位置）  ${cwd}`);
     console.log('  3) 自定义路径（手输）');
@@ -237,7 +242,7 @@ async function cmdInit() {
   console.log(`  ${spacesRoot}`);
   console.log(`  公共空间：${displaySpacePath(publicSpacePath(spacesRoot), spacesRoot)}`);
   console.log(`  配置：${getConfigPath()}`);
-  console.log('接下来可执行：tbench web');
+  console.log('接下来可执行：lantern web');
   console.log('');
 }
 
@@ -258,7 +263,7 @@ async function runForegroundServer(dataRoot) {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   console.log('');
-  console.log('TestBench 已启动');
+  console.log('Lantern Harness 已启动');
   console.log(`  地址：${url}`);
   console.log(`  数据空间：${root}`);
   console.log('  按 Ctrl+C 停止');
@@ -302,23 +307,23 @@ function cmdStart({ foreground = false, dir = null } = {}) {
     const state = getAliveRun();
     if (state) {
       console.log('');
-      console.log('TestBench 已在后台启动');
+      console.log('Lantern Harness 已在后台启动');
       console.log(`  地址：${state.url}`);
       console.log(`  数据空间：${state.dataRoot}`);
       console.log(`  日志：${logPath}`);
-      console.log('  停止：tbench stop');
+      console.log('  停止：lantern stop');
       console.log('');
       return;
     }
   }
   const state = getAliveRun();
   if (state) {
-    console.log(`TestBench 已启动：${state.url}`);
+    console.log(`Lantern Harness 已启动：${state.url}`);
     return;
   }
   console.error('启动超时或失败，请查看日志：');
   console.error(`  ${logPath}`);
-  console.error('或前台排查：tbench web --foreground');
+  console.error('或前台排查：lantern web --foreground');
   process.exit(1);
 }
 
@@ -369,10 +374,10 @@ function cmdStatus() {
   if (!resolved.ok) {
     if (resolved.reason === 'missing_config') {
       console.log('数据空间：未配置');
-      console.log('  → 请使用 tbench init 初始化或选择已有数据空间');
+      console.log('  → 请使用 lantern init 初始化或选择已有数据空间');
     } else {
       console.log(`数据空间：不可用（${resolved.dataRoot}）`);
-      console.log('  → 请重新 tbench init：初始化或选择已有数据空间');
+      console.log('  → 请重新 lantern init：初始化或选择已有数据空间');
     }
   } else {
     console.log(`数据空间：${resolved.dataRoot}`);
@@ -391,7 +396,7 @@ function cmdOpen() {
   const { host, port } = getServerOpts();
   const url = run?.url || `http://${host}:${port}/`;
   if (!run) {
-    console.error('服务未运行。请先执行：tbench web');
+    console.error('服务未运行。请先执行：lantern web');
     process.exit(1);
   }
   const platform = process.platform;
@@ -452,10 +457,10 @@ function cmdDoctor() {
   const resolved = resolveConfiguredDataRoot();
   if (!resolved.ok) {
     if (resolved.reason === 'missing_config') {
-      issues.push('未初始化数据空间（请使用 tbench init 初始化或选择已有数据空间）');
+      issues.push('未初始化数据空间（请使用 lantern init 初始化或选择已有数据空间）');
     } else {
       issues.push(
-        `数据空间不可用：${resolved.dataRoot}（请重新 tbench init：初始化或选择已有数据空间）`,
+        `数据空间不可用：${resolved.dataRoot}（请重新 lantern init：初始化或选择已有数据空间）`,
       );
     }
   } else {
@@ -575,7 +580,7 @@ async function cmdSpaceAsync(args, flags) {
     case 'new': {
       const name = args.slice(1).join(' ').trim();
       if (!name) {
-        console.error('用法：tbench space add <名称>');
+        console.error('用法：lantern space add <名称>');
         process.exit(1);
       }
       const created = createSpace({ name, baseRoot: base });
@@ -597,7 +602,7 @@ async function cmdSpaceAsync(args, flags) {
     case 'switch': {
       const target = args.slice(1).join(' ').trim();
       if (!target) {
-        console.error('用法：tbench space use <名称或 id>');
+        console.error('用法：lantern space use <名称或 id>');
         process.exit(1);
       }
       const found = resolveSpace(target, base);
@@ -608,7 +613,7 @@ async function cmdSpaceAsync(args, flags) {
       setActiveSpace(found.space.id);
       console.log(`当前空间已设为「${found.space.name}」`);
       console.log(`  ${found.space.path}`);
-      console.log('若服务已在运行：重启后生效（tbench restart），或直接在网页界面切换。');
+      console.log('若服务已在运行：重启后生效（lantern restart），或直接在网页界面切换。');
       return;
     }
 
@@ -616,7 +621,7 @@ async function cmdSpaceAsync(args, flags) {
       const [from, ...rest] = args.slice(1);
       const to = rest.join(' ').trim();
       if (!from || !to) {
-        console.error('用法：tbench space rename <原名> <新名>');
+        console.error('用法：lantern space rename <原名> <新名>');
         process.exit(1);
       }
       const out = renameSpace(from, to, base);
@@ -633,7 +638,7 @@ async function cmdSpaceAsync(args, flags) {
       const [from, ...rest] = args.slice(1);
       const to = rest.join(' ').trim();
       if (!from || !to) {
-        console.error('用法：tbench space copy <源空间> <新名称>');
+        console.error('用法：lantern space copy <源空间> <新名称>');
         process.exit(1);
       }
       const out = copySpace(from, to, base);
@@ -651,7 +656,7 @@ async function cmdSpaceAsync(args, flags) {
     case 'delete': {
       const target = args[1];
       if (!target) {
-        console.error('用法：tbench space rm <名称> [--purge]');
+        console.error('用法：lantern space rm <名称> [--purge]');
         process.exit(1);
       }
       const resolved = resolveSpace(target, base);
@@ -666,7 +671,7 @@ async function cmdSpaceAsync(args, flags) {
         console.log(`  ${resolved.space.path}`);
         if (!flags.yes) {
           console.error(
-            '请追加 --yes 以确认（例如：tbench space rm ' + target + ' --purge --yes）',
+            '请追加 --yes 以确认（例如：lantern space rm ' + target + ' --purge --yes）',
           );
           process.exit(1);
         }
@@ -689,7 +694,7 @@ async function cmdSpaceAsync(args, flags) {
       // 输出的位置参数可能有两个（名称 + 输出文件），过滤掉开关后再取
       const target = args[1];
       if (!target) {
-        console.error('用法：tbench space export <名称> [输出.zip] [--content-only]');
+        console.error('用法：lantern space export <名称> [输出.zip] [--content-only]');
         process.exit(1);
       }
       const resolved = resolveSpace(target, base);
@@ -726,7 +731,7 @@ async function cmdSpaceAsync(args, flags) {
         console.log(`已纳入 ${out.added.length} 个空间：`);
         for (const s of out.added) console.log(`  ${s.name}  ${displaySpacePath(s.path, base)}`);
       } else {
-        console.log('未发现可纳入的空间文件夹（只认带 .tb/space.json 清单的目录）。');
+        console.log('未发现可纳入的空间文件夹（只认带 .lantern/space.json 清单的目录）。');
       }
       if (out.backfilled.length) {
         console.log(
@@ -740,7 +745,7 @@ async function cmdSpaceAsync(args, flags) {
     case 'import': {
       const zipFile = args[1];
       if (!zipFile) {
-        console.error('用法：tbench space import <file.zip> [新名称]');
+        console.error('用法：lantern space import <file.zip> [新名称]');
         process.exit(1);
       }
       const name = args.slice(2).join(' ').trim() || undefined;
@@ -756,7 +761,7 @@ async function cmdSpaceAsync(args, flags) {
     }
 
     default:
-      console.error(`未知子命令：tbench space ${action}`);
+      console.error(`未知子命令：lantern space ${action}`);
       console.error('可用：list | add | use | rename | copy | rm | export | import | discover');
       process.exit(1);
   }
@@ -804,7 +809,7 @@ async function cmdWipe() {
   fs.rmSync(resolved, { recursive: true, force: true });
   clearDataRootFromConfig();
   console.log('数据空间已删除，配置中的关联已清除。');
-  console.log('如需继续使用，请使用 tbench init 初始化或选择已有数据空间。');
+  console.log('如需继续使用，请使用 lantern init 初始化或选择已有数据空间。');
 }
 
 /**
@@ -921,7 +926,7 @@ async function main() {
         const dataRoot = requireDataRoot(flags.dir);
         const prompt = args.join(' ').trim();
         if (!prompt) {
-          console.error('用法：tbench ask <提示词>');
+          console.error('用法：lantern ask <提示词>');
           process.exit(1);
         }
         const settings = loadHeadlessSettings(dataRoot);
@@ -941,7 +946,7 @@ async function main() {
       }
       default:
         console.error(`未知命令：${cmd}`);
-        console.error('执行 tbench help 查看可用命令。');
+        console.error('执行 lantern help 查看可用命令。');
         process.exit(1);
     }
   } catch (e) {

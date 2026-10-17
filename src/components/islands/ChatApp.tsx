@@ -125,6 +125,7 @@ import {
   formatKnowledgeGenProgress,
   tryFinishKnowledgeGenFromAssistant,
 } from '../../lib/knowledge-gen-run';
+import { buildPluginDevSystemPrompt, type PluginDevPluginConfig } from '../../lib/plugin-dev';
 import {
   AGENT_INSTRUCTIONS_HINT_PREFIX,
   FS_SYSTEM_HINT,
@@ -166,9 +167,13 @@ import {
   ASK_USER_QUESTION_TOOL,
   SESSION_INTERACT_HINT,
   TODO_WRITE_TOOL,
+  formatAskAnswersText,
   normalizeTodos,
+  parseAskSelection,
   parseAskUserArgs,
+  resolveAskAnswer,
   type AskUserAnswer,
+  type AskUserDraft,
   type AskUserQuestion,
   type TodoItem,
 } from '../../lib/session-interact';
@@ -352,6 +357,17 @@ function getAtMentionState(text: string): { from: number; query: string } | null
   const from = text.lastIndexOf('@');
   if (from < 0) return null;
   return { from, query: m[1] ?? '' };
+}
+
+/**
+ * 选项标题尾部的「（推荐）」只影响展示：去掉后缀、改用徽标标出，
+ * 回答仍回传模型给的原始 label（与 dsh 的 parseRecommendedLabel 一致）。
+ */
+function parseRecommendedLabel(label: string): { label: string; recommended: boolean } {
+  const suffix = /\s*(?:[(（](?:recommended|推荐)[)）])\s*$/i;
+  return suffix.test(label)
+    ? { label: label.replace(suffix, ''), recommended: true }
+    : { label, recommended: false };
 }
 
 const FALLBACK_SYSTEM_PROMPT = DEFAULT_CHAT_SYSTEM_PROMPT;
@@ -1005,7 +1021,7 @@ function WorkspaceMoreMenu({
           e.stopPropagation();
           onToggle();
         }}
-        className="w-6 h-6 flex items-center justify-center rounded text-[color:var(--tw-label-tertiary)] hover:text-[color:var(--tw-label-primary)] hover:bg-[color:var(--tw-session-hover-bg)]"
+        className="w-6 h-6 flex items-center justify-center rounded text-(--tw-label-tertiary) hover:text-(--tw-label-primary) hover:bg-(--tw-session-hover-bg)"
       >
         <EllipsisIcon className="w-3.5 h-3.5" />
       </button>
@@ -1094,7 +1110,7 @@ function RailMenuPortal({
   return createPortal(
     <div
       {...attrs}
-      className="tw-popover tw-popover-anim z-[80] w-40 rounded-xl border border-stone-200 py-1 shadow-lg"
+      className="tw-popover tw-popover-anim z-80 w-40 rounded-xl border border-stone-200 py-1 shadow-lg"
       style={{
         position: 'fixed',
         top: pos.top,
@@ -1748,7 +1764,7 @@ function DialogPill({
             role="dialog"
             aria-label={title}
             style={pos ?? { position: 'fixed', left: 0, top: 0, visibility: 'hidden' }}
-            className="z-[80]"
+            className="z-80"
           >
             <StatDialog title={title} titleValue={titleValue} icon={icon}>
               {children}
@@ -2298,6 +2314,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   );
   const knowledgeGenConfigRef = useRef<KnowledgeGenPluginConfig | null>(null);
   knowledgeGenConfigRef.current = knowledgeGenConfig;
+  const [pluginDevConfig, setPluginDevConfig] = useState<PluginDevPluginConfig | null>(null);
+  const pluginDevConfigRef = useRef<PluginDevPluginConfig | null>(null);
+  pluginDevConfigRef.current = pluginDevConfig;
+  /**
+   * 激活插件开发胶囊时被提到「工作区内修改」之前的权限。
+   * 只用于「点了胶囊又取消、还没开始开发」的场景：恢复用户原来的「仅可查看」。
+   */
+  const pluginDevPrevAccessRef = useRef<AccessLevel | null>(null);
   /** 从管理页「在会话中打开」带入：`root:path`，用于滚动定位到对应文件卡 */
   const [pendingFocusDoc, setPendingFocusDoc] = useState<string | null>(null);
   const [pluginIndex, setPluginIndex] = useState(0);
@@ -2417,13 +2441,19 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   /** 已用 LLM 起过标题的会话，避免重复请求 */
   const llmTitledSessionIdsRef = useRef(new Set<string>());
   const [planPhase, setPlanPhase] = useState<PlanPhase>('off');
-  /** 输入区模式胶囊：目标设定 / 计划模式（中文标签 + 可关闭） */
-  const [composerChip, setComposerChip] = useState<null | 'goal' | 'plan'>(null);
+  /** 输入区模式胶囊：目标设定 / 计划模式 / 插件开发（中文标签 + 可关闭） */
+  const [composerChip, setComposerChip] = useState<null | 'goal' | 'plan' | 'pluginDev'>(null);
   const [planProposal, setPlanProposal] = useState<PlanProposal | null>(null);
   const [askUserPrompt, setAskUserPrompt] = useState<AskUserQuestion[] | null>(null);
-  const [askUserDraft, setAskUserDraft] = useState<
-    Record<string, { selected: string[]; text: string }>
-  >({});
+  const [askUserDraft, setAskUserDraft] = useState<Record<string, AskUserDraft>>({});
+  /** 提问卡片当前步（0 起）：一次只展示一道题，与 dsh 的提问 composer 一致 */
+  const [askUserStep, setAskUserStep] = useState(0);
+  const [askUserMinimized, setAskUserMinimized] = useState(false);
+  /** 卡片内的即时提示（未作答 / 未填回答），不走全局错误条 */
+  const [askUserFeedback, setAskUserFeedback] = useState<string | null>(null);
+  /** 存在跳过时先停在确认视图：说明跳过原因后才回传，避免模型盲目按默认执行 */
+  const [askSkipConfirm, setAskSkipConfirm] = useState(false);
+  const [askSkipReason, setAskSkipReason] = useState('');
   type PendingSend = {
     id: string;
     content: string;
@@ -2497,10 +2527,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     ...atProjectDocs.map((d) => ({ section: 'project' as const, doc: d })),
     ...atWorkspaceDocs.map((d) => ({ section: 'workspace' as const, doc: d })),
   ];
-  const atOpen = Boolean(atState && !mentionDismissed && (knowledgeOn || hasWorkspace));
+  const atOpen = Boolean(atState && !mentionDismissed);
 
   const pluginSlashState = getPluginSlashState(input);
-  const pluginMenuItems = PLUGIN_CATALOG.filter((p) => p.hasPanel);
+  const pluginMenuItems = PLUGIN_CATALOG.filter((p) => p.hasPanel && pluginOn[p.id]);
   const pluginMenuOpen = Boolean(
     pluginSlashState && !pluginMenuDismissed && !atOpen && pluginMenuItems.length > 0,
   );
@@ -2693,6 +2723,26 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setCaseGenConfig(active?.caseGen?.active ? active.caseGen : null);
       setPromptGenConfig(active?.promptGen?.active ? active.promptGen : null);
       setKnowledgeGenConfig(active?.knowledgeGen?.active ? active.knowledgeGen : null);
+      setPluginDevConfig(active?.pluginDev?.active ? active.pluginDev : null);
+      // 权限以会话自身记录为准（上面已回填旧存档默认值）；这里显式同步，
+      // 否则挂载时先写入的默认权限会盖掉会话里存的「工作区内修改」
+      setAccess(active?.access ?? fallbackAccess);
+      if (active?.pluginDev?.active) {
+        setComposerChip('pluginDev');
+        // 插件开发会话必须是可写：旧存档若是「仅可查看」，恢复时同步提权
+        if (active.access !== 'readwrite' && active.access !== 'full') {
+          setAccess('readwrite');
+          const bumped: SessionStore = {
+            ...store,
+            sessions: store.sessions.map((s) =>
+              s.id === store.activeId ? { ...s, access: 'readwrite' as const } : s,
+            ),
+          };
+          storeRef.current = bumped;
+          setStore(bumped);
+          saveSessionStore(bumped);
+        }
+      }
       setSessionTodos(normalizeTodos(active?.todos));
       {
         const g = normalizeGoal(active?.goal);
@@ -2722,37 +2772,49 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       try {
         const u = new URL(window.location.href);
         const pluginQ = u.searchParams.get('plugin');
-        if (pluginQ === 'promptGen' || pluginQ === 'knowledgeGen' || pluginQ === 'caseGen') {
+        if (
+          pluginQ === 'promptGen' ||
+          pluginQ === 'knowledgeGen' ||
+          pluginQ === 'caseGen' ||
+          pluginQ === 'pluginDev'
+        ) {
           const id = pluginQ as PluginId;
           if (loadPluginEnabled()[id]) {
-            // 库页「生成*」跳入：先落一个空「新对话」，确认配置复用该会话
-            const cur = storeRef.current?.sessions.find((x) => x.id === storeRef.current?.activeId);
-            const needFresh =
-              !cur ||
-              cur.archived ||
-              cur.deleted ||
-              (Array.isArray(cur.messages) && cur.messages.length > 0) ||
-              Boolean(cur.caseGen?.active || cur.promptGen?.active || cur.knowledgeGen?.active);
-            if (needFresh && storeRef.current) {
-              const leavingId = storeRef.current.activeId;
-              const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
-              const ws = workspaceInfo?.workspace?.trim() || undefined;
-              const next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
-              storeRef.current = next;
-              setStore(next);
-              saveSessionStore(next);
-              setMessages([]);
-              setCaseGenConfig(null);
-              setPromptGenConfig(null);
-              setKnowledgeGenConfig(null);
-              setSessionTodos([]);
-              sessionGoalRef.current = null;
-              setSessionGoal(null);
-              setPlanPhase('off');
+            if (id === 'pluginDev') {
+              // 胶囊型入口：不建会话、不预填抽屉，直接激活输入区胶囊
+              activatePluginDevChip();
+            } else {
+              // 库页「生成*」跳入：先落一个空「新对话」，确认配置复用该会话
+              const cur = storeRef.current?.sessions.find(
+                (x) => x.id === storeRef.current?.activeId,
+              );
+              const needFresh =
+                !cur ||
+                cur.archived ||
+                cur.deleted ||
+                (Array.isArray(cur.messages) && cur.messages.length > 0) ||
+                Boolean(cur.caseGen?.active || cur.promptGen?.active || cur.knowledgeGen?.active);
+              if (needFresh && storeRef.current) {
+                const leavingId = storeRef.current.activeId;
+                const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
+                const ws = workspaceInfo?.workspace?.trim() || undefined;
+                const next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
+                storeRef.current = next;
+                setStore(next);
+                saveSessionStore(next);
+                setMessages([]);
+                setCaseGenConfig(null);
+                setPromptGenConfig(null);
+                setKnowledgeGenConfig(null);
+                setSessionTodos([]);
+                sessionGoalRef.current = null;
+                setSessionGoal(null);
+                setPlanPhase('off');
+              }
+              if (id === 'promptGen') setPromptGenPanelOpen(true);
+              else if (id === 'knowledgeGen') setKnowledgeGenPanelOpen(true);
+              else setCaseGenPanelOpen(true);
             }
-            if (id === 'promptGen') setPromptGenPanelOpen(true);
-            else if (id === 'knowledgeGen') setKnowledgeGenPanelOpen(true);
-            else setCaseGenPanelOpen(true);
           } else {
             setError(pluginDisabledMessage(id));
           }
@@ -2795,6 +2857,9 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       offPlugins();
       offGeneral();
     };
+    // 只在挂载时初始化一次：内部引用的 activatePluginDevChip / attachServerRun /
+    // workspaceInfo 都是首帧之后的回调入口，纳入依赖会重新拉取一遍并覆盖用户已切换的状态
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** 记忆插件关闭后隐藏入口，并退出记忆页 */
@@ -2832,7 +2897,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         }
         try {
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification('TestBench 定时提醒', { body: r.text });
+            new Notification('Lantern Harness 定时提醒', { body: r.text });
           }
         } catch {
           // ignore
@@ -3027,7 +3092,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     const info = workspaceInfoRef.current;
     if (!info) return null;
     const bound = session?.workspacePath?.trim();
-    if (bound && info.items.some((i) => i.path === bound)) return bound;
+    // 插件开发会话归属 harness 包根：它不在工作区列表里（只临时占用），也要认
+    if (bound && (bound === info.harnessRoot || info.items.some((i) => i.path === bound))) {
+      return bound;
+    }
     return info.projectRoot?.trim() || null;
   }
 
@@ -3205,6 +3273,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     }
     if (id === 'knowledgeGen') {
       setKnowledgeGenPanelOpen(true);
+      return true;
+    }
+    if (id === 'pluginDev') {
+      activatePluginDevChip();
       return true;
     }
     if (id === 'memory') {
@@ -3627,7 +3699,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     if (!files.length) return;
     const accepted: ImageAtt[] = [];
     const rejected: string[] = [];
-    let used = composerFileCount(attachments, images);
+    const used = composerFileCount(attachments, images);
     for (const f of files) {
       if (used + accepted.length >= FILE_MAX_COUNT) {
         rejected.push(`${f.name || '图片'}（最多 ${FILE_MAX_COUNT} 个文件）`);
@@ -3659,6 +3731,22 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       settlePlanCanceled();
       setPlanPhase('off');
     }
+    if (composerChip === 'pluginDev') {
+      setPluginDevConfig(null);
+      pluginDevConfigRef.current = null;
+      if (storeRef.current) {
+        commitStore(updateActiveSessionMeta(storeRef.current, { pluginDev: undefined }));
+      }
+      // 只在「激活时被提权、还没开始开发」的情况下还原原权限
+      const prev = pluginDevPrevAccessRef.current;
+      pluginDevPrevAccessRef.current = null;
+      if (prev === 'readonly') {
+        setAccess('readonly');
+        if (storeRef.current) {
+          commitStore(updateActiveSessionMeta(storeRef.current, { access: 'readonly' }));
+        }
+      }
+    }
     setComposerChip(null);
   }
 
@@ -3670,6 +3758,25 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
   function activatePlanChip() {
     setPlanPhase((cur) => (cur === 'off' ? 'planning' : cur));
     setComposerChip('plan');
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  /** 与「计划」同款胶囊：不弹抽屉，直接在主输入框描述插件需求 */
+  function activatePluginDevChip() {
+    if (!fsLive) {
+      setError('本地文件服务未就绪：插件开发需要读写项目源码');
+      return;
+    }
+    setComposerChip('pluginDev');
+    // 插件开发必须能改源码：激活时就把权限提到可写，别让底栏还显示「仅可查看」
+    // （只在 readonly 时提升；用户原本选的是「完全权限」就保持不动）
+    if (access === 'readonly') {
+      pluginDevPrevAccessRef.current = 'readonly';
+      setAccess('readwrite');
+      if (storeRef.current) {
+        commitStore(updateActiveSessionMeta(storeRef.current, { access: 'readwrite' }));
+      }
+    }
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
@@ -3838,6 +3945,15 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       return;
     }
 
+    // 插件开发胶囊：首条消息就是需求，进入固定提示词会话（项目根 + 读写）
+    if (composerChip === 'pluginDev' && content && !files.length && !refs.length && !imgs.length) {
+      if (streamingRef.current) {
+        setError('请等待当前回复结束后再开始插件开发');
+        return;
+      }
+      await enterPluginDevMode(content);
+    }
+
     const prepared: PendingSend = {
       id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       content,
@@ -3952,7 +4068,16 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     const useFs = fsLive;
     const useWeb = webLive;
     const planGatesWrites = planPhase === 'planning';
-    const effectiveAccess = planGatesWrites ? 'readonly' : access;
+    const pluginDevCfg =
+      pluginOn.pluginDev && pluginDevConfigRef.current?.active ? pluginDevConfigRef.current : null;
+    // 插件开发要改项目源码：不受计划门禁限制，至少「工作区内修改」；用户原本选「完全权限」则保留
+    const effectiveAccess = pluginDevCfg
+      ? access === 'full'
+        ? 'full'
+        : 'readwrite'
+      : planGatesWrites
+        ? 'readonly'
+        : access;
     const useBash = bashLive && effectiveAccess !== 'readonly';
     const usePwsh = pwshLive && effectiveAccess !== 'readonly';
     // 输入以 picker / FS 当前工作区为准（可手动切到会话归属以外的目录）
@@ -3970,8 +4095,17 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         : null;
     const structuredPlugin = Boolean(promptCfg || knowledgeGenCfg || caseCfg);
     const memCwd = effectiveFsRoot;
+    // 普通对话用当前空间「默认提示词.md」；生成用例 / 提示词 / 知识库插件开启时改用插件所选提示词
     let baseSystem = systemPrompt;
-    if (promptCfg) {
+    if (pluginDevCfg) {
+      // 插件开发：固定提示词（不跟随空间默认提示词），但保留文件 / 终端 / 提问等工具
+      baseSystem = buildPluginDevSystemPrompt(
+        pluginDevCfg,
+        workspaceInfoRef.current?.harnessRoot ||
+          workspaceInfoRef.current?.projectRoot ||
+          effectiveFsRoot,
+      );
+    } else if (promptCfg) {
       baseSystem = buildPromptGenSystemPrompt(promptCfg);
     } else if (knowledgeGenCfg) {
       baseSystem = buildKnowledgeGenSystemPrompt(knowledgeGenCfg);
@@ -4040,7 +4174,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       bash: useBash && !structuredPlugin,
       pwsh: usePwsh && !structuredPlugin,
       interact: !structuredPlugin,
-      planPhase: structuredPlugin ? 'off' : planPhase,
+      planPhase: structuredPlugin || pluginDevCfg ? 'off' : planPhase,
       goalEnabled: !structuredPlugin,
       goal: sessionGoal,
       scheduleEnabled: !structuredPlugin,
@@ -4054,7 +4188,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
 
     // 五轨快照注入：超时/失败则跳过，不阻塞发送（结构化插件模式跳过）
     // FS 工作区已由会话切换同步或输入栏手动选择决定，发送时不再拉回会话归属
-    if (useMemory && !structuredPlugin) {
+    if (useMemory && !structuredPlugin && !pluginDevCfg) {
       setToolHint('记忆注入中…');
       const { context } = await recallMemory(content, { cwd: memCwd });
       if (context && payload[0]?.role === 'system') {
@@ -4136,8 +4270,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         progressTimer = window.setInterval(paint, 1000);
       }
 
-      // 服务端回合：刷新/切页可重连；结构化生成仍走浏览器流
-      if (!structuredGen && (await sessionRunsAvailable(ctrl.signal))) {
+      // 服务端回合：刷新/切页可重连；结构化生成与插件开发仍走浏览器流（后者要用 ask_user_question 确认）
+      if (!structuredGen && !pluginDevCfg && (await sessionRunsAvailable(ctrl.signal))) {
         const serverTools = tools.filter((t) => {
           const n = t.function?.name ?? '';
           if (!n) return false;
@@ -4159,7 +4293,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           thinking: true,
           workspace: effectiveFsRoot || '',
           access: effectiveAccess,
-          maxToolRounds: 8,
+          // 不传 maxToolRounds：服务端默认 DEFAULT_TOOL_ROUNDS（100），
+          // 插件开发与普通会话一致，避免调研到一半被收口
         });
         if (started.ok) {
           usedServerRun = true;
@@ -4219,6 +4354,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       } else {
         const stream = streamChatWithTools(settings, payload, ctrl.signal, {
           tools: tools.length ? tools : undefined,
+          // 不传 maxToolRounds：走 llm.ts 的 DEFAULT_MAX_TOOL_ROUNDS（100）
           runTool: tools.length
             ? async (name, args) => {
                 setToolBusy(true);
@@ -4431,6 +4567,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     const draft: Record<string, { selected: string[]; text: string }> = {};
                     for (const q of questions) draft[q.id] = { selected: [], text: '' };
                     setAskUserDraft(draft);
+                    setAskUserStep(0);
+                    setAskUserMinimized(false);
+                    setAskUserFeedback(null);
+                    setAskSkipConfirm(false);
+                    setAskSkipReason('');
                     setAskUserPrompt(questions);
                     return await new Promise<string>((resolve, reject) => {
                       askUserWaitRef.current = { resolve, reject };
@@ -4623,6 +4764,18 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
           });
         }
         turnOk = true;
+        // 防空回合：只有思考/工具过程、没有正文时给出明确原因，
+        // 否则界面看起来像「自动终止」（工具轮次用尽、输出被截断、连接被掐）
+        if (!structuredGen) {
+          // messages 在 SessionStore 里是 unknown[]（结构由 LocalMessage 序列化而来），
+          // 这里只关心 role / content 两个字段，收窄后再判断
+          const msgs = (storeRef.current?.sessions.find((x) => x.id === sid)?.messages ??
+            []) as Array<{ role?: string; content?: unknown }>;
+          const lastA = [...msgs].reverse().find((m) => m.role === 'assistant');
+          if (lastA && typeof lastA.content === 'string' && !lastA.content.trim()) {
+            setError('模型本轮没有返回正文（可能工具轮次用尽或输出被截断），请重试或回复「继续」');
+          }
+        }
         // 流结束：结算思考耗时，并把 thinking 步骤标为 done
         {
           const duration =
@@ -5101,6 +5254,53 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     void syncFsWorkspaceForSession(next.sessions.find((x) => x.id === next.activeId));
   }
 
+  /**
+   * 插件开发胶囊：首条消息即需求。
+   * 就地进入插件开发（不动当前会话），并把会话落到 harness 源码根（仓库根 / 安装包根）、读写权限。
+   */
+  async function enterPluginDevMode(requirement: string) {
+    const cur = storeRef.current;
+    if (!cur) return;
+    const active = cur.sessions.find((x) => x.id === cur.activeId);
+    // 插件开发要改的是 harness 源码（仓库根 / 安装包根），不是空间目录；
+    // 服务端为包根单独放行，其它上级目录仍不能当工作区
+    const devWorkspace =
+      workspaceInfoRef.current?.harnessRoot?.trim() ||
+      workspaceInfoRef.current?.projectRoot?.trim() ||
+      workspaceInfoRef.current?.workspace?.trim();
+    const cfg: PluginDevPluginConfig = active?.pluginDev?.active
+      ? active.pluginDev
+      : { active: true, requirement: requirement.trim(), confirmedAt: Date.now() };
+
+    // 就在当前会话里进入插件开发：不再自动新开会话。
+    // 之前「已有消息就 fork 一个干净会话」会让用户在旧会话里补一句话就被换到新会话，
+    // 容易误以为输入丢失、还会堆出一串重复会话。
+    commitStore(
+      updateActiveSessionMeta(cur, {
+        pluginDev: cfg,
+        // 插件开发至少可写；用户原本选的是「完全权限」就保留
+        access: access === 'full' ? 'full' : 'readwrite',
+        ...(devWorkspace ? { workspacePath: devWorkspace } : {}),
+      }),
+    );
+    setPluginDevConfig(cfg);
+    pluginDevConfigRef.current = cfg;
+    // 已经开始开发：这个会话就是要可写，之后取消胶囊不再还原权限
+    pluginDevPrevAccessRef.current = null;
+    // 计划模式会剥夺写权限，与插件开发冲突
+    settlePlanCanceled();
+    setPlanPhase('off');
+    if (devWorkspace) setWsExpanded((prev) => ({ ...prev, [devWorkspace]: true }));
+    // fs 中间件按「当前工作区」解析路径：开发要读写项目根
+    if (fsLive && devWorkspace && workspaceInfoRef.current?.workspace !== devWorkspace) {
+      try {
+        syncWorkspaceInfo(await selectWorkspace(devWorkspace));
+      } catch {
+        // 切不过去就让模型用当前工作区，不阻塞开发
+      }
+    }
+  }
+
   function applyCaseGenConfig(cfg: CaseGenPluginConfig | null) {
     if (cfg?.active) {
       beginPluginSession('caseGen', cfg);
@@ -5142,7 +5342,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     saveComposerDraft(leavingId);
     // 新建会话不打断旧会话后台生成
     resetComposer({ clearDraft: true, abortRun: false });
-    let base = pruneEphemeralSession(leavingId) ?? storeRef.current;
+    const base = pruneEphemeralSession(leavingId) ?? storeRef.current;
     // dsh：新会话归入「当前工作区」（显式传入 path 优先，否则用 picker 选中项）
     const ws = workspacePath?.trim() || workspaceInfo?.workspace?.trim() || undefined;
     const next = createSession(base, { workspacePath: ws, access: loadAccessLevel() });
@@ -5151,11 +5351,14 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setCaseGenConfig(null);
     setPromptGenConfig(null);
     setKnowledgeGenConfig(null);
+    setPluginDevConfig(null);
+    pluginDevConfigRef.current = null;
     setSessionTodos([]);
     sessionGoalRef.current = null;
     setSessionGoal(null);
     goalDriverRoundsRef.current = 0;
     setPlanPhase('off');
+    setComposerChip((cur) => (cur === 'pluginDev' ? null : cur));
     settleAskUserCanceled();
     settlePlanCanceled();
     const expandPath = ws || workspaceInfo?.projectRoot;
@@ -5169,6 +5372,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     askUserWaitRef.current = null;
     setAskUserPrompt(null);
     setAskUserDraft({});
+    setAskUserStep(0);
+    setAskUserMinimized(false);
+    setAskUserFeedback(null);
+    setAskSkipConfirm(false);
+    setAskSkipReason('');
     wait.resolve(JSON.stringify({ canceled: true, error: 'user aborted' }));
   }
 
@@ -5212,34 +5420,182 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     });
   }
 
-  function submitAskUserAnswers() {
+  /** 当前这步是否已作答（跳过算已处理；选择题看选中项或手写回答） */
+  function askDraftAnswered(
+    q: AskUserQuestion | undefined,
+    draft: AskUserDraft | undefined,
+  ): boolean {
+    if (!q || !draft) return false;
+    if (draft.skipped) return true;
+    if (draft.text.trim() !== '') return true;
+    return q.options?.length ? draft.selected.length > 0 : false;
+  }
+
+  /**
+   * 收尾：清卡片状态并回传答案。
+   * 只要有题被跳过，就明确告诉模型「这不等于批准实施」，避免它跳过当轮就直接改文件。
+   */
+  function finishAskUser(
+    questions: AskUserQuestion[],
+    answers: AskUserAnswer[],
+    extra?: Record<string, unknown>,
+  ) {
     const wait = askUserWaitRef.current;
-    const questions = askUserPrompt;
-    if (!wait || !questions?.length) return;
-    const answers: AskUserAnswer[] = questions.map((q) => {
-      const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
-      if (q.options?.length) {
-        return { id: q.id, selected: draft.selected };
-      }
-      return { id: q.id, text: draft.text.trim() };
-    });
-    for (const q of questions) {
-      const a = answers.find((x) => x.id === q.id);
-      if (q.options?.length) {
-        if (!a?.selected?.length) {
-          setError('请先选择选项后再提交');
-          return;
-        }
-      } else if (!a?.text?.trim()) {
-        setError('请先填写回答后再提交');
-        return;
-      }
-    }
+    if (!wait) return;
     askUserWaitRef.current = null;
     setAskUserPrompt(null);
     setAskUserDraft({});
+    setAskUserStep(0);
+    setAskUserMinimized(false);
+    setAskUserFeedback(null);
+    setAskSkipConfirm(false);
+    setAskSkipReason('');
     setError(null);
-    wait.resolve(JSON.stringify({ answers }));
+    const skippedCount = answers.filter((a) => a.skipped).length;
+    const skipReason = String(extra?.skipReason ?? '').trim();
+    wait.resolve(
+      JSON.stringify({
+        answers,
+        summary: formatAskAnswersText(questions, answers),
+        ...(skippedCount
+          ? {
+              skipped: true,
+              approvalRequired: true,
+              ...(skipReason ? { skipReason } : {}),
+              note:
+                '用户跳过了部分或全部问题：跳过的题不算确认，也未批准实施。' +
+                (skipReason ? `用户给出的跳过原因：${skipReason}。` : '') +
+                '本轮只允许只读调研与文字方案，禁止 fs_write / fs_mkdir / 改配置；' +
+                '请先说明采用的默认假设（哪几项按推荐）与准备改动的范围' +
+                (skipReason ? '，并针对上述原因给出调整' : '') +
+                '，然后等用户明确回复「开始实施」再动手。',
+            }
+          : {
+              note: 'answers 为结构化答案；summary 是同一批答案的中文文本版本，可直接据此继续，无需再次提问。',
+            }),
+        ...extra,
+      }),
+    );
+  }
+
+  /** 点击选项：单选选中后自动进入下一步，多选停留在本步 */
+  function chooseAskOption(q: AskUserQuestion, label: string, checked: boolean) {
+    setAskUserDraft((prev) => {
+      const cur = prev[q.id] ?? { selected: [], text: '' };
+      const selected = q.multi_select
+        ? checked
+          ? cur.selected.filter((x) => x !== label)
+          : [...cur.selected, label]
+        : [label];
+      return { ...prev, [q.id]: { selected, text: '', skipped: false } };
+    });
+    setAskUserFeedback(null);
+    if (!q.multi_select) {
+      setAskUserStep((step) => Math.min(step + 1, (askUserPrompt?.length ?? 1) - 1));
+    }
+  }
+
+  /** 切换步骤：范围由题数决定，切步时清掉上一步的即时提示 */
+  function goAskStep(next: number) {
+    const count = askUserPrompt?.length ?? 0;
+    if (!count) return;
+    setAskUserStep(Math.max(0, Math.min(next, count - 1)));
+    setAskUserFeedback(null);
+  }
+
+  /** 手写输入：写到草稿里；多选保留已勾选项，单选以文本为准 */
+  function updateAskText(q: AskUserQuestion | undefined, text: string) {
+    if (!q) return;
+    setAskUserDraft((prev) => {
+      const cur = prev[q.id] ?? { selected: [], text: '' };
+      return {
+        ...prev,
+        [q.id]: { selected: q.multi_select ? cur.selected : [], text, skipped: false },
+      };
+    });
+    setAskUserFeedback(null);
+  }
+
+  /**
+   * 文本行回车：纯序号按点选处理，其它当自由回答。
+   * 单步确认后前进；最后一题直接提交，不用再点按钮。
+   */
+  function applyAskTextChoice(q: AskUserQuestion, raw: string) {
+    const value = raw.trim();
+    const picked = value && q.options?.length ? parseAskSelection(q, value) : null;
+    const draft = picked
+      ? { selected: picked, text: '', skipped: false }
+      : {
+          selected: q.multi_select ? (askUserDraft[q.id]?.selected ?? []) : [],
+          text: value,
+          skipped: false,
+        };
+    const nextDraft = { ...askUserDraft, [q.id]: draft };
+    setAskUserDraft(nextDraft);
+    setAskUserFeedback(null);
+    if (askLastStep) submitAskUserAnswers(nextDraft);
+    else goAskStep(askStepIndex + 1);
+  }
+
+  /** 把草稿批成答案；已答的保留，未答的按 skipped 处理 */
+  function buildAskAnswers(drafts: Record<string, AskUserDraft>): AskUserAnswer[] {
+    return (askUserPrompt ?? []).map((q) => {
+      const a = resolveAskAnswer(q, drafts[q.id] ?? { selected: [], text: '' });
+      const answered = Boolean(a.skipped || a.text?.trim() || a.selected?.length);
+      return answered ? a : { id: q.id, selected: [], skipped: true };
+    });
+  }
+
+  function submitAskUserAnswers(
+    drafts: Record<string, AskUserDraft> = askUserDraft,
+    confirmedSkip = false,
+  ): boolean {
+    const questions = askUserPrompt;
+    if (!questions?.length || !askUserWaitRef.current) return false;
+    const answers = buildAskAnswers(drafts);
+    const missing = answers.findIndex((a) => !a.skipped && !a.text?.trim() && !a.selected?.length);
+    if (missing >= 0) {
+      // 跳回第一道没答的题，提示留在卡片里，不弹全局错误条
+      goAskStep(missing);
+      setAskUserFeedback(
+        questions[missing]?.options?.length ? '请先选择选项再提交' : '请先填写回答再提交',
+      );
+      return false;
+    }
+    // 有跳过就先停一下：让用户说明原因，避免模型盲目按默认执行
+    if (!confirmedSkip && answers.some((a) => a.skipped)) {
+      setAskSkipConfirm(true);
+      setAskUserFeedback(null);
+      return false;
+    }
+    const reason = askSkipReason.trim();
+    finishAskUser(questions, answers, reason ? { skipReason: reason } : undefined);
+    return true;
+  }
+
+  /** 跳过当前这题：记一个 skipped 占位后前进；最后一题则进入提交（含跳过会先确认原因） */
+  function skipAskStep() {
+    const questions = askUserPrompt;
+    const q = askStepQuestion;
+    if (!questions?.length || !q) return;
+    const nextDraft = { ...askUserDraft, [q.id]: { selected: [], text: '', skipped: true } };
+    setAskUserDraft(nextDraft);
+    setAskUserFeedback(null);
+    if (askLastStep) submitAskUserAnswers(nextDraft);
+    else goAskStep(askStepIndex + 1);
+  }
+
+  /** 确认跳过：带原因回传，仍然只让模型出方案、不实施 */
+  function confirmSkipSubmit() {
+    submitAskUserAnswers(askUserDraft, true);
+  }
+
+  /** 从跳过确认退回答题：定位到第一道被跳过的题 */
+  function backToAnswering() {
+    setAskSkipConfirm(false);
+    const answers = buildAskAnswers(askUserDraft);
+    const skippedIndex = answers.findIndex((a) => a.skipped);
+    goAskStep(skippedIndex >= 0 ? skippedIndex : 0);
   }
 
   function openSession(id: string) {
@@ -5276,6 +5632,11 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     setCaseGenConfig(s?.caseGen?.active ? s.caseGen : null);
     setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
     setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
+    setPluginDevConfig(s?.pluginDev?.active ? s.pluginDev : null);
+    // 胶囊跟随会话：插件开发会话保持胶囊，其余会话不残留
+    setComposerChip((cur) =>
+      s?.pluginDev?.active ? 'pluginDev' : cur === 'pluginDev' ? null : cur,
+    );
     setSessionTodos(normalizeTodos(s?.todos));
     {
       const g = normalizeGoal(s?.goal);
@@ -5305,6 +5666,10 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       setCaseGenConfig(s?.caseGen?.active ? s.caseGen : null);
       setPromptGenConfig(s?.promptGen?.active ? s.promptGen : null);
       setKnowledgeGenConfig(s?.knowledgeGen?.active ? s.knowledgeGen : null);
+      setPluginDevConfig(s?.pluginDev?.active ? s.pluginDev : null);
+      setComposerChip((cur) =>
+        s?.pluginDev?.active ? 'pluginDev' : cur === 'pluginDev' ? null : cur,
+      );
     }
   }
 
@@ -5547,6 +5912,8 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       ? ''
       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity';
   const accessOpt = ACCESS_OPTIONS.find((o) => o.value === access) ?? ACCESS_OPTIONS[0];
+  /** 插件开发胶囊激活时：会话必须是可写，菜单里的「仅可查看」不再可选 */
+  const pluginDevChipActive = composerChip === 'pluginDev';
   const activeSessions = (store?.sessions ?? []).filter((s) => !s.archived && !s.deleted);
   const archivedSessionsAll = (store?.sessions ?? []).filter((s) => s.archived && !s.deleted);
   const wsItems = workspaceInfo?.items ?? [];
@@ -5648,11 +6015,26 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
     );
   }
 
+  // 提问卡片：一次只渲染一道题，步数与草稿都按当前题取
+  const askStepCount = askUserPrompt?.length ?? 0;
+  const askStepIndex = Math.max(0, Math.min(askUserStep, askStepCount - 1));
+  const askStepQuestion = askUserPrompt?.[askStepIndex];
+  const askStepDraft = (askStepQuestion && askUserDraft[askStepQuestion.id]) || {
+    selected: [],
+    text: '',
+  };
+  const askLastStep = askStepIndex >= askStepCount - 1;
+  const askStepAnswered = askDraftAnswered(askStepQuestion, askStepDraft);
+  /** 跳过确认视图里要列出的题（含题号与题干） */
+  const askSkippedItems = (askUserPrompt ?? [])
+    .map((q, i) => ({ q, index: i }))
+    .filter(({ q }) => askUserDraft[q.id]?.skipped);
+
   return (
-    <div className="tw-app h-full min-h-0 flex overflow-hidden bg-[color:var(--tw-surface-page)]">
+    <div className="tw-app h-full min-h-0 flex overflow-hidden bg-(--tw-surface-page)">
       {/* dsh 风格：工作区树 + 会话挂在文件夹下 */}
       <aside
-        className={`tw-session-rail shrink-0 border-r border-[color:var(--tw-border)] flex flex-col transition-[width] ${
+        className={`tw-session-rail shrink-0 border-r border-(--tw-border) flex flex-col transition-[width] ${
           railOpen ? 'w-64' : 'w-10'
         }`}
       >
@@ -5847,7 +6229,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             e.stopPropagation();
                             newSession(item.path);
                           }}
-                          className="w-6 h-6 flex items-center justify-center rounded text-[color:var(--tw-label-tertiary)] hover:text-[color:var(--tw-label-primary)] hover:bg-[color:var(--tw-session-hover-bg)]"
+                          className="w-6 h-6 flex items-center justify-center rounded text-(--tw-label-tertiary) hover:text-(--tw-label-primary) hover:bg-(--tw-session-hover-bg)"
                         >
                           <Svg className="w-3.5 h-3.5">
                             <path d="M5 12h14" />
@@ -5908,7 +6290,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
               </div>
             )}
             {(toolBusy || toolHint) && (
-              <div className="text-[11px] text-[color:var(--tw-accent)]">
+              <div className="text-[11px] text-(--tw-accent)">
                 {toolHint ?? t('tool.running', undefined, generalPrefs.language)}
               </div>
             )}
@@ -5919,7 +6301,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
       <div className={`min-w-0 flex flex-col flex-1 ${pluginsOpen ? 'hidden' : ''}`}>
         {/* 空会话隐藏标题/Tab；有消息时入场 */}
         {!empty ? (
-          <div className="shrink-0 border-b border-[color:var(--tw-border)] bg-[color:var(--tw-surface-page)]">
+          <div className="shrink-0 border-b border-(--tw-border) bg-(--tw-surface-page)">
             <div className="flex items-center gap-3 px-6 pt-4 pb-2 min-w-0">
               <button
                 type="button"
@@ -5928,7 +6310,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   const id = store?.activeId;
                   if (id) renameSessionTitle(id);
                 }}
-                className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-[color:var(--tw-label-primary)] truncate hover:text-[#4176e6] transition-colors"
+                className="min-w-0 flex-1 text-left text-[18px] leading-7 font-semibold text-(--tw-label-primary) truncate hover:text-[#4176e6] transition-colors"
               >
                 {store?.sessions.find((x) => x.id === store.activeId)?.title || '新对话'}
               </button>
@@ -5976,7 +6358,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     记忆
                     {(memoryHealth?.suggestionCount ?? 0) > 0 ? (
                       <span
-                        className="min-w-[1.125rem] h-[1.125rem] px-1 inline-flex items-center justify-center rounded-full bg-red-500 text-[10px] font-medium text-white tabular-nums leading-none"
+                        className="min-w-4.5 h-4.5 px-1 inline-flex items-center justify-center rounded-full bg-red-500 text-[10px] font-medium text-white tabular-nums leading-none"
                         data-hint={`${memoryHealth?.suggestionCount} 条待确认`}
                       >
                         {memoryHealth!.suggestionCount! > 99
@@ -6072,7 +6454,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         {chatTab === 'memory' && pluginOn.memory ? (
           <div
             key={`memory-${store?.activeId ?? ''}`}
-            className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter"
+            className="flex-1 min-h-0 bg-(--tw-surface-page) tw-pane-enter"
           >
             <MemoryPane
               live={memoryLive}
@@ -6087,7 +6469,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
         ) : chatTab === 'thread' ? (
           <div
             key={`thread-${store?.activeId ?? ''}`}
-            className="flex-1 min-h-0 bg-[color:var(--tw-surface-page)] tw-pane-enter overflow-y-auto px-12 sm:px-16 lg:px-20 py-6"
+            className="flex-1 min-h-0 bg-(--tw-surface-page) tw-pane-enter overflow-y-auto px-12 sm:px-16 lg:px-20 py-6"
           >
             <ThreadOutlinePane
               messages={messages}
@@ -6130,7 +6512,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                   height={64}
                   className="w-16 h-16 rounded-[14px] object-contain"
                 />
-                <h2 className="mt-5 text-[22px] leading-8 font-semibold tracking-tight text-stone-800">
+                <h2 className="mt-5 text-[22px] leading-8 font-semibold tracking-tight text-stone-800 text-balance">
                   {t('chat.emptyTitle', undefined, generalPrefs.language)}
                 </h2>
               </div>
@@ -6190,7 +6572,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   <img
                                     src={img.dataUrl}
                                     alt={img.name}
-                                    className="max-h-40 max-w-[12rem] object-contain"
+                                    className="max-h-40 max-w-48 object-contain"
                                   />
                                 </a>
                               ))}
@@ -6288,7 +6670,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   ) : null}
                                 </button>
                                 {showTimeline && allSteps.length > 0 ? (
-                                  <ul className="mt-1.5 mb-1 pl-[22px] space-y-1.5">
+                                  <ul className="mt-1.5 mb-1 pl-5.5 space-y-1.5">
                                     {allSteps.map((s) => (
                                       <li
                                         key={s.id}
@@ -6338,12 +6720,12 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                   </ul>
                                 ) : null}
                                 {open && m.reasoning ? (
-                                  <div className="mt-1.5 mb-2 pl-[22px] text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
+                                  <div className="mt-1.5 mb-2 pl-5.5 text-[13px] leading-5 text-stone-500 whitespace-pre-wrap max-h-80 overflow-y-auto">
                                     {m.reasoning}
                                   </div>
                                 ) : null}
                                 {m.turnStatus === 'stopped' ? (
-                                  <div className="mt-1.5 pl-[22px]">
+                                  <div className="mt-1.5 pl-5.5">
                                     <span className="tw-turn-stopped-pill">已停止</span>
                                   </div>
                                 ) : null}
@@ -6674,116 +7056,276 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                     </div>
                   </div>
                 ) : null}
-                {askUserPrompt?.length ? (
-                  <div className="mb-2 rounded-xl border border-[#4176e6]/30 bg-[#f5f8ff] px-4 py-3 shadow-sm">
-                    <div className="text-[13px] font-medium text-stone-800 mb-2">
-                      模型需要你的确认
+                {askStepCount > 0 && askStepQuestion ? (
+                  <div className="mb-2 flex max-h-[min(60vh,520px)] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_6px_24px_rgba(15,23,42,0.08)]">
+                    <div
+                      className={`flex shrink-0 justify-between gap-4 px-5 ${
+                        askUserMinimized ? 'items-center py-3.5' : 'items-start pt-4'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="mb-1 text-[11px] leading-4 text-stone-400">
+                          {askSkipConfirm
+                            ? '跳过确认'
+                            : askStepQuestion.header || '模型需要你的确认'}
+                        </div>
+                        <h3 className="text-[15px] leading-5.5 font-medium text-stone-900">
+                          {askSkipConfirm
+                            ? `确认 ${askSkippedItems.length} 道跳过的题怎么处理`
+                            : askStepQuestion.question}
+                        </h3>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {askUserMinimized ? (
+                          <span className="text-[11px] leading-4 text-stone-400">
+                            {askSkipConfirm
+                              ? `已跳过 ${askSkippedItems.length} 题`
+                              : `第 ${askStepIndex + 1} 步 / 共 ${askStepCount} 步`}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          aria-label={askUserMinimized ? '展开问题' : '收起问题'}
+                          onClick={() => setAskUserMinimized((v) => !v)}
+                          className="grid h-6 w-6 place-items-center rounded-full text-stone-400 outline-none hover:bg-stone-100 hover:text-stone-600"
+                        >
+                          <ChevronIcon
+                            className={`h-4 w-4 transition-transform ${askUserMinimized ? 'rotate-180' : ''}`}
+                          />
+                        </button>
+                      </div>
                     </div>
-                    <div className="space-y-3">
-                      {askUserPrompt.map((q) => {
-                        const draft = askUserDraft[q.id] ?? { selected: [], text: '' };
-                        return (
-                          <div
-                            key={q.id}
-                            className="rounded-lg border border-stone-200 bg-white p-3"
+                    {askUserMinimized ? null : askSkipConfirm ? (
+                      <>
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-2">
+                          <p className="text-[12px] leading-5 text-stone-500">
+                            跳过不算确认，本轮不会开始改代码。留下原因后我只出方案，等你回复「开始实施」。
+                          </p>
+                          <ul className="mt-2 space-y-1 rounded-lg bg-stone-50 px-3 py-2">
+                            {askSkippedItems.map(({ q, index }) => (
+                              <li key={q.id} className="text-[12px] leading-5 text-stone-600">
+                                <span className="text-stone-400">{index + 1}.</span>{' '}
+                                {q.header ? `${q.header} / ` : ''}
+                                {q.question}
+                                <span className="ml-1 text-stone-400">— 已跳过</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <textarea
+                            autoFocus
+                            value={askSkipReason}
+                            onChange={(e) => setAskSkipReason(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) {
+                                return;
+                              }
+                              e.preventDefault();
+                              confirmSkipSubmit();
+                            }}
+                            rows={3}
+                            className="mt-2 w-full resize-none rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] leading-5 outline-none focus:border-[#4176e6]"
+                            placeholder="为什么跳过这几题？例如：先只做评估，方案我稍后定 / 这几项按你推荐的来"
+                          />
+                        </div>
+                        <div className="flex shrink-0 items-center justify-between gap-3 px-5 pt-2 pb-3">
+                          <button
+                            type="button"
+                            onClick={() => backToAnswering()}
+                            className="h-8 shrink-0 rounded-lg px-2 text-[12px] text-stone-500 outline-none hover:bg-stone-100 hover:text-stone-700"
                           >
-                            {q.header ? (
-                              <div className="text-[11px] font-medium text-[#4176e6] mb-1">
-                                {q.header}
-                              </div>
-                            ) : null}
-                            <div className="text-[13px] text-stone-800 mb-2">{q.question}</div>
-                            {q.options?.length ? (
-                              <div className="space-y-1.5">
-                                {q.options.map((opt) => {
-                                  const checked = draft.selected.includes(opt.label);
-                                  return (
-                                    <label
-                                      key={opt.label}
-                                      className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 cursor-pointer text-[12px] ${
-                                        checked
-                                          ? 'border-[#4176e6] bg-[#edf3fe]'
-                                          : 'border-stone-200 hover:border-stone-300'
-                                      }`}
-                                    >
-                                      <input
-                                        type={q.multi_select ? 'checkbox' : 'radio'}
-                                        name={`ask-${q.id}`}
-                                        className="mt-0.5"
-                                        checked={checked}
-                                        onChange={() => {
-                                          setAskUserDraft((prev) => {
-                                            const cur = prev[q.id] ?? {
-                                              selected: [],
-                                              text: '',
-                                            };
-                                            let selected: string[];
-                                            if (q.multi_select) {
-                                              selected = checked
-                                                ? cur.selected.filter((x) => x !== opt.label)
-                                                : [...cur.selected, opt.label];
-                                            } else {
-                                              selected = [opt.label];
-                                            }
-                                            return {
-                                              ...prev,
-                                              [q.id]: { ...cur, selected },
-                                            };
-                                          });
-                                        }}
-                                      />
-                                      <span className="min-w-0">
-                                        <span className="block text-stone-800">{opt.label}</span>
-                                        {opt.description ? (
-                                          <span className="block text-stone-400 mt-0.5">
-                                            {opt.description}
+                            返回继续回答
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => confirmSkipSubmit()}
+                            className="h-8 shrink-0 rounded-lg bg-[#4176e6] px-3.5 text-[12px] font-medium text-white hover:bg-[#3467d4]"
+                          >
+                            提交并继续
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-1">
+                          {askStepQuestion.options?.length ? (
+                            <div
+                              className="mt-2 flex flex-col gap-0.5"
+                              role={askStepQuestion.multi_select ? 'group' : 'radiogroup'}
+                            >
+                              {askStepQuestion.options.map((opt, i) => {
+                                const checked = askStepDraft.selected.includes(opt.label);
+                                const display = parseRecommendedLabel(opt.label);
+                                return (
+                                  <button
+                                    key={`${opt.label}-${i}`}
+                                    type="button"
+                                    role={askStepQuestion.multi_select ? 'checkbox' : 'radio'}
+                                    aria-checked={checked}
+                                    onClick={() =>
+                                      chooseAskOption(askStepQuestion, opt.label, checked)
+                                    }
+                                    className={`flex w-full shrink-0 items-start gap-2 rounded-lg border px-2 py-2 text-left outline-none transition-colors ${
+                                      checked
+                                        ? 'border-[#4176e6]/40 bg-[#f2f7ff]'
+                                        : 'border-transparent hover:bg-stone-50'
+                                    }`}
+                                  >
+                                    {askStepQuestion.multi_select ? (
+                                      <span
+                                        aria-hidden="true"
+                                        className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border ${
+                                          checked
+                                            ? 'border-[#4176e6] bg-[#4176e6] text-white'
+                                            : 'border-stone-300 text-transparent'
+                                        }`}
+                                      >
+                                        <CheckIcon className="h-3 w-3" />
+                                      </span>
+                                    ) : (
+                                      <span
+                                        aria-hidden="true"
+                                        className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[11px] font-medium ${
+                                          checked
+                                            ? 'bg-[#4176e6] text-white'
+                                            : 'bg-stone-100 text-stone-500'
+                                        }`}
+                                      >
+                                        {i + 1}
+                                      </span>
+                                    )}
+                                    <span className="min-w-0 flex-1">
+                                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                        <span className="text-[13px] leading-5 font-medium text-stone-800">
+                                          {display.label}
+                                        </span>
+                                        {display.recommended ? (
+                                          <span className="rounded bg-[#edf3fe] px-1 text-[10px] leading-4 font-semibold text-[#4176e6]">
+                                            推荐
                                           </span>
                                         ) : null}
                                       </span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            ) : (
+                                      {opt.description ? (
+                                        <span className="mt-0.5 block text-[12px] leading-4.5 text-stone-400">
+                                          {opt.description}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="px-1.5 py-2">
                               <textarea
-                                value={draft.text}
-                                onChange={(e) =>
-                                  setAskUserDraft((prev) => ({
-                                    ...prev,
-                                    [q.id]: {
-                                      selected: [],
-                                      text: e.target.value,
-                                    },
-                                  }))
-                                }
+                                autoFocus
+                                value={askStepDraft.text}
+                                onChange={(e) => updateAskText(askStepQuestion, e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (
+                                    e.key !== 'Enter' ||
+                                    e.shiftKey ||
+                                    e.nativeEvent.isComposing
+                                  ) {
+                                    return;
+                                  }
+                                  e.preventDefault();
+                                  applyAskTextChoice(askStepQuestion, askStepDraft.text);
+                                }}
                                 rows={2}
-                                className="w-full rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] outline-none focus:border-[#4176e6]"
+                                className="w-full resize-none rounded-lg border border-stone-200 px-2.5 py-2 text-[13px] leading-5 outline-none focus:border-[#4176e6]"
                                 placeholder="输入你的回答…"
                               />
-                            )}
+                            </div>
+                          )}
+                          {askStepQuestion.options?.length ? (
+                            <div className="mt-1 px-1.5 pb-1">
+                              <div className="flex items-start gap-2 rounded-lg border border-stone-200 px-2 py-1.5 focus-within:border-[#4176e6]">
+                                <span
+                                  aria-hidden="true"
+                                  className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded bg-stone-100 text-[10px] font-medium text-stone-500"
+                                >
+                                  #
+                                </span>
+                                <textarea
+                                  value={askStepDraft.text}
+                                  onChange={(e) => updateAskText(askStepQuestion, e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (
+                                      e.key !== 'Enter' ||
+                                      e.shiftKey ||
+                                      e.nativeEvent.isComposing
+                                    ) {
+                                      return;
+                                    }
+                                    e.preventDefault();
+                                    applyAskTextChoice(askStepQuestion, askStepDraft.text);
+                                  }}
+                                  rows={1}
+                                  className="min-h-5 w-full resize-none bg-transparent text-[13px] leading-5 outline-none"
+                                  placeholder={`输入序号选择（如 1${
+                                    askStepQuestion.multi_select ? ' 或 1,3' : ''
+                                  }），也可直接写你的回答`}
+                                />
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="px-2 pb-2 pt-1 text-[11px] leading-4 text-stone-400">
+                            {askStepQuestion.options?.length
+                              ? '回车确认这一步；跳过的题会在提交前让你说明原因，不会直接开始实施'
+                              : '回车确认；跳过的题会在提交前让你说明原因，不会直接开始实施'}
                           </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          abortSessionRun(storeRef.current?.activeId);
-                          settleAskUserCanceled();
-                        }}
-                        className="h-8 px-3 rounded-lg text-[12px] text-stone-600 hover:bg-stone-100"
-                      >
-                        取消
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => submitAskUserAnswers()}
-                        className="h-8 px-3 rounded-lg text-[12px] font-medium text-white bg-[#4176e6] hover:bg-[#3566d4]"
-                      >
-                        提交回答
-                      </button>
-                    </div>
+                        </div>
+                        <div className="flex shrink-0 items-center justify-between gap-3 px-5 pt-2 pb-3">
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              aria-label="上一步"
+                              disabled={askStepIndex === 0}
+                              onClick={() => goAskStep(askStepIndex - 1)}
+                              className="grid h-6 w-6 place-items-center rounded-full text-stone-400 outline-none hover:bg-stone-100 hover:text-stone-600 disabled:cursor-default disabled:text-stone-200 disabled:hover:bg-transparent"
+                            >
+                              <ChevronRightIcon className="h-4 w-4 rotate-180" />
+                            </button>
+                            <span className="px-1 text-[12px] font-medium text-stone-500">
+                              第 {askStepIndex + 1} 步 / 共 {askStepCount} 步
+                            </span>
+                            <button
+                              type="button"
+                              aria-label="下一步"
+                              disabled={askLastStep}
+                              onClick={() => goAskStep(askStepIndex + 1)}
+                              className="grid h-6 w-6 place-items-center rounded-full text-stone-400 outline-none hover:bg-stone-100 hover:text-stone-600 disabled:cursor-default disabled:text-stone-200 disabled:hover:bg-transparent"
+                            >
+                              <ChevronRightIcon className="h-4 w-4" />
+                            </button>
+                          </div>
+                          <div className="flex min-w-0 items-center gap-2">
+                            {askUserFeedback ? (
+                              <span className="truncate text-[11px] text-rose-500">
+                                {askUserFeedback}
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => skipAskStep()}
+                              className="h-8 shrink-0 rounded-lg px-2 text-[12px] text-stone-500 outline-none hover:bg-stone-100 hover:text-stone-700"
+                            >
+                              跳过
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!askStepAnswered}
+                              onClick={() =>
+                                askLastStep ? submitAskUserAnswers() : goAskStep(askStepIndex + 1)
+                              }
+                              className="h-8 shrink-0 rounded-lg bg-[#4176e6] px-3.5 text-[12px] font-medium text-white hover:bg-[#3467d4] disabled:cursor-not-allowed disabled:bg-stone-300"
+                            >
+                              {askLastStep ? '提交回答' : '下一步'}
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ) : null}
                 <div
@@ -6971,81 +7513,77 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             </span>
                           </button>
 
-                          <div className="my-1 border-t border-stone-100" />
-                          <button
-                            type="button"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => setAddPluginsExpanded((v) => !v)}
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-50"
-                          >
-                            <span className="flex-1 text-[11px] font-medium text-stone-400 tracking-wide">
-                              扩展插件
-                            </span>
-                            <ChevronIcon
-                              className={`w-3.5 h-3.5 text-stone-400 shrink-0 transition-transform ${
-                                addPluginsExpanded ? 'rotate-180' : ''
-                              }`}
-                            />
-                          </button>
-                          {addPluginsExpanded
-                            ? pluginMenuItems.map((p) => {
-                                const on = Boolean(pluginOn[p.id]);
-                                const en =
-                                  p.id === 'caseGen'
-                                    ? 'case'
-                                    : p.id === 'promptGen'
-                                      ? 'prompt'
-                                      : p.id === 'knowledgeGen'
-                                        ? 'knowledge'
-                                        : '';
-                                const tip =
-                                  p.id === 'caseGen'
-                                    ? '打开配置后生成用例并写入用例库'
-                                    : p.id === 'promptGen'
-                                      ? '对话生成提示词并写入提示词库'
-                                      : p.id === 'knowledgeGen'
-                                        ? '对话生成规范/方法论并写入知识库'
-                                        : '';
-                                return (
-                                  <button
-                                    key={p.id}
-                                    type="button"
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    onClick={() => {
-                                      if (!on) {
-                                        setError(pluginDisabledMessage(p.id));
-                                        return;
-                                      }
-                                      setAddMenuOpen(false);
-                                      pickPluginMenu(p.id);
-                                    }}
-                                    className={`tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100 ${
-                                      on ? '' : 'opacity-55'
-                                    }`}
-                                  >
-                                    <PluginIcon className="w-4 h-4 shrink-0 text-stone-500" />
-                                    <span className="min-w-0 flex-1 text-[13px] text-stone-800">
-                                      {p.name}
-                                      {en ? (
-                                        <span className="ml-1.5 text-stone-400 font-normal">
-                                          {en}
+                          {pluginMenuItems.length ? (
+                            <>
+                              <div className="my-1 border-t border-stone-100" />
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => setAddPluginsExpanded((v) => !v)}
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-50"
+                              >
+                                <span className="flex-1 text-[11px] font-medium text-stone-400 tracking-wide">
+                                  扩展插件
+                                </span>
+                                <ChevronIcon
+                                  className={`w-3.5 h-3.5 text-stone-400 shrink-0 transition-transform ${
+                                    addPluginsExpanded ? 'rotate-180' : ''
+                                  }`}
+                                />
+                              </button>
+                              {addPluginsExpanded
+                                ? pluginMenuItems.map((p) => {
+                                    const en =
+                                      p.id === 'caseGen'
+                                        ? 'case'
+                                        : p.id === 'promptGen'
+                                          ? 'prompt'
+                                          : p.id === 'knowledgeGen'
+                                            ? 'knowledge'
+                                            : p.id === 'pluginDev'
+                                              ? 'dev'
+                                              : '';
+                                    const tip =
+                                      p.id === 'caseGen'
+                                        ? '打开配置后生成用例并写入用例库'
+                                        : p.id === 'promptGen'
+                                          ? '对话生成提示词并写入提示词库'
+                                          : p.id === 'knowledgeGen'
+                                            ? '对话生成规范/方法论并写入知识库'
+                                            : p.id === 'pluginDev'
+                                              ? '输入需求后先评估确认，再开发扩展插件'
+                                              : '';
+                                    return (
+                                      <button
+                                        key={p.id}
+                                        type="button"
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => {
+                                          setAddMenuOpen(false);
+                                          pickPluginMenu(p.id);
+                                        }}
+                                        className="tw-composer-menu-item w-full flex items-center gap-2.5 px-3 py-2 text-left rounded-lg hover:bg-stone-100"
+                                      >
+                                        <PluginIcon className="w-4 h-4 shrink-0 text-stone-500" />
+                                        <span className="min-w-0 flex-1 text-[13px] text-stone-800">
+                                          {p.name}
+                                          {en ? (
+                                            <span className="ml-1.5 text-stone-400 font-normal">
+                                              {en}
+                                            </span>
+                                          ) : null}
                                         </span>
-                                      ) : null}
-                                      {!on ? (
-                                        <span className="ml-1.5 text-[10px] text-amber-700 font-normal">
-                                          未启用
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                    {tip ? (
-                                      <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
-                                        {tip}
-                                      </span>
-                                    ) : null}
-                                  </button>
-                                );
-                              })
-                            : null}
+                                        {tip ? (
+                                          <span className="shrink-0 max-w-[45%] text-right text-[11px] text-stone-400 truncate">
+                                            {tip}
+                                          </span>
+                                        ) : null}
+                                      </button>
+                                    );
+                                  })
+                                : null}
+                            </>
+                          ) : null}
 
                           <div className="my-1 border-t border-stone-100" />
                           <div className="px-3 pt-1 pb-1.5 text-[11px] font-medium text-stone-400 tracking-wide">
@@ -7109,36 +7647,28 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         className="tw-composer-menu tw-popover-anim absolute bottom-full left-0 right-0 mb-2 mx-2 z-40 max-h-64 overflow-y-auto rounded-xl border border-stone-200 shadow-xl p-1"
                       >
                         <div className="px-3 py-1.5 text-[11px] text-stone-400">插件</div>
-                        {pluginMenuItems.map((p, i) => {
-                          const on = Boolean(pluginOn[p.id]);
-                          return (
-                            <button
-                              key={p.id}
-                              type="button"
-                              data-plugin-index={i}
-                              onMouseDown={(e) => e.preventDefault()}
-                              onMouseEnter={() => setPluginIndex(i)}
-                              onClick={() => pickPluginMenu(p.id)}
-                              className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
-                                i === pluginIndex ? 'is-active' : ''
-                              } ${on ? '' : 'opacity-60'}`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <div className="text-[13px] font-medium text-stone-800 flex-1">
-                                  {p.name}
-                                </div>
-                                {!on ? (
-                                  <span className="text-[10px] text-amber-700 shrink-0">
-                                    未启用
-                                  </span>
-                                ) : null}
+                        {pluginMenuItems.map((p, i) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            data-plugin-index={i}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onMouseEnter={() => setPluginIndex(i)}
+                            onClick={() => pickPluginMenu(p.id)}
+                            className={`tw-composer-menu-item w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                              i === pluginIndex ? 'is-active' : ''
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="text-[13px] font-medium text-stone-800 flex-1">
+                                {p.name}
                               </div>
-                              <div className="mt-0.5 text-xs text-stone-400 line-clamp-2">
-                                {p.description}
-                              </div>
-                            </button>
-                          );
-                        })}
+                            </div>
+                            <div className="mt-0.5 text-xs text-stone-400 line-clamp-2">
+                              {p.description}
+                            </div>
+                          </button>
+                        ))}
                       </div>
                     )}
                     {atOpen && (
@@ -7148,16 +7678,18 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       >
                         {atFlatItems.length === 0 ? (
                           <div className="px-3 py-2 text-xs text-stone-400 space-y-1">
-                            {!knowledgeOn ? (
-                              <p>项目文档：请先启用「知识库检索」插件</p>
-                            ) : (
-                              <p>项目文档：无匹配</p>
-                            )}
-                            {!hasWorkspace ? (
-                              <p>工作区：请先在侧栏添加并选择工作区</p>
-                            ) : (
+                            {knowledgeOn ? <p>项目文档：无匹配</p> : null}
+                            {hasWorkspace ? (
                               <p>工作区：无匹配</p>
+                            ) : (
+                              <p>工作区：请先在侧栏添加并选择工作区</p>
                             )}
+                            {!knowledgeOn ? (
+                              <p>
+                                「知识库检索」未启用：启用后才能用 @ 引用
+                                {docRootLabel('knowledge')} / {docRootLabel('templates')}文档
+                              </p>
+                            ) : null}
                           </div>
                         ) : (
                           <>
@@ -7222,6 +7754,17 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                                 </div>
                               );
                             })}
+                            {!knowledgeOn ? (
+                              <>
+                                <div
+                                  className="my-1 mx-2 border-t border-stone-200"
+                                  role="separator"
+                                />
+                                <p className="px-3 py-1.5 text-[11px] text-stone-400">
+                                  「知识库检索」未启用：@ 仅引用工作区文件
+                                </p>
+                              </>
+                            ) : null}
                           </>
                         )}
                       </div>
@@ -7237,7 +7780,6 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           <span>目标</span>
                           <button
                             type="button"
-                            data-hint="取消目标输入"
                             aria-label="取消目标输入"
                             onClick={() => setComposerChip(null)}
                           >
@@ -7266,8 +7808,28 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                           <span>计划</span>
                           <button
                             type="button"
-                            data-hint="退出计划模式"
                             aria-label="退出计划模式"
+                            onClick={() => dismissComposerChip()}
+                          >
+                            <Svg className="w-3 h-3">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Svg>
+                          </button>
+                        </span>
+                      ) : null}
+                      {composerChip === 'pluginDev' ? (
+                        <span className="tw-composer-mode-chip is-plugin-dev">
+                          <Svg className="w-3.5 h-3.5 shrink-0">
+                            <path d="M9 7V3" />
+                            <path d="M15 7V3" />
+                            <path d="M6 7h12v4a6 6 0 0 1-12 0V7Z" />
+                            <path d="M12 17v4" />
+                          </Svg>
+                          <span>插件开发</span>
+                          <button
+                            type="button"
+                            aria-label="退出插件开发"
                             onClick={() => dismissComposerChip()}
                           >
                             <Svg className="w-3 h-3">
@@ -7388,9 +7950,13 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                             ? '请先配置模型（左下角「设置」→ 模型）'
                             : sendQueue.length > 0 && streaming
                               ? 'Cmd/Ctrl+Enter 插话发送全部排队消息'
-                              : '请输入内容，或用 @ 引用文档'
+                              : !knowledgeOn
+                                ? hasWorkspace
+                                  ? '请输入内容，或用 @ 引用工作区文件'
+                                  : '请输入内容（@ 引用文档需先启用「知识库检索」）'
+                                : '请输入内容，或用 @ 引用文档'
                         }
-                        className="tw-chat-input block min-w-0 flex-1 min-h-[52px] pl-0 pr-2 pt-1.5 pb-0.5 bg-transparent resize-none focus:outline-none placeholder:text-[color:var(--tw-label-tertiary)]"
+                        className="tw-chat-input block min-w-0 flex-1 min-h-13 pl-0 pr-2 pt-1.5 pb-0.5 bg-transparent resize-none focus:outline-none placeholder:text-(--tw-label-tertiary)"
                       />
                     </div>
                   </div>
@@ -7414,7 +7980,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         setPluginMenuDismissed(true);
                       }}
                       className={`tw-icon-btn w-8 h-8 shrink-0 rounded-full flex items-center justify-center outline-none focus:outline-none focus-visible:outline-none transition-colors ${
-                        addMenuOpen ? 'bg-[color:var(--tw-session-hover-bg)]' : ''
+                        addMenuOpen ? 'bg-(--tw-session-hover-bg)' : ''
                       }`}
                     >
                       <Svg className="w-4 h-4">
@@ -7492,7 +8058,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       <MenuButton
                         title={`访问权限：${accessOpt.label}`}
                         aria-label={`访问权限：${accessOpt.label}`}
-                        className="tw-composer-bar-access group flex items-center gap-1 h-7 shrink-0 max-w-[220px] pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
+                        className="tw-composer-bar-access group flex items-center gap-1 h-7 shrink-0 max-w-55 pl-2 pr-1 text-[13px] leading-5 font-medium text-stone-600 rounded-md outline-none focus:outline-none focus-visible:outline-none hover:bg-stone-100 data-[open]:bg-stone-100 transition-colors"
                       >
                         <ShieldIcon
                           level={access}
@@ -7515,36 +8081,53 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                         <div className="px-3 py-1.5 text-[11px] text-stone-400">
                           {fsLive ? '本地文件服务已连接' : '本地文件服务未就绪'}
                         </div>
-                        {ACCESS_OPTIONS.map((o) => (
-                          <MenuItem key={o.value}>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                // 只改当前会话：设置页的「权限」是新会话默认值，不参与已有会话
-                                setAccess(o.value);
-                                if (storeRef.current) {
-                                  commitStore(
-                                    updateActiveSessionMeta(storeRef.current, { access: o.value }),
-                                  );
-                                }
-                              }}
-                              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-[13px] data-[focus]:bg-stone-100"
-                            >
-                              <ShieldIcon
-                                level={o.value}
-                                className="w-4 h-4 text-stone-500 shrink-0"
-                              />
-                              <span
-                                className={`flex-1 ${access === o.value ? 'text-stone-900 font-medium' : 'text-stone-700'}`}
+                        {ACCESS_OPTIONS.map((o) => {
+                          // 插件开发要改项目源码：胶囊激活期间不允许降到「仅可查看」
+                          const locked = pluginDevChipActive && o.value === 'readonly';
+                          return (
+                            <MenuItem key={o.value} disabled={locked}>
+                              <button
+                                type="button"
+                                disabled={locked}
+                                onClick={() => {
+                                  // 只改当前会话：设置页的「权限」是新会话默认值，不参与已有会话
+                                  setAccess(o.value);
+                                  if (storeRef.current) {
+                                    commitStore(
+                                      updateActiveSessionMeta(storeRef.current, {
+                                        access: o.value,
+                                      }),
+                                    );
+                                  }
+                                }}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-[13px] data-[focus]:bg-stone-100 disabled:cursor-not-allowed"
                               >
-                                {o.label}
-                              </span>
-                              {access === o.value && (
-                                <CheckIcon className="w-3.5 h-3.5 text-[#4176e6]" />
-                              )}
-                            </button>
-                          </MenuItem>
-                        ))}
+                                <ShieldIcon
+                                  level={o.value}
+                                  className={`w-4 h-4 shrink-0 ${locked ? 'text-stone-300' : 'text-stone-500'}`}
+                                />
+                                <span
+                                  className={`flex-1 ${
+                                    locked
+                                      ? 'text-stone-400'
+                                      : access === o.value
+                                        ? 'text-stone-900 font-medium'
+                                        : 'text-stone-700'
+                                  }`}
+                                >
+                                  {o.label}
+                                </span>
+                                {locked ? (
+                                  <span className="text-[11px] text-stone-400">
+                                    插件开发需要写入
+                                  </span>
+                                ) : access === o.value ? (
+                                  <CheckIcon className="w-3.5 h-3.5 text-[#4176e6]" />
+                                ) : null}
+                              </button>
+                            </MenuItem>
+                          );
+                        })}
                       </MenuItems>
                     </Menu>
 
@@ -7571,7 +8154,7 @@ export default function ChatApp({ slashDocs = [] }: { slashDocs?: SlashDoc[] }) 
                       }`}
                     >
                       {streaming ? (
-                        <span className="w-2.5 h-2.5 bg-current rounded-[2px]" />
+                        <span className="w-2.5 h-2.5 bg-current rounded-xs" />
                       ) : (
                         <SendIcon className="w-4 h-4" />
                       )}

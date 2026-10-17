@@ -46,10 +46,12 @@ export function exportableMessage(m: unknown): Record<string, unknown> {
   return out;
 }
 
+export const SESSION_EXPORT_FORMAT = 'lantern-harness-session-v1';
+
 export function buildSessionExportObject(session: ChatSession) {
   return {
     exportedAt: new Date().toISOString(),
-    format: 'ai-testbench-session-v1',
+    format: SESSION_EXPORT_FORMAT,
     session: {
       id: session.id,
       title: session.title,

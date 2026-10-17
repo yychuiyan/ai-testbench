@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 
-const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../cli/tbench.mjs');
+const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../cli/lantern.mjs');
 
 /** ACP over stdio 的 JSON-RPC 回包（只声明本测试断言用到的字段） */
 interface RpcReply {
@@ -92,7 +92,7 @@ describe('acp-server cli', () => {
         method: 'initialize',
       });
       assert.equal(init.result?.protocolVersion, 1);
-      assert.equal(init.result?.serverInfo?.name, 'ai-testbench-acp');
+      assert.equal(init.result?.serverInfo?.name, 'lantern-harness-acp');
       assert.equal(init.result?.capabilities?.tools, true);
 
       const created = await rpcLine(child, {

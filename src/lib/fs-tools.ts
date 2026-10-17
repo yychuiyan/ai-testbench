@@ -22,7 +22,10 @@ export interface WorkspaceItem {
 
 export interface WorkspaceInfo {
   workspace: string;
+  /** 空间目录（数据根）——注意不是仓库根 */
   projectRoot: string;
+  /** 本机 harness 源码根（仓库根 / 安装包根）；插件开发会切到这里 */
+  harnessRoot?: string;
   isProject: boolean;
   items: WorkspaceItem[];
 }
@@ -324,6 +327,7 @@ export async function fetchWorkspace(): Promise<WorkspaceInfo | null> {
     const data = (await res.json()) as WorkspaceInfo;
     return {
       ...data,
+      harnessRoot: typeof data.harnessRoot === 'string' ? data.harnessRoot : undefined,
       items: Array.isArray(data.items) ? data.items : [],
     };
   } catch {
@@ -594,7 +598,16 @@ export async function listWorkspaceFlat(
   const maxDepth = opts?.maxDepth ?? 3;
   const maxEntries = opts?.maxEntries ?? 80;
   const out: WorkspaceFlatEntry[] = [];
-  const skip = new Set(['node_modules', '.git', 'dist', '.tb', '.local', '.astro', '.DS_Store']);
+  const skip = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    '.lantern',
+    '.tb',
+    '.local',
+    '.astro',
+    '.DS_Store',
+  ]);
 
   async function walk(rel: string, depth: number) {
     if (out.length >= maxEntries || depth > maxDepth) return;

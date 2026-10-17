@@ -1,6 +1,7 @@
 /**
  * 模型 / 通用 / 权限设置。
- * 本地 dev：落盘 `.tb/local/app.config.json`；静态站回退 localStorage。
+ * 模型全局落盘 `~/.config/lantern-harness/models.json`；其余按空间写 `.lantern/local/app.config.json`。
+ * 静态站回退 localStorage（模型键不跟空间走）。
  */
 import {
   flushAppConfig,

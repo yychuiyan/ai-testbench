@@ -3,16 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { listStorageDomains } from '../../tb-plugins/storage-domain.mjs';
+import { listStorageDomains } from '../../lh-plugins/storage-domain.mjs';
 
 describe('storage-domain', () => {
   let tmp = '';
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-storage-dom-'));
-    fs.mkdirSync(path.join(tmp, '.tb', 'local'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, '.tb', 'local', 'sessions.json'), '{"sessions":[]}\n');
-    fs.mkdirSync(path.join(tmp, '.tb', 'local', 'spill'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.lantern', 'local'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.lantern', 'local', 'sessions.json'), '{"sessions":[]}\n');
+    fs.mkdirSync(path.join(tmp, '.lantern', 'local', 'spill'), { recursive: true });
   });
 
   after(() => {

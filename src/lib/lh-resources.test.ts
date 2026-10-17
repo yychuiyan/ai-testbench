@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import connect from 'connect';
 import { after, before, describe, it } from 'node:test';
-import { tbResourcesPlugin } from '../../tb-plugins/tb-resources.mjs';
-import { DOC_ROOT_DIRS } from '../../tb-plugins/tb-project-docs.mjs';
+import { lhResourcesPlugin } from '../../lh-plugins/lh-resources.mjs';
+import { DOC_ROOT_DIRS } from '../../lh-plugins/lh-project-docs.mjs';
+import { __resetSpaceContext, setActiveRoot } from '../../builtin/session/space-context.mjs';
 
 /** 用例库在磁盘上的真实目录名（现为中文），与实现同源取值，避免硬编码再次漂移 */
 const CASES_DIR = DOC_ROOT_DIRS.cases.dirName;
 
-describe('tb-resources', () => {
+describe('lh-resources', () => {
   let tmp = '';
   let server: http.Server | null = null;
   let base = '';
@@ -20,8 +21,11 @@ describe('tb-resources', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-res-'));
     fs.mkdirSync(path.join(tmp, '.local'), { recursive: true });
     fs.mkdirSync(path.join(tmp, CASES_DIR), { recursive: true });
+    // 插件改为每个请求惰性读 getDataRoot()；测试里把当前数据根指到临时目录
+    __resetSpaceContext();
+    setActiveRoot(tmp);
     const app = connect();
-    const plugin = tbResourcesPlugin();
+    const plugin = lhResourcesPlugin();
     // Vite 的 configureServer 是 ObjectHook 联合类型（函数或 { handler }）；该插件用的是
     // 函数形式，这里按函数收窄后直接调用 hook，传入最小可用的 dev server 替身。
     const configureServer = plugin.configureServer as unknown as (server: {
@@ -43,6 +47,7 @@ describe('tb-resources', () => {
 
   after(async () => {
     await new Promise((resolve) => server?.close(() => resolve(undefined)));
+    __resetSpaceContext();
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
     } catch {

@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   FS_GLOB_MAX,
@@ -139,11 +140,28 @@ function isAncestorPath(maybeAncestor, dir) {
   return d !== a && d.startsWith(a + path.sep);
 }
 
+/**
+ * 本机装的是哪份 harness（仓库根 / 安装包根）。
+ *
+ * 插件开发要改的就是这里的源码，但它通常是空间目录的上级，被 `isAncestorPath` 一刀切禁掉，
+ * 导致「工作区内修改」根本写不到 `src/`、`lh-plugins/`。这里单独放行包根，其它上级目录仍禁止。
+ */
+const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function isHarnessRoot(abs) {
+  const a = path.resolve(String(abs ?? ''));
+  if (a !== HARNESS_ROOT) return false;
+  // 只认真正的包根：缺 package.json 时（裁剪过的安装目录）不当工作区
+  return fs.existsSync(path.join(a, 'package.json'));
+}
+
 function ensureWorkspaceRegistry(projectRoot) {
   const rootAbs = path.resolve(projectRoot);
   const fp = workspaceFile(projectRoot);
   let items = [];
   let active = rootAbs;
+  /** 活动目录临时借用 harness 包根（插件开发）：不进 items，侧栏也就不会多出一条工作区 */
+  let activeHarness = false;
 
   try {
     if (fs.existsSync(fp)) {
@@ -161,6 +179,7 @@ function ensureWorkspaceRegistry(projectRoot) {
               it.id && it.path && fs.existsSync(it.path) && fs.statSync(it.path).isDirectory(),
           );
       }
+      if (raw.activeHarness === true) activeHarness = true;
       if (raw.active) active = path.resolve(String(raw.active));
     } else if (fs.existsSync(legacyWorkspaceFile(projectRoot))) {
       const legacy = JSON.parse(fs.readFileSync(legacyWorkspaceFile(projectRoot), 'utf8'));
@@ -182,6 +201,14 @@ function ensureWorkspaceRegistry(projectRoot) {
   }
 
   let dirty = false;
+  // 包根只在插件开发期间临时当工作区，永远不写进列表：
+  // 以前 select 一次仓库根，侧栏就多出一条「ai-testbench」工作区
+  const withoutHarness = items.filter((it) => !isHarnessRoot(it.path));
+  if (withoutHarness.length !== items.length) {
+    items = withoutHarness;
+    dirty = true;
+  }
+  // 其它上级目录（空间池、仓库上一级）继续剔除
   const kept = items.filter((it) => it.path === rootAbs || !isAncestorPath(it.path, rootAbs));
   if (kept.length !== items.length) {
     items = kept;
@@ -208,11 +235,18 @@ function ensureWorkspaceRegistry(projectRoot) {
     });
     dirty = true;
   }
-  if (!items.some((it) => it.path === active)) {
+  if (activeHarness && !isHarnessRoot(HARNESS_ROOT)) {
+    // 包根不可用（安装目录被裁剪）时退回空间目录，别把 active 指到一个不存在的路径
+    activeHarness = false;
+    dirty = true;
+  }
+  if (activeHarness) {
+    active = HARNESS_ROOT;
+  } else if (!items.some((it) => it.path === active)) {
     active = rootAbs;
     dirty = true;
   }
-  const reg = { active, items, projectRoot: rootAbs };
+  const reg = { active, items, projectRoot: rootAbs, activeHarness };
   if (dirty && fs.existsSync(fp)) saveWorkspaceRegistry(projectRoot, reg);
   return reg;
 }
@@ -225,6 +259,8 @@ function saveWorkspaceRegistry(projectRoot, reg) {
     JSON.stringify(
       {
         active: reg.active,
+        // 只有「临时借用包根」时才为 true；写在清单里，重启后仍能还原
+        activeHarness: reg.activeHarness === true,
         items: reg.items,
         updatedAt: Date.now(),
       },
@@ -711,9 +747,9 @@ async function runFsGrep(workspaceRoot, searchRootAbs, pattern, include) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbFsPlugin() {
+export function lhFsPlugin() {
   return {
-    name: 'tb-fs',
+    name: 'lh-fs',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
@@ -730,6 +766,7 @@ export function tbFsPlugin() {
               ok: true,
               mode: 'workspace',
               projectRoot,
+              harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
               workspace,
               home: os.homedir(),
               maxReadBytes: MAX_READ,
@@ -780,6 +817,8 @@ export function tbFsPlugin() {
             return sendJson(res, 200, {
               workspace: reg.active,
               projectRoot: reg.projectRoot,
+              harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
+              activeHarness: reg.activeHarness === true,
               isProject: reg.active === reg.projectRoot,
               items: reg.items,
             });
@@ -811,11 +850,14 @@ export function tbFsPlugin() {
               let raw = String(body.path ?? '').trim();
               if (!raw && action === 'select') {
                 reg.active = reg.projectRoot;
+                reg.activeHarness = false;
                 saveWorkspaceRegistry(projectRoot, reg);
                 return sendJson(res, 200, {
                   ok: true,
                   workspace: reg.active,
                   projectRoot: reg.projectRoot,
+                  harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
+                  activeHarness: false,
                   isProject: true,
                   items: reg.items,
                 });
@@ -828,10 +870,25 @@ export function tbFsPlugin() {
               if (isSystemSensitive(abs)) {
                 return sendJson(res, 403, { error: '禁止将该目录设为工作区' });
               }
-              if (isAncestorPath(abs, projectRoot)) {
+              if (isAncestorPath(abs, projectRoot) && !isHarnessRoot(abs)) {
                 return sendJson(res, 400, { error: '不能把当前空间的上级目录设为工作区' });
               }
               let item = reg.items.find((it) => it.path === abs);
+              if (isHarnessRoot(abs)) {
+                // 插件开发：只临时占用包根当工作区，不往侧栏列表里加条目
+                reg.active = abs;
+                reg.activeHarness = true;
+                saveWorkspaceRegistry(projectRoot, reg);
+                return sendJson(res, 200, {
+                  ok: true,
+                  workspace: reg.active,
+                  projectRoot: reg.projectRoot,
+                  harnessRoot: HARNESS_ROOT,
+                  activeHarness: true,
+                  isProject: false,
+                  items: reg.items,
+                });
+              }
               if (!item) {
                 item = {
                   id: newWorkspaceId(),
@@ -842,11 +899,14 @@ export function tbFsPlugin() {
                 reg.items.push(item);
               }
               if (action === 'select' || action === 'add') reg.active = abs;
+              reg.activeHarness = false;
               saveWorkspaceRegistry(projectRoot, reg);
               return sendJson(res, 200, {
                 ok: true,
                 workspace: reg.active,
                 projectRoot: reg.projectRoot,
+                harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
+                activeHarness: false,
                 isProject: reg.active === reg.projectRoot,
                 items: reg.items,
               });
@@ -860,12 +920,17 @@ export function tbFsPlugin() {
                 return sendJson(res, 400, { error: '不能移除项目根工作区' });
               }
               reg.items = reg.items.filter((it) => it.id !== target.id);
-              if (reg.active === target.path) reg.active = reg.projectRoot;
+              if (reg.active === target.path) {
+                reg.active = reg.projectRoot;
+                reg.activeHarness = false;
+              }
               saveWorkspaceRegistry(projectRoot, reg);
               return sendJson(res, 200, {
                 ok: true,
                 workspace: reg.active,
                 projectRoot: reg.projectRoot,
+                harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
+                activeHarness: reg.activeHarness === true,
                 isProject: reg.active === reg.projectRoot,
                 items: reg.items,
               });
@@ -883,6 +948,8 @@ export function tbFsPlugin() {
                 ok: true,
                 workspace: reg.active,
                 projectRoot: reg.projectRoot,
+                harnessRoot: isHarnessRoot(HARNESS_ROOT) ? HARNESS_ROOT : '',
+                activeHarness: reg.activeHarness === true,
                 isProject: reg.active === reg.projectRoot,
                 items: reg.items,
               });

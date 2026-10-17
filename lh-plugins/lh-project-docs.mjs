@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
+import { resolveContentRoot } from '../builtin/session/space-layout.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -116,6 +117,26 @@ function isIgnoredEntry(name) {
   return IGNORED_ENTRIES.has(name);
 }
 
+/**
+ * 列表「创建时间」：用文件 birthtime。
+ * macOS 上 copyFile 会带上种子文件的出生时间，可能早于本目录；不能早于所在文件夹。
+ * @param {fs.Stats} fileSt
+ * @param {fs.Stats} [dirSt]
+ */
+function fileCreatedMs(fileSt, dirSt) {
+  const born = Number(fileSt.birthtimeMs) || 0;
+  const dirBorn = dirSt ? Number(dirSt.birthtimeMs) || 0 : 0;
+  return Math.max(born, dirBorn) || Number(fileSt.ctimeMs) || Number(fileSt.mtimeMs) || 0;
+}
+
+/** 写成新 inode，避免 copyFile 保留源文件的创建时间 */
+function copyFileNew(from, to) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  const buf = fs.readFileSync(from);
+  if (fs.existsSync(to)) fs.unlinkSync(to);
+  fs.writeFileSync(to, buf);
+}
+
 function ensureRoot(absRoot, onReady, readyFlag) {
   fs.mkdirSync(absRoot, { recursive: true });
   const keep = path.join(absRoot, '.gitkeep');
@@ -186,11 +207,14 @@ export function migrateLegacyRoot(projectRoot, legacyNames, dirName) {
 }
 
 /**
- * @param {{ prefix: string, dirName: string, name: string, legacyDirNames?: string[], onReady?: (absRoot: string) => void, shared?: boolean }} opts
+ * @param {{ prefix: string, dirName: string, name: string, legacyDirNames?: string[], onReady?: (absRoot: string) => void, shared?: boolean, spaceLocalFiles?: string[] }} opts
  * @returns {import('vite').Plugin}
  */
 function createDocsPlugin(opts) {
-  const { prefix, dirName, name, legacyDirNames, onReady, shared } = opts;
+  const { prefix, dirName, name, legacyDirNames, onReady, shared, spaceLocalFiles } = opts;
+  const spaceLocalSet = new Set(
+    Array.isArray(spaceLocalFiles) ? spaceLocalFiles.filter((n) => typeof n === 'string' && n) : [],
+  );
   return {
     name,
     configureServer(server) {
@@ -198,14 +222,73 @@ function createDocsPlugin(opts) {
 
       /** 每次请求按当前数据空间解析根目录（切换空间后自动生效） */
       const resolveDocsRoot = () => {
-        // 提示词 / 知识库跨空间共用，落在公共空间，新建空间也能看到同一套
         const projectRoot = shared ? getPublicSpaceRoot() : getDataRoot();
         // 旧目录迁移必须在建目录之前做，否则搬迁逻辑再也触发不到
         migrateLegacyRoot(projectRoot, legacyDirNames, dirName);
-        const absRoot = path.join(projectRoot, dirName);
+        // 内容目录可能被归进了分组文件夹，按实际位置取
+        const absRoot = resolveContentRoot(projectRoot, dirName).abs;
         ensureRoot(absRoot, onReady, readyFlag);
         return absRoot;
       };
+
+      function basenameOfRel(rel) {
+        const raw = String(rel ?? '')
+          .replace(/\\/g, '/')
+          .trim();
+        const parts = raw.split('/').filter((p) => p && p !== '.');
+        return parts[parts.length - 1] || '';
+      }
+
+      function isSpaceLocalRel(rel) {
+        return Boolean(shared && spaceLocalSet.size && spaceLocalSet.has(basenameOfRel(rel)));
+      }
+
+      /** 当前空间自己的内容目录（默认提示词等按空间隔离的文件） */
+      function resolveLocalDocsRoot() {
+        const projectRoot = getDataRoot();
+        migrateLegacyRoot(projectRoot, legacyDirNames, dirName);
+        const localRoot = resolveContentRoot(projectRoot, dirName).abs;
+        fs.mkdirSync(localRoot, { recursive: true });
+        return localRoot;
+      }
+
+      function migrateSpaceLocalPrompt(localRoot) {
+        const target = [...spaceLocalSet][0];
+        if (!target) return;
+        migratePromptFile(
+          localRoot,
+          ['AI工作台系统提示词.md', '系统提示词.md', '空间默认提示词.md', '空间提示词.md'].filter(
+            (n) => n !== target,
+          ),
+          target,
+        );
+      }
+
+      function plantSpaceLocalIfMissing(localRoot, fname) {
+        const dest = path.join(localRoot, fname);
+        if (fs.existsSync(dest)) return;
+        const seed = path.join(
+          path.dirname(fileURLToPath(import.meta.url)),
+          '..',
+          'config',
+          'seeds',
+          dirName,
+          fname,
+        );
+        try {
+          if (fs.existsSync(seed) && fs.statSync(seed).isFile()) copyFileNew(seed, dest);
+        } catch {
+          // 种子缺失不阻断读写
+        }
+      }
+
+      function overlayRoot(rel) {
+        if (!isSpaceLocalRel(rel)) return null;
+        const localRoot = resolveLocalDocsRoot();
+        migrateSpaceLocalPrompt(localRoot);
+        plantSpaceLocalIfMissing(localRoot, basenameOfRel(rel));
+        return localRoot;
+      }
 
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
@@ -246,8 +329,7 @@ function createDocsPlugin(opts) {
                   path: childDisplay,
                   size: cst.isFile() ? cst.size : undefined,
                   mtime: cst.mtimeMs,
-                  // birthtime 在部分系统上可能回落到 mtime
-                  ctime: cst.birthtimeMs || cst.ctimeMs || cst.mtimeMs,
+                  ctime: fileCreatedMs(cst, st),
                 });
               } catch {
                 // skip
@@ -257,6 +339,40 @@ function createDocsPlugin(opts) {
               if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
               return a.name.localeCompare(b.name, 'zh');
             });
+            // 共享库里按空间隔离的文件（如默认提示词）用当前空间的版本覆盖列表项
+            if (shared && spaceLocalSet.size && (display === '.' || display === '')) {
+              const localRoot = resolveLocalDocsRoot();
+              migrateSpaceLocalPrompt(localRoot);
+              if (path.resolve(localRoot) !== path.resolve(absRoot)) {
+                for (const fname of spaceLocalSet) {
+                  plantSpaceLocalIfMissing(localRoot, fname);
+                  const child = path.join(localRoot, fname);
+                  if (!fs.existsSync(child)) continue;
+                  let cst;
+                  try {
+                    cst = fs.statSync(child);
+                  } catch {
+                    continue;
+                  }
+                  if (!cst.isFile()) continue;
+                  const entry = {
+                    name: fname,
+                    type: 'file',
+                    path: fname,
+                    size: cst.size,
+                    mtime: cst.mtimeMs,
+                    ctime: fileCreatedMs(cst, fs.statSync(localRoot)),
+                  };
+                  const idx = entries.findIndex((e) => e.name === fname);
+                  if (idx >= 0) entries[idx] = entry;
+                  else entries.push(entry);
+                }
+                entries.sort((a, b) => {
+                  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+                  return a.name.localeCompare(b.name, 'zh');
+                });
+              }
+            }
             return sendJson(res, 200, {
               ok: true,
               path: display,
@@ -296,6 +412,11 @@ function createDocsPlugin(opts) {
             const fileName = String(body.name || '').trim();
             const parent = String(body.parent || '.');
             const contentBase64 = String(body.contentBase64 || '');
+            const uploadRel =
+              parent === '.' || parent === ''
+                ? fileName
+                : `${String(parent).replace(/\/$/, '')}/${fileName}`;
+            const uploadRoot = overlayRoot(uploadRel) || absRoot;
             if (!fileName || /[\\/]/.test(fileName) || fileName.includes('..')) {
               return sendJson(res, 400, { error: '无效文件名' });
             }
@@ -315,13 +436,13 @@ function createDocsPlugin(opts) {
             if (buf.length > MAX_UPLOAD) {
               return sendJson(res, 413, { error: `文件过大（>${MAX_UPLOAD} bytes）` });
             }
-            const { abs: parentAbs, display: parentDisplay } = resolveUnderRoot(absRoot, parent);
+            const { abs: parentAbs, display: parentDisplay } = resolveUnderRoot(uploadRoot, parent);
             if (!fs.existsSync(parentAbs) || !fs.statSync(parentAbs).isDirectory()) {
               return sendJson(res, 404, { error: '父目录不存在', path: parentDisplay });
             }
             const rel =
               parentDisplay === '.' ? fileName : `${parentDisplay.replace(/\/$/, '')}/${fileName}`;
-            const { abs, display } = resolveUnderRoot(absRoot, rel);
+            const { abs, display } = resolveUnderRoot(uploadRoot, rel);
             fs.writeFileSync(abs, buf);
             return sendJson(res, 200, { ok: true, path: display, size: buf.length });
           }
@@ -335,7 +456,8 @@ function createDocsPlugin(opts) {
             if (bytes > MAX_UPLOAD) {
               return sendJson(res, 413, { error: `内容过大（>${MAX_UPLOAD} bytes）` });
             }
-            const { abs, display } = resolveUnderRoot(absRoot, rel);
+            const opRoot = overlayRoot(rel) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, rel);
             fs.mkdirSync(path.dirname(abs), { recursive: true });
             fs.writeFileSync(abs, content, 'utf8');
             return sendJson(res, 200, { ok: true, path: display, size: bytes });
@@ -355,7 +477,8 @@ function createDocsPlugin(opts) {
             if (buf.length > MAX_UPLOAD) {
               return sendJson(res, 413, { error: `内容过大（>${MAX_UPLOAD} bytes）` });
             }
-            const { abs, display } = resolveUnderRoot(absRoot, rel);
+            const opRoot = overlayRoot(rel) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, rel);
             fs.mkdirSync(path.dirname(abs), { recursive: true });
             fs.writeFileSync(abs, buf);
             return sendJson(res, 200, { ok: true, path: display, size: buf.length });
@@ -363,7 +486,8 @@ function createDocsPlugin(opts) {
 
           if (url === `${prefix}/read` && req.method === 'POST') {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
-            const { abs, display } = resolveUnderRoot(absRoot, body.path);
+            const opRoot = overlayRoot(body.path) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, body.path);
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
             const st = fs.statSync(abs);
@@ -394,10 +518,11 @@ function createDocsPlugin(opts) {
 
           if (url === `${prefix}/delete` && req.method === 'POST') {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
-            const { abs, display } = resolveUnderRoot(absRoot, body.path);
+            const opRoot = overlayRoot(body.path) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, body.path);
             if (display === '.') return sendJson(res, 400, { error: '不能删除根目录' });
             if (dirName === '提示词管理' && PROTECTED_PROMPT_FILES.has(path.basename(display))) {
-              return sendJson(res, 403, { error: '系统提示词不可删除', path: display });
+              return sendJson(res, 403, { error: '默认提示词不可删除', path: display });
             }
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
@@ -420,7 +545,8 @@ function createDocsPlugin(opts) {
 
           if (url === `${prefix}/rename` && req.method === 'POST') {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
-            const { abs, display } = resolveUnderRoot(absRoot, body.path);
+            const opRoot = overlayRoot(body.path) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, body.path);
             if (display === '.') return sendJson(res, 400, { error: '不能重命名根目录' });
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
@@ -434,9 +560,9 @@ function createDocsPlugin(opts) {
             ) {
               return sendJson(res, 400, { error: '无效名称' });
             }
-            // 与删除保持一致：系统提示词为受保护文件，不允许改名
+            // 与删除保持一致：默认提示词为受保护文件，不允许改名
             if (dirName === '提示词管理' && PROTECTED_PROMPT_FILES.has(path.basename(display))) {
-              return sendJson(res, 403, { error: '系统提示词不可重命名', path: display });
+              return sendJson(res, 403, { error: '默认提示词不可重命名', path: display });
             }
             const st = fs.statSync(abs);
             // 文件改名须保持允许的扩展名，否则后续无法预览 / 再次上传
@@ -450,14 +576,14 @@ function createDocsPlugin(opts) {
             }
             const slash = display.lastIndexOf('/');
             const parentDisplay = slash >= 0 ? display.slice(0, slash) : '.';
-            const { abs: parentAbs } = resolveUnderRoot(absRoot, parentDisplay);
+            const { abs: parentAbs } = resolveUnderRoot(opRoot, parentDisplay);
             const targetAbs = path.join(parentAbs, newName);
             if (targetAbs !== abs && fs.existsSync(targetAbs)) {
               return sendJson(res, 409, { error: `已存在同名项目「${newName}」`, path: display });
             }
             fs.renameSync(abs, targetAbs);
             const { display: newDisplay } = resolveUnderRoot(
-              absRoot,
+              opRoot,
               parentDisplay === '.' ? newName : `${parentDisplay}/${newName}`,
             );
             return sendJson(res, 200, { ok: true, path: newDisplay, from: display });
@@ -465,7 +591,8 @@ function createDocsPlugin(opts) {
 
           if (url === `${prefix}/open` && req.method === 'POST') {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
-            const { abs, display } = resolveUnderRoot(absRoot, body.path);
+            const opRoot = overlayRoot(body.path) || absRoot;
+            const { abs, display } = resolveUnderRoot(opRoot, body.path);
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
             const st = fs.statSync(abs);
@@ -549,56 +676,59 @@ export const DOC_ROOT_DIRS = {
   knowledge: { dirName: '知识库管理', legacyDirNames: ['knowledge', '知识库'] },
 };
 
-export function tbRequirementsPlugin() {
+export function lhRequirementsPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_requirements',
     ...DOC_ROOT_DIRS.requirements,
-    name: 'tb-requirements',
+    name: 'lh-requirements',
   });
 }
 
-export function tbCasesPlugin() {
+export function lhCasesPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_cases',
     ...DOC_ROOT_DIRS.cases,
-    name: 'tb-cases',
+    name: 'lh-cases',
   });
 }
 
-export function tbTemplatesPlugin() {
+export function lhTemplatesPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_templates',
     ...DOC_ROOT_DIRS.templates,
-    name: 'tb-templates',
+    name: 'lh-templates',
   });
 }
 
-const CHAT_SYSTEM_PROMPT_FILE = '系统提示词.md';
+const CHAT_SYSTEM_PROMPT_FILE = '默认提示词.md';
 /** prompts 下禁止删除的文件（含旧名，防止误删） */
-const PROTECTED_PROMPT_FILES = new Set([CHAT_SYSTEM_PROMPT_FILE, 'AI工作台系统提示词.md']);
+const PROTECTED_PROMPT_FILES = new Set([
+  CHAT_SYSTEM_PROMPT_FILE,
+  '空间提示词.md',
+  '空间默认提示词.md',
+  '系统提示词.md',
+  'AI工作台系统提示词.md',
+]);
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_SEEDS = path.join(PKG_ROOT, 'config', 'seeds', DOC_ROOT_DIRS.prompts.dirName);
 
 const DEFAULT_CHAT_SYSTEM_PROMPT =
-  '你是 TestBench 的 AI 助手：具备资深测试与软件工程能力，也能回答一般问题。\n\n' +
-  '回答原则：\n' +
-  '- 紧扣用户当前问题作答；问什么答什么，先给直接结论。\n' +
-  '- 用户没有问测试、用例、缺陷或质量风险时，不要主动展开测试设计、用例表、知识库套话或无关长文。\n' +
-  '- 仅在用户明确涉及测试/质量/用例时，再给出结构化建议（结论先行、可执行步骤、规范字段；技术问题交代前提、风险与验证方式）。\n' +
-  '- 需要联网或实时信息而你做不到时，直接说明限制；不要用无关内容凑篇幅。\n' +
-  '- 用户用 @ 引用了文档，或问题明显依赖知识库/模板时，再检索或阅读这些资料。\n';
+  '你是 Lantern Harness 的 AI 助手，协助思考、写作、分析、编程与日常工作。\n';
 
 /** 把 config/seeds/提示词管理 里缺失的文件补进当前空间（不覆盖已有） */
 function plantPromptSeeds(absRoot) {
   if (!fs.existsSync(PROMPT_SEEDS)) return;
+  const publicPrompts = resolveContentRoot(getPublicSpaceRoot(), DOC_ROOT_DIRS.prompts.dirName).abs;
+  const isPublic = path.resolve(absRoot) === path.resolve(publicPrompts);
   for (const name of fs.readdirSync(PROMPT_SEEDS)) {
     if (name.startsWith('.')) continue;
+    if (!isPublic && name !== CHAT_SYSTEM_PROMPT_FILE) continue;
     const from = path.join(PROMPT_SEEDS, name);
     const to = path.join(absRoot, name);
     try {
       if (!fs.statSync(from).isFile() || fs.existsSync(to)) continue;
-      fs.copyFileSync(from, to);
+      copyFileNew(from, to);
     } catch {
       // 种子只是初始内容：失败不阻断访问
     }
@@ -606,7 +736,7 @@ function plantPromptSeeds(absRoot) {
 }
 
 /** 已废弃的「默认用例提示词」文件名，启动时清理，避免与插件所选提示词混淆 */
-const LEGACY_CASE_DEFAULT_NAMES = ['默认提示词.md', '默认用例生成.md', '用例生成默认提示词.md'];
+const LEGACY_CASE_DEFAULT_NAMES = ['默认用例生成.md', '用例生成默认提示词.md'];
 
 function migratePromptFile(absRoot, fromNames, toName) {
   const dest = path.join(absRoot, toName);
@@ -637,24 +767,23 @@ function migratePromptFile(absRoot, fromNames, toName) {
   return dest;
 }
 
-export function tbKnowledgePlugin() {
+export function lhKnowledgePlugin() {
   return createDocsPlugin({
     prefix: '/__tb_knowledge',
     ...DOC_ROOT_DIRS.knowledge,
-    name: 'tb-knowledge',
-    shared: true,
-    // 知识库为平铺存储：分类只写在 frontmatter 的 category，不再按分类建子目录
+    name: 'lh-knowledge',
+    // 知识库按空间隔离：分类只写在 frontmatter 的 category，不再按分类建子目录
   });
 }
 
-export function tbPromptsPlugin() {
+export function lhPromptsPlugin() {
   return createDocsPlugin({
     prefix: '/__tb_prompts',
     ...DOC_ROOT_DIRS.prompts,
-    name: 'tb-prompts',
-    shared: true,
+    name: 'lh-prompts',
+    // 提示词按空间隔离；新空间只有「默认提示词」
     onReady(absRoot) {
-      // 清理旧版「默认提示词」文件名，避免与插件所选提示词混淆
+      // 清理旧版用例生成默认文件名，避免与插件所选提示词混淆
       for (const n of LEGACY_CASE_DEFAULT_NAMES) {
         const p = path.join(absRoot, n);
         if (fs.existsSync(p)) {
@@ -667,10 +796,10 @@ export function tbPromptsPlugin() {
       }
       const chatSeed = migratePromptFile(
         absRoot,
-        ['AI工作台系统提示词.md'],
+        ['AI工作台系统提示词.md', '系统提示词.md', '空间默认提示词.md', '空间提示词.md'],
         CHAT_SYSTEM_PROMPT_FILE,
       );
-      // 系统提示词 + 功能测试用例提示词：与 prepareSpaceDir 同源，切换空间后也能补上
+      // 公共空间补齐全部提示词种子；其它空间只保证「默认提示词」
       plantPromptSeeds(absRoot);
       if (!fs.existsSync(chatSeed)) {
         fs.writeFileSync(chatSeed, DEFAULT_CHAT_SYSTEM_PROMPT, 'utf8');

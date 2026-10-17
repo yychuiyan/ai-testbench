@@ -322,9 +322,9 @@ function countAll(paths) {
 /**
  * @returns {import('vite').Plugin}
  */
-export function tbMemoryPlugin() {
+export function lhMemoryPlugin() {
   return {
-    name: 'tb-memory',
+    name: 'lh-memory',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';

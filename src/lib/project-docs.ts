@@ -13,7 +13,7 @@ export interface DocsEntry {
   size?: number;
   /** 修改时间 ms */
   mtime?: number;
-  /** 创建时间 ms（不可用时可能接近 mtime） */
+  /** 文件创建时间 ms（拷贝种子时不低于所在目录的创建时间） */
   ctime?: number;
 }
 

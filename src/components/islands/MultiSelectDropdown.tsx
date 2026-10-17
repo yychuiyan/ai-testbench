@@ -36,8 +36,9 @@ export default function MultiSelectDropdown({
   }, [open]);
 
   const selectedLabels = options.filter((o) => values.includes(o.value)).map((o) => o.label);
-  const summary =
-    selectedLabels.length === 0
+  const summary = disabled
+    ? placeholder
+    : selectedLabels.length === 0
       ? placeholder
       : selectedLabels.length <= 2
         ? selectedLabels.join('、')
@@ -54,9 +55,13 @@ export default function MultiSelectDropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="w-full h-9 flex items-center justify-between gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30 disabled:bg-stone-50 disabled:text-stone-400"
+        className={
+          disabled
+            ? 'w-full h-9 flex items-center justify-between gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 text-sm text-left text-stone-400 cursor-not-allowed'
+            : 'w-full h-9 flex items-center justify-between gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30'
+        }
       >
-        <span className={`truncate ${selectedLabels.length ? '' : 'text-stone-400'}`}>
+        <span className={`truncate ${disabled || selectedLabels.length ? '' : 'text-stone-400'}`}>
           {summary}
         </span>
         <svg className="w-4 h-4 text-stone-400 shrink-0" viewBox="0 0 20 20" fill="currentColor">
@@ -68,7 +73,7 @@ export default function MultiSelectDropdown({
         </svg>
       </button>
       {open ? (
-        <div className="tw-select-menu tw-popover-anim absolute z-[80] mt-1 max-h-56 w-full overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200">
+        <div className="tw-select-menu tw-popover-anim absolute z-80 mt-1 max-h-56 w-full overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200">
           {options.length === 0 ? (
             <div className="px-3 py-2 text-sm text-stone-400">暂无可选项</div>
           ) : (

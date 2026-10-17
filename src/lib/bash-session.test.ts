@@ -15,7 +15,7 @@ describe('bash-session (pipe fallback)', () => {
   let tmp = '';
 
   before(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-bash-sess-'));
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-bash-sess-'));
     fs.mkdirSync(path.join(tmp, 'sub'));
     resetBashSessionsForTests();
   });

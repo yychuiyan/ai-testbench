@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged, pluginDisabledMessage } from '../../lib/plugins';
 import { docRootLabelPath } from '../../lib/doc-roots';
 import {
   parseCsvTemplate,
@@ -210,6 +212,8 @@ function fmtSize(n?: number) {
 }
 
 export default function TemplatesLibrary() {
+  const [pluginOn, setPluginOn] = useState(() => isPluginEnabled('templates'));
+  const [pluginReady, setPluginReady] = useState(false);
   const [live, setLive] = useState<boolean | null>(null);
   const [tree, setTree] = useState<DocsTreeNode[]>([]);
   const [totalFiles, setTotalFiles] = useState(0);
@@ -271,6 +275,16 @@ export default function TemplatesLibrary() {
   );
 
   useEffect(() => {
+    const off = onPluginEnabledChanged((map) => setPluginOn(Boolean(map.templates)));
+    void hydrateAppConfig().then(() => {
+      setPluginOn(isPluginEnabled('templates'));
+      setPluginReady(true);
+    });
+    return off;
+  }, []);
+
+  useEffect(() => {
+    if (!pluginReady || !pluginOn) return;
     void (async () => {
       const ok = await fetchDocsHealth('templates');
       setLive(ok);
@@ -284,7 +298,7 @@ export default function TemplatesLibrary() {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [loadHeadersForFiles, loadTree]);
+  }, [pluginReady, pluginOn, loadHeadersForFiles, loadTree]);
 
   /** 当前浏览目录的递归文件数（仅左树展示，故这里不再需要） */
 
@@ -425,6 +439,22 @@ export default function TemplatesLibrary() {
     }
     return `删除文件夹「${deleteTarget.name}」？将移入系统废纸篓。`;
   })();
+
+  if (!pluginReady) {
+    return (
+      <div className="tw-lib-probing" aria-busy="true" aria-label="正在读取插件开关">
+        <span className="tw-lib-spin" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (!pluginOn) {
+    return (
+      <div className="tw-lib-notice rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-sm text-amber-900">
+        {pluginDisabledMessage('templates')}
+      </div>
+    );
+  }
 
   if (live === null) {
     return (

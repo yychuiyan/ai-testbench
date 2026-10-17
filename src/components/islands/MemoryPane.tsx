@@ -96,7 +96,6 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
   const [agentFiles, setAgentFiles] = useState<
     Array<{ path: string; name: string; abs?: string; label?: string }>
   >([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -114,7 +113,6 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
       setAgentFiles([]);
       return;
     }
-    setLoading(true);
     setError(null);
     try {
       const [h, t, s, cfg, agents] = await Promise.all([
@@ -141,8 +139,6 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
     }
   }, [live, cwd, tab, archiveTarget]);
 
@@ -174,7 +170,7 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
   const isTrack = tab === 'memory' || tab === 'key' || tab === 'project';
   const entries = isTrack ? (tracks[tab]?.entries ?? []) : [];
   const trackPath = isTrack ? tracks[tab]?.path : null;
-  const memBase = health?.path || '.tb/local/memories';
+  const memBase = health?.path || '.lantern/local/memories';
 
   async function onApprove(id: string) {
     setBusy(true);
@@ -685,7 +681,8 @@ export default function MemoryPane({ live, pluginOn, workspacePath = '' }: Props
               />
             </label>
             <p className="text-xs text-stone-400 leading-5 break-all">
-              存储目录：<code className="font-mono">{health?.path ?? '.tb/local/memories'}</code>
+              存储目录：
+              <code className="font-mono">{health?.path ?? '.lantern/local/memories'}</code>
               。memory/key 经待确认记忆建议后注入；project 不注入。
             </p>
           </div>

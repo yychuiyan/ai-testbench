@@ -23,7 +23,7 @@ export async function runJsonRpcServer(opts) {
   const settings = loadHeadlessSettings(opts.dataRoot);
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   process.stderr.write(
-    `TestBench JSON-RPC ready (data=${settings.dataRoot} model=${settings.model})\n`,
+    `Lantern Harness JSON-RPC ready (data=${settings.dataRoot} model=${settings.model})\n`,
   );
 
   for await (const line of rl) {

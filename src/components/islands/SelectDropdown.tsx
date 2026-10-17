@@ -79,8 +79,8 @@ export default function SelectDropdown<T extends string>({
           aria-label={ariaLabel}
           className={`${
             compact
-              ? 'w-full h-8 flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 text-sm text-left text-stone-700 outline-none hover:border-stone-400 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
-              : 'w-full h-9 flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
+              ? 'w-full h-8 flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 text-sm text-left text-stone-700 outline-none cursor-pointer hover:border-stone-400 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
+              : 'w-full h-9 flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-left text-stone-800 outline-none cursor-pointer hover:border-stone-300 focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] disabled:bg-stone-50 disabled:text-stone-400 disabled:cursor-not-allowed'
           } ${alignCls}`}
         >
           <span className="truncate">{current?.label ?? value}</span>
@@ -89,7 +89,7 @@ export default function SelectDropdown<T extends string>({
         <ListboxOptions
           transition
           anchor={{ to: 'bottom start', gap: 4 }}
-          className="tw-select-menu tw-menu-anim z-[80] max-h-56 w-[var(--button-width)] overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
+          className="tw-select-menu tw-menu-anim z-80 max-h-56 w-(--button-width) overflow-auto rounded-lg p-1 shadow-lg ring-1 ring-stone-200 focus:outline-none"
         >
           {options.map((o) => (
             <ListboxOption
@@ -98,7 +98,7 @@ export default function SelectDropdown<T extends string>({
               className={`group cursor-pointer select-none flex items-center gap-2 rounded-md px-3 py-2 text-sm data-[focus]:bg-stone-50 ${
                 showCheck
                   ? 'text-stone-700 data-[selected]:text-stone-900'
-                  : 'data-[selected]:text-[color:var(--tw-accent)] data-[selected]:font-medium'
+                  : 'data-[selected]:text-(--tw-accent) data-[selected]:font-medium'
               } ${centerContent ? 'justify-center px-2' : ''}`}
             >
               {showCheck ? (

@@ -1,4 +1,4 @@
-# Office 工作流（TestBench）
+# Office 工作流（Lantern Harness）
 
 在本工作台处理 Word / Excel 时遵循以下约定（对齐 skill-office 子集）。
 

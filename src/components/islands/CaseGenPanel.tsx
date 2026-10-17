@@ -19,6 +19,8 @@ import {
   type CaseTypeDef,
 } from '../../lib/case-types';
 import { CASE_FIELDS } from '../../lib/export';
+import { hydrateAppConfig } from '../../lib/app-config';
+import { isPluginEnabled, onPluginEnabledChanged } from '../../lib/plugins';
 import { isChatOnlyPrompt } from '../../lib/prompts-meta';
 import {
   fetchDocsHealth,
@@ -149,6 +151,10 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
   const [typeEditor, setTypeEditor] = useState<'add' | 'edit' | null>(null);
   const [typeDraft, setTypeDraft] = useState('');
   const [deleteTypePending, setDeleteTypePending] = useState(false);
+  const [promptsOn, setPromptsOn] = useState(() => isPluginEnabled('prompts'));
+  const [knowledgeLibOn, setKnowledgeLibOn] = useState(() => isPluginEnabled('knowledgeLib'));
+  const [requirementsOn, setRequirementsOn] = useState(() => isPluginEnabled('requirements'));
+  const [templatesOn, setTemplatesOn] = useState(() => isPluginEnabled('templates'));
 
   const template = useMemo(
     () => templates.find((t) => t.id === templateId) ?? templates[0],
@@ -186,6 +192,18 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
   }
 
   useEffect(() => {
+    const apply = () => {
+      setPromptsOn(isPluginEnabled('prompts'));
+      setKnowledgeLibOn(isPluginEnabled('knowledgeLib'));
+      setRequirementsOn(isPluginEnabled('requirements'));
+      setTemplatesOn(isPluginEnabled('templates'));
+    };
+    const off = onPluginEnabledChanged(() => apply());
+    void hydrateAppConfig().then(apply);
+    return off;
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     // 同会话再次打开：回填上次确认配置
     refreshTypes(initial?.caseType);
@@ -219,47 +237,69 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           else await walk(root, e.path, acc);
         }
       }
-      try {
-        const reqs: DocsEntry[] = [];
-        await walk('requirements', '.', reqs);
-        setReqFiles(reqs);
-      } catch {
-        // ignore
+      if (!requirementsOn) {
+        setReqFiles([]);
+        setSelectedReq('');
+      } else {
+        try {
+          const reqs: DocsEntry[] = [];
+          await walk('requirements', '.', reqs);
+          setReqFiles(reqs);
+          setSelectedReq((prev) => (prev && reqs.some((f) => f.path === prev) ? prev : ''));
+        } catch {
+          // ignore
+        }
       }
-      try {
-        const kbs: DocsEntry[] = [];
-        await walk('knowledge', '.', kbs);
-        kbs.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-        setKnowledgeFiles(kbs);
-        setKnowledgePaths((prev) => prev.filter((p) => kbs.some((f) => f.path === p)));
-      } catch {
-        // ignore
+      if (!knowledgeLibOn) {
+        setKnowledgeFiles([]);
+        setKnowledgePaths([]);
+      } else {
+        try {
+          const kbs: DocsEntry[] = [];
+          await walk('knowledge', '.', kbs);
+          kbs.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+          setKnowledgeFiles(kbs);
+          setKnowledgePaths((prev) => prev.filter((p) => kbs.some((f) => f.path === p)));
+        } catch {
+          // ignore
+        }
       }
-      try {
-        const prompts: DocsEntry[] = [];
-        await walk('prompts', '.', prompts);
-        const casePrompts = prompts.filter((f) => !isChatOnlyPrompt(f.path));
-        casePrompts.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-        setPromptFiles(casePrompts);
-        setPromptPath((prev) => {
-          if (prev && casePrompts.some((x) => x.path === prev)) return prev;
-          if (initial?.promptPath && casePrompts.some((x) => x.path === initial.promptPath)) {
-            return initial.promptPath;
-          }
-          return (
-            casePrompts.find((f) => f.path.includes('功能测试用例提示词'))?.path ??
-            casePrompts[0]?.path ??
-            ''
-          );
-        });
-      } catch {
-        // ignore
+      if (!promptsOn) {
+        setPromptFiles([]);
+        setPromptPath('');
+        setPromptBody('');
+      } else {
+        try {
+          const prompts: DocsEntry[] = [];
+          await walk('prompts', '.', prompts);
+          const casePrompts = prompts.filter((f) => !isChatOnlyPrompt(f.path));
+          casePrompts.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+          setPromptFiles(casePrompts);
+          setPromptPath((prev) => {
+            if (prev && casePrompts.some((x) => x.path === prev)) return prev;
+            if (initial?.promptPath && casePrompts.some((x) => x.path === initial.promptPath)) {
+              return initial.promptPath;
+            }
+            return (
+              casePrompts.find((f) => f.path.includes('功能测试用例提示词'))?.path ??
+              casePrompts[0]?.path ??
+              ''
+            );
+          });
+        } catch {
+          // ignore
+        }
       }
     })();
-  }, [open, initial]);
+  }, [open, initial, promptsOn, knowledgeLibOn, requirementsOn]);
 
   useEffect(() => {
     if (!open || !docsLive) return;
+    if (!templatesOn) {
+      setTemplates([]);
+      setTemplateId('');
+      return;
+    }
     let cancelled = false;
     void loadTemplatesForType(caseType, caseTypes).then((list) => {
       if (cancelled) return;
@@ -275,7 +315,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
     return () => {
       cancelled = true;
     };
-  }, [open, docsLive, caseType, caseTypes, initial?.templateId]);
+  }, [open, docsLive, templatesOn, caseType, caseTypes, initial?.templateId]);
 
   useEffect(() => {
     if (!promptPath) {
@@ -302,6 +342,10 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
     setBusy(true);
     setError(null);
     try {
+      if (!promptsOn) {
+        setError('请先在「我的插件」中启用「提示词管理」');
+        return;
+      }
       if (!promptPath || !promptBody.trim()) {
         setError('请先选择用例生成提示词（不再使用「默认提示词」或工作台系统提示词）');
         return;
@@ -371,7 +415,7 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           </button>
           <button
             type="button"
-            disabled={busy || !docsLive || !promptPath}
+            disabled={busy || !docsLive || !promptsOn || !promptPath}
             onClick={() => void confirm()}
             className="flex-1 h-9 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40"
           >
@@ -528,9 +572,21 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           options={reqOptions}
           value={selectedReq}
           onChange={setSelectedReq}
-          placeholder={reqOptions.length ? '搜索并选择需求文档…' : '暂无需求文件'}
-          emptyLabel="不引用需求文档"
+          allowEmpty={false}
+          disabled={!requirementsOn}
+          placeholder={
+            !requirementsOn
+              ? '需求文档库未启用'
+              : reqOptions.length
+                ? '搜索并选择需求文档…'
+                : '请先在需求文档库中上传'
+          }
         />
+        {!requirementsOn ? (
+          <p className="mt-1 text-[11px] text-stone-400">
+            请先在「我的插件」中启用「需求文档库」后再选择。
+          </p>
+        ) : null}
       </div>
       <div>
         <div className="text-xs font-medium text-stone-500 mb-0.5">
@@ -544,12 +600,20 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           value={template?.id ?? ''}
           onChange={setTemplateId}
           allowEmpty={false}
+          disabled={!templatesOn}
           placeholder={
-            templateOptions.length
-              ? '搜索并选择模板…'
-              : `暂无「${activeTypeDef.templateFolder}」模板`
+            !templatesOn
+              ? '测试模板库未启用'
+              : templateOptions.length
+                ? '搜索并选择模板…'
+                : `暂无「${activeTypeDef.templateFolder}」模板`
           }
         />
+        {!templatesOn ? (
+          <p className="mt-1 text-[11px] text-stone-400">
+            请先在「我的插件」中启用「测试模板库」后再选择；未启用时按默认字段生成。
+          </p>
+        ) : null}
         {template?.headers?.length ? <ExcelFieldTags fields={template.headers} /> : null}
       </div>
       <div>
@@ -559,10 +623,19 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           value={promptPath}
           onChange={setPromptPath}
           allowEmpty={false}
-          placeholder={promptOptions.length ? '搜索并选择提示词…' : '请先在提示词管理中上传'}
+          disabled={!promptsOn}
+          placeholder={
+            !promptsOn
+              ? '提示词管理未启用'
+              : promptOptions.length
+                ? '搜索并选择提示词…'
+                : '请先在提示词管理中上传'
+          }
         />
         <p className="mt-1 text-[11px] text-stone-400">
-          启用后主会话将只使用该提示词，不再叠加「系统提示词」。
+          {!promptsOn
+            ? '请先在「我的插件」中启用「提示词管理」后再选择。'
+            : '启用后主会话将只使用该提示词，不再叠加「系统提示词」。'}
         </p>
       </div>
       <div>
@@ -571,8 +644,20 @@ export default function CaseGenPanel({ open, onClose, initial, onConfirm }: Prop
           options={knowledgeOptions}
           values={knowledgePaths}
           onChange={setKnowledgePaths}
-          placeholder={knowledgeOptions.length ? '选择知识库文档…' : '暂无知识库文档'}
+          disabled={!knowledgeLibOn}
+          placeholder={
+            !knowledgeLibOn
+              ? '知识库管理未启用'
+              : knowledgeOptions.length
+                ? '选择知识库文档…'
+                : '暂无知识库文档'
+          }
         />
+        {!knowledgeLibOn ? (
+          <p className="mt-1 text-[11px] text-stone-400">
+            请先在「我的插件」中启用「知识库管理」后再引用。
+          </p>
+        ) : null}
       </div>
     </SlideOverDrawer>
   );

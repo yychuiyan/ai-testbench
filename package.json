@@ -1,12 +1,13 @@
 {
-  "name": "ai-testbench",
-  "version": "0.1.3",
+  "name": "@lantern-harness/lh",
+  "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "description": "TestBench",
+  "description": "Lantern Harness",
   "keywords": [
     "ai",
-    "testbench",
+    "lantern",
+    "lantern-harness",
     "qa",
     "测试",
     "测试工作台",
@@ -16,17 +17,20 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yychuiyan/ai-testbench.git"
+    "url": "git+https://github.com/yychuiyan/lantern-harness.git"
   },
-  "homepage": "https://github.com/yychuiyan/ai-testbench#readme",
+  "homepage": "https://github.com/yychuiyan/lantern-harness#readme",
   "bin": {
-    "tbench": "cli/tbench.mjs"
+    "lantern": "cli/lantern.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
     "cli",
     "builtin",
-    "tb-plugins",
+    "lh-plugins",
     "config",
     "docs",
     "空间池/.gitkeep",
@@ -35,20 +39,20 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.22.0"
   },
   "scripts": {
     "dev": "astro dev --host 127.0.0.1 --port 4321",
     "build": "astro build",
     "preview": "astro preview",
-    "start": "node cli/tbench.mjs web --foreground --dir .",
+    "start": "node cli/lantern.mjs web --foreground --dir .",
     "astro": "astro",
     "lint": "eslint src --max-warnings 50",
     "lint:fix": "eslint src --fix",
     "test": "tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"tb-plugins/**/*.mjs\"",
+    "format": "prettier --write \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"lh-plugins/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,astro,css,md,json}\" \"*.{md,json,mjs,js}\" \"cli/**/*.mjs\" \"builtin/**/*.mjs\" \"lh-plugins/**/*.mjs\"",
     "prepare": "simple-git-hooks && node cli/ensure-dist.mjs",
     "prepublishOnly": "pnpm build"
   },
@@ -68,14 +72,14 @@
     "builtin/**/*.mjs": [
       "prettier --write"
     ],
-    "tb-plugins/**/*.mjs": [
+    "lh-plugins/**/*.mjs": [
       "prettier --write"
     ]
   },
   "dependencies": {
-    "@astrojs/react": "^4.2.0",
+    "@astrojs/react": "^7.1.0",
     "@headlessui/react": "^2.2.10",
-    "astro": "^5.1.0",
+    "astro": "^7.4.0",
     "connect": "^3.7.0",
     "dompurify": "^3.2.4",
     "jszip": "^3.10.2",
@@ -84,7 +88,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sirv": "^3.0.2",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "optionalDependencies": {
     "node-pty": "^1.0.0"

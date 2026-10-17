@@ -15,6 +15,12 @@ import { LOCAL_REL } from './space-layout.mjs';
 
 const PREFIX = '/__tb_sessions/runs';
 
+/**
+ * 工具轮默认上限，与浏览器侧 `src/lib/llm.ts` 的 DEFAULT_MAX_TOOL_ROUNDS 对齐。
+ * 以前是 5：调研类任务常需 6~10 个工具步骤，会在中途被收口，看起来像「自动终止」。
+ */
+const DEFAULT_TOOL_ROUNDS = 100;
+
 /** @type {Map<string, import('./session-runs.mjs').SessionRun>} */
 const runs = new Map();
 
@@ -950,7 +956,7 @@ async function executeRun(run) {
     }
     return msg;
   });
-  const maxRounds = run.maxToolRounds || 5;
+  const maxRounds = run.maxToolRounds || DEFAULT_TOOL_ROUNDS;
   const ctx = {
     root: run.root,
     sessionId: run.sessionId,
@@ -1233,7 +1239,7 @@ export function tbSessionRunsPlugin() {
               thinking: body.thinking,
               workspace: body.workspace || '',
               access: body.access || 'default',
-              maxToolRounds: Number(body.maxToolRounds) || 5,
+              maxToolRounds: Number(body.maxToolRounds) || DEFAULT_TOOL_ROUNDS,
               status: 'running',
               startedAt: Date.now(),
               finishedAt: null,

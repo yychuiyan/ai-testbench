@@ -39,6 +39,10 @@ let enterRaf = 0;
 let exitTimer = 0;
 let watchRaf = 0;
 let inited = false;
+/** 气泡由鼠标悬停打开（而非键盘焦点），此时要盯住指针是否还在锚点上 */
+let openedByPointer = false;
+/** 最近一次指针位置；拿不到时不按位置判断，避免误收 */
+let pointerPos: { x: number; y: number } | null = null;
 
 /**
  * 锚点已经不该再挂气泡：被卸载、收进关闭中的弹层、或尺寸归零。
@@ -47,8 +51,22 @@ let inited = false;
 function anchorGone(el: HTMLElement): boolean {
   if (!el.isConnected) return true;
   if (el.closest('[data-closed]')) return true;
+  // display:none / visibility:hidden / content-visibility:hidden 都不会触发 mouseout
+  if (el.checkVisibility && !el.checkVisibility()) return true;
   const r = el.getBoundingClientRect();
   return r.width === 0 && r.height === 0;
+}
+
+/** 锚点滚出视口后气泡没有意义，而且会浮在边缘看起来「卡住」 */
+function anchorOffscreen(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect();
+  return (
+    r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth
+  );
+}
+
+function insideRect(r: DOMRect, x: number, y: number): boolean {
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
 function stopWatch(): void {
@@ -57,13 +75,23 @@ function stopWatch(): void {
   watchRaf = 0;
 }
 
-/** 气泡显示期间盯着锚点，弹窗一关就收，避免漂在页面上 */
+/** 气泡显示期间盯着锚点，弹窗一关 / 滚走 / 指针离开就收，避免漂在页面上 */
 function startWatch(): void {
   stopWatch();
   const tick = () => {
     watchRaf = 0;
-    if (!current) return;
-    if (anchorGone(current)) {
+    const el = current;
+    if (!el) return;
+    if (anchorGone(el) || anchorOffscreen(el)) {
+      hide();
+      return;
+    }
+    if (
+      openedByPointer &&
+      pointerPos &&
+      !insideRect(el.getBoundingClientRect(), pointerPos.x, pointerPos.y)
+    ) {
+      // 布局变化 / 滚动 / 元素被替换后指针已经不在锚点上，但不会补发 mouseout
       hide();
       return;
     }
@@ -147,10 +175,11 @@ function qualifies(el: HTMLElement): boolean {
   return Boolean(el.dataset.hint) && shouldShow(el);
 }
 
-function show(el: HTMLElement): void {
+function show(el: HTMLElement, byPointer: boolean): void {
   const text = el.dataset.hint ?? '';
   if (!text || !shouldShow(el)) return;
   current = el;
+  openedByPointer = byPointer;
   if (exitTimer) {
     window.clearTimeout(exitTimer);
     exitTimer = 0;
@@ -176,6 +205,7 @@ function show(el: HTMLElement): void {
 function hide(): void {
   stopWatch();
   current = null;
+  openedByPointer = false;
   if (!tipEl) return;
   entered = false;
   tipEl.dataset.closed = '';
@@ -202,7 +232,7 @@ function onOver(e: MouseEvent): void {
     if (current) hide();
     return;
   }
-  show(el);
+  show(el, true);
 }
 
 function onOut(e: MouseEvent): void {
@@ -220,7 +250,7 @@ function onFocusIn(e: FocusEvent): void {
     if (current) hide();
     return;
   }
-  show(el);
+  show(el, false);
 }
 
 function onFocusOut(e: FocusEvent): void {
@@ -239,12 +269,22 @@ function onClick(): void {
 /** 滚动 / 缩放时跟随锚点（capture 以覆盖内部滚动容器） */
 function onMove(): void {
   if (!current) return;
-  if (anchorGone(current)) {
+  if (anchorGone(current) || anchorOffscreen(current)) {
     hide();
     return;
   }
   place();
   apply();
+}
+
+/** 记录指针位置：布局变化后指针可能已经不在锚点上，靠它兜底收起 */
+function onPointerMove(e: PointerEvent): void {
+  pointerPos = { x: e.clientX, y: e.clientY };
+}
+
+/** 按下即收起，避免拖拽 / 弹层切换后气泡留在原地 */
+function onPointerDown(): void {
+  if (current) hide();
 }
 
 function onKey(e: KeyboardEvent): void {
@@ -260,12 +300,25 @@ export function initHintTips(): void {
   inited = true;
   document.addEventListener('mouseover', onOver, true);
   document.addEventListener('mouseout', onOut, true);
+  document.addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
+  document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('focusout', onFocusOut, true);
   document.addEventListener('click', onClick, true);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('scroll', onMove, true);
   window.addEventListener('resize', onMove);
+  // 切到别的窗口 / 标签页后指针事件不再送达，气泡会一直挂着
+  window.addEventListener('blur', () => {
+    if (current) hide();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && current) hide();
+  });
+  // 指针移出窗口（浏览器地址栏、另一个应用）时也可能收不到 mouseout
+  document.documentElement.addEventListener('mouseleave', () => {
+    if (current) hide();
+  });
   // 软导航：气泡节点会随 body 内容被替换，重置引用即可，下次显示时重建
   document.addEventListener('astro:after-swap', () => {
     stopWatch();

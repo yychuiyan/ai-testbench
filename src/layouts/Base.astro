@@ -2,8 +2,10 @@
 import { ClientRouter, fade } from 'astro:transitions';
 import '../styles/global.css';
 import '../styles/docs-article.css';
+import NavLibraries from '../components/islands/NavLibraries';
 import SettingsDialog from '../components/islands/SettingsDialog';
 import SpaceSwitcher from '../components/islands/SpaceSwitcher';
+import { APP_NAME } from '../lib/brand';
 import { APP_VERSION } from '../lib/app-version';
 
 interface Props {
@@ -12,7 +14,7 @@ interface Props {
   mainTransition?: 'fade' | 'none';
 }
 
-const { title = 'TestBench', mainTransition = 'fade' } = Astro.props;
+const { title = APP_NAME, mainTransition = 'fade' } = Astro.props;
 const base = import.meta.env.BASE_URL;
 const path = Astro.url.pathname;
 
@@ -24,8 +26,6 @@ function isHome(): boolean {
 function pathHas(seg: string): boolean {
   return path.includes(`/${seg}`);
 }
-
-const docsOpen = pathHas('requirements') || pathHas('templates');
 
 const navItem = (active: boolean) =>
   ['tw-nav-item', active ? 'is-active font-medium' : ''].filter(Boolean).join(' ');
@@ -50,7 +50,9 @@ const navItem = (active: boolean) =>
       // 注意 import 必须写在本脚本内：Astro 的 <script> 是独立客户端模块，
       // 拿不到 frontmatter 的顶部 import。
       import { initHintTips } from '../lib/hint-tip';
+      import { initPluginNav } from '../lib/plugin-nav';
       initHintTips();
+      initPluginNav();
     </script>
     <ClientRouter />
     <script is:inline>
@@ -81,13 +83,43 @@ const navItem = (active: boolean) =>
           if (localStorage.getItem('tw.nav.collapsed') === '1') {
             document.documentElement.dataset.navCollapsed = '1';
           }
+          var spaceId = (
+            sessionStorage.getItem('tw.space.active-id') ||
+            localStorage.getItem('tw.space.active-id') ||
+            ''
+          ).trim();
+          var cfgKey = spaceId ? 'tw.app.config.v1::' + spaceId : 'tw.app.config.v1';
+          var cfgRaw = localStorage.getItem(cfgKey) || localStorage.getItem('tw.app.config.v1');
+          if (cfgRaw) {
+            var savedCfg = JSON.parse(cfgRaw) || {};
+            var plugins = savedCfg.plugins || {};
+            if (plugins.cases === false) document.documentElement.dataset.pluginOffCases = '1';
+            if (plugins.prompts === false) document.documentElement.dataset.pluginOffPrompts = '1';
+            if (plugins.knowledgeLib === false)
+              document.documentElement.dataset.pluginOffKnowledgeLib = '1';
+            if (plugins.requirements === false)
+              document.documentElement.dataset.pluginOffRequirements = '1';
+            if (plugins.templates === false)
+              document.documentElement.dataset.pluginOffTemplates = '1';
+            // 本地已有菜单布局：静态占位（固定顺序平铺）不再亮相，避免闪一下「排序前」
+            if (Array.isArray(savedCfg.navGroups) || Array.isArray(savedCfg.navOrder)) {
+              document.documentElement.dataset.navCached = '1';
+              // 兜底：脚本没跑起来（岛始终为空）时把占位放回来，别让侧栏彻底空着
+              window.setTimeout(function () {
+                var island = document.querySelector('.tw-nav-libraries astro-island');
+                if (!island || !island.querySelector('.tw-nav-item-main')) {
+                  document.documentElement.removeAttribute('data-nav-cached');
+                }
+              }, 3000);
+            }
+          }
         } catch (e) {}
       })();
     </script>
   </head>
   <body class="tw-body antialiased">
     <div class="tw-shell min-h-screen">
-      <aside class="tw-nav-aside fixed inset-y-0 left-0 flex flex-col z-[45]" id="tw-nav-aside">
+      <aside class="tw-nav-aside fixed inset-y-0 left-0 flex flex-col z-45" id="tw-nav-aside">
         <div class="tw-nav-brand">
           <div class="tw-nav-brand-row">
             <a href={base} class="tw-nav-brand-link min-w-0 flex-1">
@@ -96,14 +128,14 @@ const navItem = (active: boolean) =>
                   class="tw-nav-brand-mark-img"
                   src={`${base}brand-mark.png`}
                   alt=""
-                  width="44"
-                  height="44"
+                  width="36"
+                  height="36"
                 />
               </span>
               <span class="tw-nav-brand-text">
                 <span class="tw-nav-brand-title-row">
                   <span class="tw-nav-brand-title" data-i18n="nav.brand">
-                    TestBench
+                    {APP_NAME}
                   </span>
                   <span class="tw-nav-brand-ver" data-hint={`平台版本 v${APP_VERSION}`}>
                     v{APP_VERSION}
@@ -184,124 +216,115 @@ const navItem = (active: boolean) =>
             </span>
           </a>
 
-          <a href={`${base}cases/library/`} class={navItem(pathHas('cases'))} data-hint="用例管理">
-            <svg
-              class="tw-nav-ico"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.75"
-              aria-hidden="true"
-            >
-              <path d="M9 11l3 3L22 4"></path>
-              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-            </svg>
-            <span class="tw-nav-label" data-i18n="nav.caseManage">
-              用例管理
-            </span>
-          </a>
-
-          <a href={`${base}prompts/`} class={navItem(pathHas('prompts'))} data-hint="提示词管理">
-            <svg
-              class="tw-nav-ico"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.75"
-              aria-hidden="true"
-            >
-              <path d="M12 20h9"></path>
-              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
-            </svg>
-            <span class="tw-nav-label" data-i18n="nav.prompts">
-              提示词管理
-            </span>
-          </a>
-
-          <a
-            href={`${base}knowledge/`}
-            class={navItem(pathHas('knowledge'))}
-            data-hint="知识库管理"
-          >
-            <svg
-              class="tw-nav-ico"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.75"
-              aria-hidden="true"
-            >
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-            </svg>
-            <span class="tw-nav-label" data-i18n="nav.knowledge">
-              知识库管理
-            </span>
-          </a>
-
-          <details class="tw-nav-details group/docs" open>
-            <summary
-              class:list={['tw-nav-item tw-nav-summary', docsOpen ? 'is-branch-active' : '']}
-              data-hint="文档库"
-            >
-              <!-- 收起：合上文件夹；展开（details open）：打开文件夹 -->
-              <svg
-                class="tw-nav-ico tw-nav-ico--closed"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                aria-hidden="true"
+          <div class="tw-nav-libraries">
+            <div class="tw-nav-libraries-ph">
+              <a
+                href={`${base}cases/library/`}
+                class={navItem(pathHas('cases'))}
+                data-plugin-nav="cases"
               >
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
-              </svg>
-              <svg
-                class="tw-nav-ico tw-nav-ico--open"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                aria-hidden="true"
-              >
-                <path d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path>
-              </svg>
-              <span class="tw-nav-label" data-i18n="nav.docs">
-                文档库
-              </span>
-              <svg
-                class="tw-nav-chevron opacity-70"
-                viewBox="0 0 20 20"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                aria-hidden="true"
-              >
-                <path d="M7 5l6 5-6 5" stroke-linecap="round" stroke-linejoin="round"></path>
-              </svg>
-            </summary>
-            <div class="tw-nav-subtree-anim">
-              <div class="tw-nav-subtree">
-                <a
-                  href={`${base}requirements/`}
-                  class={navItem(pathHas('requirements'))}
-                  data-hint="需求文档库"
+                <svg
+                  class="tw-nav-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  aria-hidden="true"
                 >
-                  <span class="tw-nav-label" data-i18n="nav.requirements">
-                    需求文档库
-                  </span>
-                </a>
-                <a
-                  href={`${base}templates/`}
-                  class={navItem(pathHas('templates'))}
-                  data-hint="测试模板库"
+                  <path d="M9 11l3 3L22 4"></path>
+                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                </svg>
+                <span class="tw-nav-label" data-i18n="nav.caseManage">
+                  用例管理
+                </span>
+              </a>
+              <a
+                href={`${base}prompts/`}
+                class={navItem(pathHas('prompts'))}
+                data-plugin-nav="prompts"
+              >
+                <svg
+                  class="tw-nav-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  aria-hidden="true"
                 >
-                  <span class="tw-nav-label" data-i18n="nav.templates">
-                    测试模板库
-                  </span>
-                </a>
-              </div>
+                  <path d="M12 20h9"></path>
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                </svg>
+                <span class="tw-nav-label" data-i18n="nav.prompts">
+                  提示词管理
+                </span>
+              </a>
+              <a
+                href={`${base}knowledge/`}
+                class={navItem(pathHas('knowledge'))}
+                data-plugin-nav="knowledgeLib"
+              >
+                <svg
+                  class="tw-nav-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  aria-hidden="true"
+                >
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                </svg>
+                <span class="tw-nav-label" data-i18n="nav.knowledge">
+                  知识库管理
+                </span>
+              </a>
+              <a
+                href={`${base}requirements/`}
+                class={navItem(pathHas('requirements'))}
+                data-plugin-nav="requirements"
+                data-i18n-hint="nav.requirements"
+              >
+                <svg
+                  class="tw-nav-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  aria-hidden="true"
+                >
+                  <path d="M14 3v5h5"></path>
+                  <path d="M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path>
+                  <path d="M8 13h8"></path>
+                  <path d="M8 17h6"></path>
+                </svg>
+                <span class="tw-nav-label" data-i18n="nav.requirements">
+                  需求文档库
+                </span>
+              </a>
+              <a
+                href={`${base}templates/`}
+                class={navItem(pathHas('templates'))}
+                data-plugin-nav="templates"
+                data-i18n-hint="nav.templates"
+              >
+                <svg
+                  class="tw-nav-ico"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3 3 8l9 5 9-5-9-5z"></path>
+                  <path d="m3 13 9 5 9-5"></path>
+                </svg>
+                <span class="tw-nav-label" data-i18n="nav.templates">
+                  测试模板库
+                </span>
+              </a>
             </div>
-          </details>
+            <NavLibraries client:only="react" transition:persist />
+          </div>
 
           <a
             href={`${base}docs/manual/`}
@@ -361,7 +384,7 @@ const navItem = (active: boolean) =>
             var g = JSON.parse(raw).general || {};
             if (g.language !== 'en') return;
             var en = {
-              'nav.brand': 'TestBench',
+              'nav.brand': 'Lantern Harness',
               'nav.home': 'My Workbench',
               'nav.caseManage': 'Test Cases',
               'nav.prompts': 'Prompts',
@@ -428,84 +451,6 @@ const navItem = (active: boolean) =>
     </div>
     <script is:inline>
       (function () {
-        /** 「文档库」分组展开状态：软导航会整页换 DOM，靠 localStorage 记住用户的收起/展开 */
-        var NAV_DOCS_KEY = 'tw.nav.docsOpen';
-        function navDocsStored() {
-          try {
-            var v = localStorage.getItem(NAV_DOCS_KEY);
-            return v === null ? null : v === '1';
-          } catch (e) {
-            return null;
-          }
-        }
-        function applyNavDocsState(doc) {
-          var state = navDocsStored();
-          if (state === null) return;
-          var details = (doc || document).querySelector('.tw-nav-details');
-          if (!details) return;
-          if (state) details.setAttribute('open', '');
-          else details.removeAttribute('open');
-        }
-
-        /** 主导航「文档库」二级菜单：收起时先播动画再去掉 open */
-        function bindNavDetails(root) {
-          var scope = root || document;
-          scope.querySelectorAll('.tw-nav-details').forEach(function (details) {
-            if (details.dataset.animBound === '1') return;
-            details.dataset.animBound = '1';
-            var panel = details.querySelector('.tw-nav-subtree-anim');
-            var summary = details.querySelector('summary');
-            if (!panel || !summary) return;
-
-            summary.addEventListener('click', function (e) {
-              e.preventDefault();
-              if (
-                details.classList.contains('is-closing') ||
-                details.classList.contains('is-opening')
-              ) {
-                return;
-              }
-              // 记录目标状态（点击后要变成的状态），供切页后还原
-              try {
-                localStorage.setItem(NAV_DOCS_KEY, details.open ? '0' : '1');
-              } catch (err) {}
-              if (details.open) {
-                details.classList.add('is-closing');
-                var finished = false;
-                var finishClose = function () {
-                  if (finished) return;
-                  finished = true;
-                  panel.removeEventListener('transitionend', onEnd);
-                  details.open = false;
-                  details.classList.remove('is-closing');
-                };
-                var onEnd = function (ev) {
-                  if (ev.target !== panel) return;
-                  if (ev.propertyName !== 'grid-template-rows') return;
-                  finishClose();
-                };
-                panel.addEventListener('transitionend', onEnd);
-                window.setTimeout(finishClose, 340);
-              } else {
-                details.classList.add('is-opening');
-                details.open = true;
-                window.requestAnimationFrame(function () {
-                  window.requestAnimationFrame(function () {
-                    details.classList.remove('is-opening');
-                  });
-                });
-              }
-            });
-          });
-        }
-
-        // 首屏先按记忆还原展开状态，避免「收起后又看到展开」的闪动
-        applyNavDocsState(document);
-        document.addEventListener('astro:page-load', function () {
-          bindNavDetails(document);
-        });
-        bindNavDetails(document);
-
         /**
          * 切页滚回顶部。
          * 只在「换页后」重置：若在 before-preparation（点击瞬间）就重置，
@@ -544,8 +489,6 @@ const navItem = (active: boolean) =>
         document.addEventListener('astro:before-swap', function (e) {
           var next = e.newDocument;
           if (!next || !next.documentElement) return;
-          // 换页前就把「文档库」分组还原成用户记忆的状态，避免新页先展开再收起
-          applyNavDocsState(next);
           var cur = document.documentElement;
           var nextRoot = next.documentElement;
           var theme = cur.dataset.theme;
@@ -560,6 +503,16 @@ const navItem = (active: boolean) =>
           // （表现为侧栏自己弹开、骨架又冒出来）。
           if (cur.dataset.navCollapsed === '1') nextRoot.dataset.navCollapsed = '1';
           if (cur.dataset.spaceService) nextRoot.dataset.spaceService = cur.dataset.spaceService;
+          // 插件开关同理：不搬过去会先亮出被隐藏的侧栏入口，等 page-load 再收起
+          [
+            'pluginOffCases',
+            'pluginOffPrompts',
+            'pluginOffKnowledgeLib',
+            'pluginOffRequirements',
+            'pluginOffTemplates',
+          ].forEach(function (key) {
+            if (cur.dataset[key]) nextRoot.dataset[key] = cur.dataset[key];
+          });
         });
 
         /** 版本日志「查看更多」：委托绑定，兼容 View Transitions 软导航 */

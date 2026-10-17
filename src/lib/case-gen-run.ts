@@ -11,6 +11,7 @@ import {
 } from './case-template';
 import { CASE_FIELDS } from './export';
 import type { CaseGenPluginConfig } from './case-gen-config';
+import { isPluginEnabled, pluginDisabledMessage } from './plugins';
 import { writeDocsBinary, writeDocsText } from './project-docs';
 
 export interface CaseGenMetaPayload {
@@ -179,6 +180,9 @@ export async function persistGeneratedCases(opts: {
   title: string;
   linkedPath?: string;
 }): Promise<string> {
+  if (!isPluginEnabled('cases')) {
+    throw new Error(pluginDisabledMessage('cases'));
+  }
   const meta = caseTypeMeta(opts.caseType);
   // 平铺写入 用例管理/ 根目录（不再按类型分子文件夹）
   const base = safeFileBase(opts.title);

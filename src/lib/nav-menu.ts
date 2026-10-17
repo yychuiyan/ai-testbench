@@ -1,0 +1,487 @@
+/**
+ * 侧栏菜单项与用户分组（邮箱文件夹那种：勾选条目，创建/编辑分组）。
+ * 默认不带任何分组：菜单平铺，分组由用户创建或由磁盘文件夹扫描得出。
+ */
+export type NavEntryId = 'cases' | 'prompts' | 'knowledgeLib' | 'requirements' | 'templates';
+
+export type NavOrderKey = `item:${NavEntryId}` | `group:${string}`;
+
+export interface NavEntryDef {
+  id: NavEntryId;
+  href: string;
+  i18n: 'nav.caseManage' | 'nav.prompts' | 'nav.knowledge' | 'nav.requirements' | 'nav.templates';
+  /** 对应扩展插件；未设则始终可见 */
+  plugin?: 'cases' | 'prompts' | 'knowledgeLib' | 'requirements' | 'templates';
+  match: string;
+}
+
+export interface NavMenuGroup {
+  id: string;
+  name: string;
+  items: NavEntryId[];
+  /** 子分组的父级；只支持一层 */
+  parentId?: string;
+}
+
+export const NAV_ENTRIES: readonly NavEntryDef[] = [
+  {
+    id: 'cases',
+    href: 'cases/library/',
+    i18n: 'nav.caseManage',
+    plugin: 'cases',
+    match: 'cases',
+  },
+  {
+    id: 'prompts',
+    href: 'prompts/',
+    i18n: 'nav.prompts',
+    plugin: 'prompts',
+    match: 'prompts',
+  },
+  {
+    id: 'knowledgeLib',
+    href: 'knowledge/',
+    i18n: 'nav.knowledge',
+    plugin: 'knowledgeLib',
+    match: 'knowledge',
+  },
+  {
+    id: 'requirements',
+    href: 'requirements/',
+    i18n: 'nav.requirements',
+    plugin: 'requirements',
+    match: 'requirements',
+  },
+  {
+    id: 'templates',
+    href: 'templates/',
+    i18n: 'nav.templates',
+    plugin: 'templates',
+    match: 'templates',
+  },
+];
+
+/**
+ * 默认不预置任何分组：空间新建时菜单平铺，分组由用户创建或由磁盘文件夹扫描得出。
+ * （历史版本曾内置「文档库」分组，导致空空间刷新时闪一下写死的分组。）
+ */
+export const DEFAULT_NAV_GROUPS: NavMenuGroup[] = [];
+
+/** 菜单图标：内置一组线性图标，用户可在菜单的「选择图标」里换 */
+export type NavIconId =
+  | 'check'
+  | 'pencil'
+  | 'book'
+  | 'fileText'
+  | 'layers'
+  | 'list'
+  | 'folder'
+  | 'star'
+  | 'database'
+  | 'target'
+  | 'code'
+  | 'flask'
+  | 'home'
+  | 'clipboard'
+  | 'bug'
+  | 'calendar'
+  | 'chart'
+  | 'globe'
+  | 'link'
+  | 'users'
+  | 'terminal'
+  | 'tag'
+  | 'flag'
+  | 'zap';
+
+export const NAV_ICON_IDS: readonly NavIconId[] = [
+  'check',
+  'pencil',
+  'book',
+  'fileText',
+  'layers',
+  'list',
+  'folder',
+  'star',
+  'database',
+  'target',
+  'code',
+  'flask',
+  'home',
+  'clipboard',
+  'bug',
+  'calendar',
+  'chart',
+  'globe',
+  'link',
+  'users',
+  'terminal',
+  'tag',
+  'flag',
+  'zap',
+];
+
+export const DEFAULT_NAV_ICONS: Record<NavEntryId, NavIconId> = {
+  cases: 'check',
+  prompts: 'pencil',
+  knowledgeLib: 'book',
+  requirements: 'fileText',
+  templates: 'layers',
+};
+
+export function isNavIconId(id: unknown): id is NavIconId {
+  return typeof id === 'string' && (NAV_ICON_IDS as readonly string[]).includes(id);
+}
+
+export function normalizeNavIcons(raw: unknown): Record<NavEntryId, NavIconId> {
+  const out = { ...DEFAULT_NAV_ICONS };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const entry of NAV_ENTRIES) {
+    const value = (raw as Record<string, unknown>)[entry.id];
+    if (isNavIconId(value)) out[entry.id] = value;
+  }
+  return out;
+}
+
+const ENTRY_IDS = new Set<NavEntryId>(NAV_ENTRIES.map((e) => e.id));
+
+export function isNavEntryId(id: unknown): id is NavEntryId {
+  return typeof id === 'string' && ENTRY_IDS.has(id as NavEntryId);
+}
+
+export function getNavEntry(id: NavEntryId): NavEntryDef {
+  return NAV_ENTRIES.find((e) => e.id === id)!;
+}
+
+export function itemOrderKey(id: NavEntryId): NavOrderKey {
+  return `item:${id}`;
+}
+
+export function groupOrderKey(id: string): NavOrderKey {
+  return `group:${id}`;
+}
+
+function uid(): string {
+  return `ng_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function cloneDefault(): NavMenuGroup[] {
+  return DEFAULT_NAV_GROUPS.map((g) => ({ id: g.id, name: g.name, items: [...g.items] }));
+}
+
+export function normalizeNavGroups(raw: unknown, fallbackToDefault = true): NavMenuGroup[] {
+  // 磁盘扫描结果为空就是「没有分组」，不能回落到默认分组
+  if (raw === undefined || raw === null) return fallbackToDefault ? cloneDefault() : [];
+  if (!Array.isArray(raw)) return fallbackToDefault ? cloneDefault() : [];
+  const seen = new Set<NavEntryId>();
+  const parsed: NavMenuGroup[] = [];
+  const usedIds = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const name = String(o.name ?? '').trim();
+    if (!name) continue;
+    let id = String(o.id ?? '').trim() || uid();
+    if (usedIds.has(id)) id = uid();
+    const items: NavEntryId[] = [];
+    if (Array.isArray(o.items)) {
+      for (const x of o.items) {
+        if (!isNavEntryId(x) || seen.has(x)) continue;
+        seen.add(x);
+        items.push(x);
+      }
+    }
+    const parentId = String(o.parentId ?? '').trim() || undefined;
+    usedIds.add(id);
+    parsed.push({ id, name, items, parentId });
+  }
+  const ids = new Set(parsed.map((g) => g.id));
+  const cleaned: NavMenuGroup[] = parsed.map((g) => {
+    let parentId = g.parentId;
+    if (!parentId || parentId === g.id || !ids.has(parentId)) parentId = undefined;
+    return parentId ? { ...g, parentId } : { id: g.id, name: g.name, items: g.items };
+  });
+  const byId = new Map(cleaned.map((g) => [g.id, g]));
+  const hoisted: NavMenuGroup[] = cleaned.map((g) => {
+    if (!g.parentId) return g;
+    const parent = byId.get(g.parentId);
+    if (parent?.parentId) {
+      const root = parent.parentId;
+      return root && root !== g.id && ids.has(root)
+        ? { ...g, parentId: root }
+        : { id: g.id, name: g.name, items: g.items };
+    }
+    return g;
+  });
+  const childOf = new Set(hoisted.map((g) => g.parentId).filter((x): x is string => Boolean(x)));
+  return hoisted.filter((g) => g.items.length > 0 || childOf.has(g.id));
+}
+
+export function upsertNavGroup(
+  groups: NavMenuGroup[],
+  draft: { id?: string; name: string; items: NavEntryId[]; parentId?: string },
+): { groups: NavMenuGroup[]; id: string } {
+  const name = draft.name.trim();
+  const items = draft.items.filter((id, i, arr) => isNavEntryId(id) && arr.indexOf(id) === i);
+  if (!name || !items.length) return { groups, id: draft.id?.trim() || '' };
+  const id = draft.id?.trim() || uid();
+  const existing = groups.find((g) => g.id === id);
+  let parentId =
+    draft.parentId !== undefined ? draft.parentId.trim() || undefined : existing?.parentId;
+  if (parentId === id) parentId = undefined;
+  if (parentId) {
+    const parent = groups.find((g) => g.id === parentId);
+    if (!parent) parentId = undefined;
+    else if (parent.parentId) parentId = parent.parentId;
+  }
+  const take = new Set(items);
+  const next = groups
+    .filter((g) => g.id !== id)
+    .map((g) => ({ ...g, items: g.items.filter((x) => !take.has(x)) }));
+  next.push(parentId ? { id, name, items, parentId } : { id, name, items });
+  return { groups: normalizeNavGroups(next), id };
+}
+
+export function childGroupIds(groups: NavMenuGroup[], parentId: string): string[] {
+  return groups.filter((g) => g.parentId === parentId).map((g) => g.id);
+}
+
+export function listChildGroups(groups: NavMenuGroup[], parentId: string): NavMenuGroup[] {
+  return groups.filter((g) => g.parentId === parentId);
+}
+
+export function topLevelGroups(groups: NavMenuGroup[]): NavMenuGroup[] {
+  return groups.filter((g) => !g.parentId);
+}
+
+export function removeNavGroup(groups: NavMenuGroup[], id: string): NavMenuGroup[] {
+  const removed = groups.find((g) => g.id === id);
+  if (!removed) return groups;
+  const rest = groups.filter((g) => g.id !== id);
+  if (removed.parentId) {
+    return rest.map((g) => {
+      if (g.id === removed.parentId) {
+        return { ...g, items: [...g.items, ...removed.items] };
+      }
+      if (g.parentId === id) return { ...g, parentId: removed.parentId };
+      return g;
+    });
+  }
+  return rest.map((g) => (g.parentId === id ? { id: g.id, name: g.name, items: g.items } : g));
+}
+
+export function addItemToGroup(
+  groups: NavMenuGroup[],
+  groupId: string,
+  itemId: NavEntryId,
+): NavMenuGroup[] {
+  const g = groups.find((x) => x.id === groupId);
+  if (!g || !isNavEntryId(itemId) || g.items.includes(itemId)) return groups;
+  return upsertNavGroup(groups, { id: g.id, name: g.name, items: [...g.items, itemId] }).groups;
+}
+
+export function removeItemFromGroup(
+  groups: NavMenuGroup[],
+  itemId: NavEntryId,
+): { groups: NavMenuGroup[]; owner: NavMenuGroup | null } {
+  const owner = groups.find((g) => g.items.includes(itemId)) ?? null;
+  if (!owner) return { groups, owner: null };
+  return {
+    groups: groups
+      .map((g) => (g.id === owner.id ? { ...g, items: g.items.filter((x) => x !== itemId) } : g))
+      .filter((g) => g.items.length > 0),
+    owner,
+  };
+}
+
+export function orderAfterLeaveGroup(
+  order: readonly string[],
+  itemId: NavEntryId,
+  owner: NavMenuGroup,
+  nextGroups: NavMenuGroup[],
+): NavOrderKey[] {
+  const itemKey = itemOrderKey(itemId);
+  const groupKey = groupOrderKey(owner.id);
+  const still = nextGroups.some((g) => g.id === owner.id);
+  const idx = order.indexOf(groupKey);
+  const filtered = order.filter((k) => k !== itemKey && (still || k !== groupKey));
+  const at = idx < 0 ? filtered.length : still ? idx + 1 : idx;
+  filtered.splice(at, 0, itemKey);
+  return normalizeNavOrder(filtered, nextGroups);
+}
+
+export type NavRenderNode =
+  { type: 'item'; id: NavEntryId } | { type: 'group'; group: NavMenuGroup };
+
+/** 未分组项按目录顺序；顶层分组出现在其（含子孙）第一个成员原本的位置 */
+export function catalogNavRenderList(groups: NavMenuGroup[]): NavRenderNode[] {
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const grouped = new Map<NavEntryId, NavMenuGroup>();
+  for (const g of groups) {
+    const top = g.parentId ? (byId.get(g.parentId) ?? g) : g;
+    for (const id of g.items) grouped.set(id, top);
+  }
+  const emitted = new Set<string>();
+  const out: NavRenderNode[] = [];
+  for (const entry of NAV_ENTRIES) {
+    const g = grouped.get(entry.id);
+    if (g) {
+      if (emitted.has(g.id)) continue;
+      emitted.add(g.id);
+      out.push({ type: 'group', group: g });
+    } else {
+      out.push({ type: 'item', id: entry.id });
+    }
+  }
+  return out;
+}
+
+export function defaultNavOrder(groups: NavMenuGroup[]): NavOrderKey[] {
+  return catalogNavRenderList(groups).map((n) =>
+    n.type === 'item' ? itemOrderKey(n.id) : groupOrderKey(n.group.id),
+  );
+}
+
+function validOrderKeys(groups: NavMenuGroup[]): Set<string> {
+  const grouped = new Set<NavEntryId>();
+  const valid = new Set<string>();
+  for (const g of groups) {
+    if (!g.parentId) valid.add(groupOrderKey(g.id));
+    for (const id of g.items) grouped.add(id);
+  }
+  for (const e of NAV_ENTRIES) {
+    if (!grouped.has(e.id)) valid.add(itemOrderKey(e.id));
+  }
+  return valid;
+}
+
+export function normalizeNavOrder(raw: unknown, groups: NavMenuGroup[]): NavOrderKey[] {
+  const valid = validOrderKeys(groups);
+  const out: NavOrderKey[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(raw)) {
+    for (const x of raw) {
+      if (typeof x !== 'string' || !valid.has(x) || seen.has(x)) continue;
+      seen.add(x);
+      out.push(x as NavOrderKey);
+    }
+  }
+  for (const k of defaultNavOrder(groups)) {
+    if (!seen.has(k)) out.push(k);
+  }
+  return out;
+}
+
+export function buildNavRenderList(
+  groups: NavMenuGroup[],
+  order?: readonly string[],
+): NavRenderNode[] {
+  const byGroup = new Map(groups.map((g) => [g.id, g]));
+  const groupedItems = new Set(groups.flatMap((g) => g.items));
+  const keys = normalizeNavOrder(order, groups);
+  const out: NavRenderNode[] = [];
+  for (const key of keys) {
+    if (key.startsWith('group:')) {
+      const g = byGroup.get(key.slice(6));
+      if (g) out.push({ type: 'group', group: g });
+      continue;
+    }
+    if (key.startsWith('item:')) {
+      const id = key.slice(5);
+      if (isNavEntryId(id) && !groupedItems.has(id)) out.push({ type: 'item', id });
+    }
+  }
+  return out;
+}
+
+export function orderAfterUpsert(
+  order: readonly string[],
+  nextGroups: NavMenuGroup[],
+  groupId: string,
+): NavOrderKey[] {
+  const g = nextGroups.find((x) => x.id === groupId);
+  if (!g) return normalizeNavOrder(order, nextGroups);
+  const take = new Set(g.items.map((id) => itemOrderKey(id)));
+  const groupKey = groupOrderKey(groupId);
+  const prev = [...order];
+  let insertAt = prev.length;
+  for (let i = 0; i < prev.length; i++) {
+    const k = prev[i];
+    if (k === groupKey || take.has(k as NavOrderKey)) {
+      insertAt = prev
+        .slice(0, i)
+        .filter((x) => x !== groupKey && !take.has(x as NavOrderKey)).length;
+      break;
+    }
+  }
+  const filtered = prev.filter((k) => k !== groupKey && !take.has(k as NavOrderKey));
+  filtered.splice(insertAt, 0, groupKey);
+  return normalizeNavOrder(filtered, nextGroups);
+}
+
+export function orderAfterRemove(
+  order: readonly string[],
+  removed: NavMenuGroup,
+  nextGroups: NavMenuGroup[],
+  childIds: readonly string[] = [],
+): NavOrderKey[] {
+  if (removed.parentId) return normalizeNavOrder(order, nextGroups);
+  const groupKey = groupOrderKey(removed.id);
+  // 删除分组后，组内菜单平铺到侧栏底部（帮助中心上方），而不是占回分组原来的位置
+  const append = [
+    ...childIds.map((id) => groupOrderKey(id)),
+    ...removed.items.map((id) => itemOrderKey(id)),
+  ];
+  const filtered = order.filter((k) => k !== groupKey);
+  filtered.push(...append);
+  return normalizeNavOrder(filtered, nextGroups);
+}
+
+export function moveNavOrder(
+  order: readonly NavOrderKey[],
+  key: NavOrderKey,
+  dir: -1 | 1,
+): NavOrderKey[] {
+  const i = order.indexOf(key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return [...order];
+  const next = [...order];
+  const a = next[i];
+  const b = next[j];
+  if (a === undefined || b === undefined) return next;
+  next[i] = b;
+  next[j] = a;
+  return next;
+}
+
+export function moveListItem<T>(list: readonly T[], id: T, dir: -1 | 1): T[] {
+  const i = list.indexOf(id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return [...list];
+  const next = [...list];
+  const a = next[i];
+  const b = next[j];
+  if (a === undefined || b === undefined) return next;
+  next[i] = b;
+  next[j] = a;
+  return next;
+}
+
+export function reorderList<T>(list: readonly T[], from: T, to: T): T[] {
+  const i = list.indexOf(from);
+  const j = list.indexOf(to);
+  if (i < 0 || j < 0 || i === j) return [...list];
+  const next = [...list];
+  const [item] = next.splice(i, 1);
+  if (item === undefined) return [...list];
+  next.splice(j, 0, item);
+  return next;
+}
+
+export function reorderNavOrder(
+  order: readonly NavOrderKey[],
+  fromKey: NavOrderKey,
+  toKey: NavOrderKey,
+): NavOrderKey[] {
+  return reorderList(order, fromKey, toKey);
+}

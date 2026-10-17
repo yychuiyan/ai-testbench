@@ -8,32 +8,33 @@ import { fileURLToPath } from 'node:url';
 import connect from 'connect';
 import sirv from 'sirv';
 
-import { tbConfigPlugin } from '../tb-plugins/tb-config.mjs';
-import { tbBashPlugin } from '../builtin/session/tb-bash.mjs';
-import { tbFsPlugin } from '../builtin/session/tb-fs.mjs';
-import { tbSchedulePlugin } from '../builtin/session/tb-schedule.mjs';
-import { tbSpillPlugin } from '../builtin/session/tb-spill.mjs';
-import { tbKbPlugin } from '../tb-plugins/tb-kb.mjs';
-import { tbMemoryPlugin } from '../tb-plugins/tb-memory.mjs';
-import { tbResourcesPlugin } from '../tb-plugins/tb-resources.mjs';
-import { tbWebPlugin } from '../builtin/session/tb-web.mjs';
+import { lhConfigPlugin } from '../lh-plugins/lh-config.mjs';
+import { lhBashPlugin } from '../builtin/session/lh-bash.mjs';
+import { lhFsPlugin } from '../builtin/session/lh-fs.mjs';
+import { lhSchedulePlugin } from '../builtin/session/lh-schedule.mjs';
+import { lhSpillPlugin } from '../builtin/session/lh-spill.mjs';
+import { lhKbPlugin } from '../lh-plugins/lh-kb.mjs';
+import { lhMemoryPlugin } from '../lh-plugins/lh-memory.mjs';
+import { lhResourcesPlugin } from '../lh-plugins/lh-resources.mjs';
+import { lhWebPlugin } from '../builtin/session/lh-web.mjs';
 import { tbSessionRunsPlugin } from '../builtin/session/session-runs.mjs';
-import { tbSpacesPlugin } from '../builtin/session/tb-spaces.mjs';
+import { lhSpacesPlugin } from '../builtin/session/lh-spaces.mjs';
+import { lhNavGroupsPlugin } from '../builtin/session/lh-nav-groups.mjs';
 import { ensureSpaceContext, getDataRoot } from '../builtin/session/space-context.mjs';
 import { prepareSpacesRoot } from './data-root.mjs';
 import {
-  tbCasesPlugin,
-  tbKnowledgePlugin,
-  tbPromptsPlugin,
-  tbRequirementsPlugin,
-  tbTemplatesPlugin,
-} from '../tb-plugins/tb-project-docs.mjs';
+  lhCasesPlugin,
+  lhKnowledgePlugin,
+  lhPromptsPlugin,
+  lhRequirementsPlugin,
+  lhTemplatesPlugin,
+} from '../lh-plugins/lh-project-docs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = path.resolve(__dirname, '..');
 export const DIST_DIR = path.join(PKG_ROOT, 'dist');
 
-// 数据根初始化已抽到 `cli/data-root.mjs`（tb-spaces 插件也要用，避免循环依赖）；
+// 数据根初始化已抽到 `cli/data-root.mjs`（lh-spaces 插件也要用，避免循环依赖）；
 // 这里继续对外导出，保持既有调用方不受影响。
 export { prepareSpacesRoot, prepareSpaceDir } from './data-root.mjs';
 
@@ -46,21 +47,22 @@ function attachPlugins(app, dataRoot) {
   };
   const plugins = [
     tbSessionRunsPlugin(),
-    tbSpacesPlugin(),
-    tbConfigPlugin(),
-    tbResourcesPlugin(),
-    tbMemoryPlugin(),
-    tbKbPlugin(),
-    tbFsPlugin(),
-    tbBashPlugin(),
-    tbSchedulePlugin(),
-    tbSpillPlugin(),
-    tbWebPlugin(),
-    tbRequirementsPlugin(),
-    tbCasesPlugin(),
-    tbTemplatesPlugin(),
-    tbPromptsPlugin(),
-    tbKnowledgePlugin(),
+    lhSpacesPlugin(),
+    lhNavGroupsPlugin(),
+    lhConfigPlugin(),
+    lhResourcesPlugin(),
+    lhMemoryPlugin(),
+    lhKbPlugin(),
+    lhFsPlugin(),
+    lhBashPlugin(),
+    lhSchedulePlugin(),
+    lhSpillPlugin(),
+    lhWebPlugin(),
+    lhRequirementsPlugin(),
+    lhCasesPlugin(),
+    lhTemplatesPlugin(),
+    lhPromptsPlugin(),
+    lhKnowledgePlugin(),
   ];
   for (const plugin of plugins) {
     if (typeof plugin.configureServer === 'function') {
@@ -71,7 +73,7 @@ function attachPlugins(app, dataRoot) {
 
 /**
  * @param {{ dataRoot: string, host?: string, port?: number }} opts
- * `opts.dataRoot` 是池根（tbench 记住的数据目录）：公共空间在 `<池根>/公共空间`。
+ * `opts.dataRoot` 是池根（lantern 记住的数据目录）：公共空间在 `<池根>/公共空间`。
  * @returns {Promise<{ url: string, server: http.Server, dataRoot: string }>} dataRoot 为当前生效的空间目录
  */
 export function startLocalServer(opts) {
@@ -81,7 +83,7 @@ export function startLocalServer(opts) {
 
   if (!fs.existsSync(DIST_DIR) || !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
     throw new Error(
-      `未找到构建产物 dist/。请先在仓库执行 pnpm build，或重新安装 ai-testbench 包。\n路径：${DIST_DIR}`,
+      `未找到构建产物 dist/。请先在仓库执行 pnpm build，或重新安装 @lantern-harness/lh 包。\n路径：${DIST_DIR}`,
     );
   }
 

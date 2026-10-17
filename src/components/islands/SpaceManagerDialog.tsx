@@ -1,8 +1,12 @@
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 import { t } from '../../lib/i18n';
+import { completeChat } from '../../lib/llm';
+import { CHAT_SYSTEM_PROMPT_FILE } from '../../lib/prompts-meta';
+import { hydrateAppConfig, loadSettings } from '../../lib/settings';
 import { rememberActiveSpaceId } from '../../lib/space-scope';
+import { SPACE_PROMPT_GEN_SYSTEM, unwrapGeneratedPrompt } from '../../lib/space-system-prompt';
 import {
   copySpace,
   createSpace,
@@ -29,6 +33,13 @@ interface Props {
 
 type Busy = null | 'create' | 'rename' | 'copy' | 'delete' | 'import' | 'stats' | 'discover';
 
+function isAbortError(e: unknown): boolean {
+  return (
+    (e instanceof DOMException && e.name === 'AbortError') ||
+    (e instanceof Error && e.name === 'AbortError')
+  );
+}
+
 /** 禁用按钮本身不派发 hover，把气泡挂在包裹层上才能显示 */
 function HintWrap({ hint, children }: { hint?: string; children: ReactNode }) {
   if (!hint) return children;
@@ -46,6 +57,8 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
   const [notice, setNotice] = useState('');
 
   const [newName, setNewName] = useState('');
+  const [promptBrief, setPromptBrief] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
   const [renameTarget, setRenameTarget] = useState<SpaceInfo | null>(null);
   const [renameName, setRenameName] = useState('');
   const [confirm, setConfirm] = useState<
@@ -55,6 +68,9 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
   const [copyName, setCopyName] = useState('');
 
   const fileRef = useRef<HTMLInputElement>(null);
+  const briefRef = useRef<HTMLTextAreaElement>(null);
+  const generateAbortRef = useRef<AbortController | null>(null);
+  const [generating, setGenerating] = useState(false);
 
   const load = useCallback(
     async (stats = false) => {
@@ -79,27 +95,110 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
     loadRef.current = load;
   }, [load]);
 
+  function stopGenerate() {
+    generateAbortRef.current?.abort();
+  }
+
   useEffect(() => {
-    if (!open) return;
-    setError('');
-    setNotice('');
-    void loadRef.current(false);
+    if (open) {
+      setError('');
+      setNotice('');
+      setSystemPrompt('');
+      void loadRef.current(false);
+      return;
+    }
+    stopGenerate();
   }, [open]);
 
-  async function doCreate() {
+  useLayoutEffect(() => {
+    const el = briefRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
+  }, [promptBrief, open]);
+
+  async function doGeneratePrompt() {
+    if (generating || busy !== null) return;
+    const brief = promptBrief.trim();
+    if (!brief) {
+      setError(t('space.promptNeedReq'));
+      return;
+    }
+    setError('');
+    const ctrl = new AbortController();
+    generateAbortRef.current = ctrl;
+    setGenerating(true);
+    try {
+      await hydrateAppConfig();
+      const settings = loadSettings();
+      if (!settings?.apiKey?.trim() || !settings.model?.trim() || !settings.baseURL?.trim()) {
+        setError(t('space.promptNeedModel'));
+        return;
+      }
+      const spaceHint = newName.trim();
+      const text = await completeChat(
+        settings,
+        [
+          { role: 'system', content: SPACE_PROMPT_GEN_SYSTEM },
+          {
+            role: 'user',
+            content: (spaceHint ? `空间名称：${spaceHint}\n\n` : '') + `用户要求：\n${brief}`,
+          },
+        ],
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) return;
+      const cleaned = unwrapGeneratedPrompt(text);
+      if (!cleaned) {
+        setError(t('space.promptGenEmpty'));
+        return;
+      }
+      setSystemPrompt(cleaned);
+    } catch (e) {
+      if (isAbortError(e) || ctrl.signal.aborted) return;
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (generateAbortRef.current === ctrl) generateAbortRef.current = null;
+      setGenerating(false);
+    }
+  }
+
+  async function doCreate(_opts?: { closeAfter?: boolean }): Promise<boolean> {
+    if (busy !== null) return false;
     const name = newName.trim();
-    if (!name) return;
+    if (!name) {
+      setError(t('space.needName'));
+      return false;
+    }
+    stopGenerate();
+    const prompt = systemPrompt.trim();
     setBusy('create');
     setError('');
-    const out = await createSpace(name);
+    const out = await createSpace(name, {
+      switch: true,
+      ...(prompt ? { systemPrompt: prompt } : {}),
+    });
     setBusy(null);
     if (!out.ok) {
       setError(out.error || t('space.create') + ' 失败');
+      return false;
+    }
+    const createdId = out.space?.id;
+    if (createdId) rememberActiveSpaceId(createdId);
+    // 切到新空间后重载，提示词 / 知识库页才能读到该空间自己的文件
+    window.location.reload();
+    return true;
+  }
+
+  async function doFinish() {
+    if (working) return;
+    const name = newName.trim();
+    const brief = promptBrief.trim();
+    if (!name && !brief) {
+      onClose();
       return;
     }
-    setNewName('');
-    setNotice(`已创建「${out.space?.name}」`);
-    await load(false);
+    await doCreate({ closeAfter: true });
   }
 
   async function doRename() {
@@ -197,11 +296,14 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
   }
 
   const spaces = list?.spaces ?? [];
+  /** 空间路径展示要用基准根；列表未加载时退回原路径，避免把相对路径拼到 cwd 上 */
+  const spaceBaseRoot = list?.baseRoot;
   const working = busy !== null;
+  const canGenerate = Boolean(promptBrief.trim()) && !working && !generating;
 
   return (
     <>
-      <Dialog open={open} onClose={onClose} transition className="relative z-[95]">
+      <Dialog open={open} onClose={onClose} transition className="relative z-95">
         <DialogBackdrop
           transition
           className="tw-dialog-backdrop-anim fixed inset-0 bg-black/30"
@@ -256,16 +358,14 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
                   >
                     {busy === 'create' ? '…' : t('space.create')}
                   </button>
-                  <HintWrap hint={t('space.importPick')}>
-                    <button
-                      type="button"
-                      disabled={working}
-                      onClick={() => fileRef.current?.click()}
-                      className="h-9 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors"
-                    >
-                      {busy === 'import' ? '…' : t('space.import')}
-                    </button>
-                  </HintWrap>
+                  <button
+                    type="button"
+                    disabled={working}
+                    onClick={() => fileRef.current?.click()}
+                    className="h-9 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors"
+                  >
+                    {busy === 'import' ? '…' : t('space.import')}
+                  </button>
                   <input
                     ref={fileRef}
                     type="file"
@@ -279,6 +379,95 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
                     <code>{displaySpacePath(list.dataRoot, list.baseRoot)}</code>
                   </div>
                 ) : null}
+                <div className="mt-4 pt-3 border-t border-stone-200">
+                  <div className="text-xs font-medium text-stone-500 mb-1.5">
+                    {t('space.promptBriefLabel')}
+                  </div>
+                  <div className="tw-space-prompt-composer pt-1 rounded-lg bg-white border border-stone-200 outline-none transition-colors focus-within:ring-2 focus-within:ring-[#4176e6]/30 focus-within:border-[#4176e6]">
+                    <textarea
+                      ref={briefRef}
+                      value={promptBrief}
+                      onChange={(e) => setPromptBrief(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                          e.preventDefault();
+                          if (generating) {
+                            stopGenerate();
+                            return;
+                          }
+                          if (canGenerate) void doGeneratePrompt();
+                        }
+                      }}
+                      placeholder={t('space.promptBriefPlaceholder')}
+                      rows={1}
+                      disabled={working}
+                      className="block w-full min-h-6 pl-3.5 pr-2 pt-0.5 pb-0 text-sm leading-5 text-stone-800 bg-transparent resize-none focus:outline-none placeholder:text-stone-400 disabled:opacity-60"
+                    />
+                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 px-3 pb-2 pt-1">
+                      <span className="flex-1" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (generating) {
+                            stopGenerate();
+                            return;
+                          }
+                          void doGeneratePrompt();
+                        }}
+                        disabled={!generating && !canGenerate}
+                        aria-label={generating ? t('space.promptStop') : t('space.promptGenerate')}
+                        className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center outline-none transition-colors ${
+                          generating
+                            ? 'bg-stone-200 text-stone-700 hover:bg-stone-300'
+                            : 'bg-[#4176e6] text-white hover:bg-[#3565c7] disabled:bg-[#a9c3ef] disabled:cursor-not-allowed'
+                        }`}
+                      >
+                        {generating ? (
+                          <span className="w-2.5 h-2.5 bg-current rounded-xs" />
+                        ) : (
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            className="w-4 h-4"
+                            aria-hidden
+                          >
+                            <path d="m5 12 7-7 7 7" />
+                            <path d="M12 19V5" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex items-start gap-3">
+                    <p className="flex-1 min-w-0 text-[11px] text-stone-400 leading-snug">
+                      {t('space.promptHint')}
+                    </p>
+                    {generating ? (
+                      <p className="tw-busy-status shrink-0" aria-live="polite">
+                        {t('space.promptGeneratingStatus')}
+                        <span className="tw-busy-ellipsis" aria-hidden />
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-xs font-medium text-stone-500">
+                      {t('space.promptBodyLabel')}
+                    </label>
+                    <span className="text-[11px] text-stone-400 font-mono truncate">
+                      {CHAT_SYSTEM_PROMPT_FILE}
+                    </span>
+                  </div>
+                  <textarea
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    placeholder={t('space.promptBodyPlaceholder')}
+                    rows={6}
+                    disabled={working}
+                    className="w-full min-h-30 px-3 py-2 text-sm leading-relaxed rounded-lg border border-stone-200 text-stone-800 outline-none focus:ring-2 focus:ring-[#4176e6]/30 focus:border-[#4176e6] transition-colors resize-y font-[inherit]"
+                  />
+                </div>
               </div>
 
               {error ? (
@@ -371,10 +560,12 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
                         </div>
                         <div
                           className="mt-0.5 text-[11px] text-stone-400 truncate cursor-help hover:text-stone-500"
-                          data-hint={displaySpacePath(s.path, list.baseRoot)}
+                          data-hint={
+                            spaceBaseRoot ? displaySpacePath(s.path, spaceBaseRoot) : s.path
+                          }
                           data-hint-always=""
                         >
-                          {displaySpacePath(s.path, list.baseRoot)}
+                          {spaceBaseRoot ? displaySpacePath(s.path, spaceBaseRoot) : s.path}
                         </div>
                       </div>
 
@@ -449,10 +640,11 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
             <div className="flex justify-end gap-2 px-5 py-3 border-t border-stone-200">
               <button
                 type="button"
-                onClick={onClose}
-                className="tw-confirm-cancel h-8 px-3 text-sm rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 transition-colors"
+                disabled={working}
+                onClick={() => void doFinish()}
+                className="h-8 px-4 text-sm font-medium text-white bg-[#4176e6] rounded-lg hover:bg-[#3565c7] disabled:opacity-40 transition-colors"
               >
-                {t('space.done')}
+                {busy === 'create' ? '…' : t('space.done')}
               </button>
             </div>
           </DialogPanel>
@@ -464,7 +656,7 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
         open={renameTarget !== null}
         onClose={() => setRenameTarget(null)}
         transition
-        className="relative z-[96]"
+        className="relative z-96"
       >
         <DialogBackdrop
           transition
@@ -517,7 +709,7 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
         open={copyTarget !== null}
         onClose={() => setCopyTarget(null)}
         transition
-        className="relative z-[96]"
+        className="relative z-96"
       >
         <DialogBackdrop
           transition

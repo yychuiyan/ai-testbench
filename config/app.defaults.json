@@ -14,10 +14,16 @@
     "busySendBehavior": "queue"
   },
   "plugins": {
-    "caseGen": true,
-    "promptGen": true,
-    "knowledgeGen": true,
-    "knowledge": true,
-    "memory": true
+    "cases": false,
+    "caseGen": false,
+    "prompts": false,
+    "promptGen": false,
+    "knowledgeLib": false,
+    "knowledgeGen": false,
+    "requirements": false,
+    "templates": false,
+    "knowledge": false,
+    "memory": false,
+    "pluginDev": false
   }
 }

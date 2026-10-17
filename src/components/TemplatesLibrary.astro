@@ -18,7 +18,7 @@ const visibleCats = activeCategory ? categories.filter((c) => c === activeCatego
 const total = [...groups.values()].reduce((n, list) => n + list.length, 0);
 ---
 
-<div class="min-h-[calc(100vh-0px)] flex flex-col md:flex-row">
+<div class="min-h-screen flex flex-col md:flex-row">
   <aside class="md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-stone-200 bg-white md:min-h-screen">
     <div class="px-4 pt-6 pb-3 hidden md:block">
       <h1 class="text-sm font-semibold text-stone-900 tracking-wide">测试模板库</h1>

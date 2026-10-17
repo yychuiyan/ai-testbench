@@ -26,7 +26,7 @@ const ROW_HOVER =
   'transition-colors duration-150 hover:bg-stone-50 hover:shadow-[inset_3px_0_0_0_var(--tw-accent)] cursor-pointer';
 
 /** 时间列宽（表头与行共用，避免错位） */
-const TIME_COL_CLS = 'w-[9.5rem] shrink-0';
+const TIME_COL_CLS = 'w-38 shrink-0';
 /** 大小列宽（表头与值共用；左对齐） */
 const SIZE_COL_CLS = 'w-16 shrink-0 text-left';
 /** 操作列宽（在会话中打开 + 删除） */
@@ -183,7 +183,7 @@ export default function DocsFileBrowser({
             onChange={(e) => changeQuery(e.target.value)}
             placeholder={searchPlaceholder}
             aria-label={searchPlaceholder}
-            className={`${TOOL_INPUT_CLS} flex-1 min-w-[12rem]`}
+            className={`${TOOL_INPUT_CLS} flex-1 min-w-48`}
           />
           <SelectDropdown
             compact
@@ -192,7 +192,7 @@ export default function DocsFileBrowser({
             onChange={changeSortBy}
             ariaLabel="排序方式"
             showCheck={false}
-            className="w-[8.5rem] shrink-0"
+            className="w-34 shrink-0"
           />
         </div>
       ) : null}

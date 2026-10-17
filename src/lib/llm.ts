@@ -189,6 +189,9 @@ export async function* streamChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  /** 流是否正常收口：收到 finish_reason / usage / [DONE] 任一即算正常结束 */
+  let sawTerminal = false;
+  let finishReason = '';
 
   try {
     for (;;) {
@@ -201,60 +204,88 @@ export async function* streamChat(
         const trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
         const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') {
+          sawTerminal = true;
+          return;
+        }
+        let json: any;
         try {
-          const json = JSON.parse(data);
-          const deltaObj = json.choices?.[0]?.delta;
-          const reasoning = deltaObj?.reasoning_content;
-          if (typeof reasoning === 'string' && reasoning) {
-            yield { type: 'reasoning', delta: reasoning };
-          }
-          const content = deltaObj?.content;
-          if (typeof content === 'string' && content) {
-            yield { type: 'content', delta: content };
-          }
-          // 用量块（choices 为空数组，usage 字段独立于 delta）
-          const usage = json.usage;
-          if (usage && typeof usage.prompt_tokens === 'number') {
-            const cached =
-              typeof usage.prompt_cache_hit_tokens === 'number'
-                ? usage.prompt_cache_hit_tokens
-                : typeof usage.prompt_tokens_details?.cached_tokens === 'number'
-                  ? usage.prompt_tokens_details.cached_tokens
-                  : undefined;
-            const uncached =
-              typeof usage.prompt_cache_miss_tokens === 'number'
-                ? usage.prompt_cache_miss_tokens
-                : cached != null
-                  ? Math.max(0, usage.prompt_tokens - cached)
-                  : undefined;
-            const cacheWrite =
-              typeof usage.prompt_cache_write_tokens === 'number'
-                ? usage.prompt_cache_write_tokens
-                : typeof usage.prompt_tokens_details?.cache_creation_tokens === 'number'
-                  ? usage.prompt_tokens_details.cache_creation_tokens
-                  : undefined;
-            yield {
-              type: 'usage',
-              usage: {
-                cachedTokens: cached,
-                uncachedTokens: uncached,
-                cacheWriteTokens: cacheWrite,
-                promptTokens: usage.prompt_tokens,
-                completionTokens:
-                  typeof usage.completion_tokens === 'number' ? usage.completion_tokens : 0,
-                totalTokens:
-                  typeof usage.total_tokens === 'number' ? usage.total_tokens : usage.prompt_tokens,
-              },
-            };
-          }
+          json = JSON.parse(data);
         } catch {
           // 忽略半包 JSON，等待后续数据拼齐
+          continue;
+        }
+        // 网关/服务端可能在流中下发错误事件（限流、余额、内部错误），
+        // 以前会被静默忽略，表现为「模型忽然不说话了」
+        const errObj = json?.error;
+        if (errObj) {
+          const msg =
+            typeof errObj === 'string'
+              ? errObj
+              : String(errObj.message ?? errObj.code ?? '未知错误');
+          throw new Error(`模型服务返回错误：${msg}`);
+        }
+        const choice = json.choices?.[0];
+        if (typeof choice?.finish_reason === 'string' && choice.finish_reason) {
+          sawTerminal = true;
+          finishReason = choice.finish_reason;
+        }
+        const deltaObj = choice?.delta;
+        const reasoning = deltaObj?.reasoning_content;
+        if (typeof reasoning === 'string' && reasoning) {
+          yield { type: 'reasoning', delta: reasoning };
+        }
+        const content = deltaObj?.content;
+        if (typeof content === 'string' && content) {
+          yield { type: 'content', delta: content };
+        }
+        // 用量块（choices 为空数组，usage 字段独立于 delta）
+        const usage = json.usage;
+        if (usage && typeof usage.prompt_tokens === 'number') {
+          sawTerminal = true;
+          const cached =
+            typeof usage.prompt_cache_hit_tokens === 'number'
+              ? usage.prompt_cache_hit_tokens
+              : typeof usage.prompt_tokens_details?.cached_tokens === 'number'
+                ? usage.prompt_tokens_details.cached_tokens
+                : undefined;
+          const uncached =
+            typeof usage.prompt_cache_miss_tokens === 'number'
+              ? usage.prompt_cache_miss_tokens
+              : cached != null
+                ? Math.max(0, usage.prompt_tokens - cached)
+                : undefined;
+          const cacheWrite =
+            typeof usage.prompt_cache_write_tokens === 'number'
+              ? usage.prompt_cache_write_tokens
+              : typeof usage.prompt_tokens_details?.cache_creation_tokens === 'number'
+                ? usage.prompt_tokens_details.cache_creation_tokens
+                : undefined;
+          yield {
+            type: 'usage',
+            usage: {
+              cachedTokens: cached,
+              uncachedTokens: uncached,
+              cacheWriteTokens: cacheWrite,
+              promptTokens: usage.prompt_tokens,
+              completionTokens:
+                typeof usage.completion_tokens === 'number' ? usage.completion_tokens : 0,
+              totalTokens:
+                typeof usage.total_tokens === 'number' ? usage.total_tokens : usage.prompt_tokens,
+            },
+          };
         }
       }
     }
   } finally {
     reader.releaseLock();
+  }
+  if (finishReason === 'length') {
+    throw new Error('模型输出达到长度上限被截断（思考过长），请重试或缩短输入');
+  }
+  // 正常结束一定有 [DONE] / finish_reason / usage；三者都没有说明连接被中途掐断
+  if (!sawTerminal) {
+    throw new Error('模型流式连接中断（未收到结束标记），本轮内容可能不完整，请重试');
   }
 }
 
@@ -291,8 +322,6 @@ const DSML_PIPE = '[\\uFF5C|]';
  * - `< | | DSML | | calls>`（流式/部分网关会插入空格）
  */
 const DSML_PIPES = `(?:${DSML_PIPE}\\s*){1,3}`;
-/** @deprecated 兼容旧拼接；等同宽松管道串 */
-const DSML_SEP = DSML_PIPES;
 /** 开标签前缀 */
 const DSML_OPEN = `<\\s*${DSML_PIPES}DSML\\s*${DSML_PIPES}`;
 /** 闭标签前缀 */
@@ -574,11 +603,20 @@ async function completeOnce(
   };
 }
 
+/**
+ * 工具轮默认上限。
+ *
+ * 以前默认 5 轮，调研类任务常常要 6~10 个工具步骤才收集够信息，5 轮就被收口，
+ * 看起来像「模型自动终止」。这里放宽到 100：正常任务几乎触不到，同时仍能兜住
+ * 死循环把会话拖死（真无上限时，模型反复调工具只能靠用户手动中止）。
+ */
+export const DEFAULT_MAX_TOOL_ROUNDS = 100;
+
 export interface ToolChatOptions extends StreamOptions {
   tools?: ToolDef[];
   /** 执行工具：返回写入 role=tool 的 content 字符串 */
   runTool?: (name: string, argsJson: string) => Promise<string>;
-  /** 工具循环上限，防止死循环 */
+  /** 工具循环上限，防止死循环；缺省用 DEFAULT_MAX_TOOL_ROUNDS */
   maxToolRounds?: number;
 }
 
@@ -607,7 +645,7 @@ export async function* streamChatWithTools(
     }
     return msg;
   });
-  const maxRounds = options.maxToolRounds ?? 5;
+  const maxRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   // 工具轮与最终回答共用思考设置：DeepSeek 要求带 tool_calls 的 assistant
   // 若产生过 reasoning_content，后续请求必须原样回传。
   const toolOpts: StreamOptions = { ...options };
@@ -664,7 +702,14 @@ export async function* streamChatWithTools(
     return;
   }
 
-  // 轮次耗尽：兜底流式，并过滤 DSML
+  // 轮次耗尽：明确收口。此时不再传 tools，若模型仍按习惯输出工具调用标签，
+  // 会被 DSML 闸门整段丢掉，表现为「思考完就没了」——先让它别再调工具。
+  apiMessages.push({
+    role: 'user',
+    content:
+      `（系统提示）本轮工具调用已达上限 ${maxRounds} 轮。` +
+      '不要再调用工具，也不要输出工具调用标签；请基于以上已获得的信息直接给出最终答复，缺信息就说明还缺什么。',
+  });
   const fallbackOpts: StreamOptions = { thinking: options.thinking };
   yield* streamChatScrubbingDsml(settings, apiMessages, signal, fallbackOpts);
 }

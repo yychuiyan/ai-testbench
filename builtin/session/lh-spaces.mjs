@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { prepareSpaceDir } from '../../cli/data-root.mjs';
+import { prepareSpaceDir, writeSpaceSystemPrompt } from '../../cli/data-root.mjs';
 import {
   EXPORT_SCOPE_CONTENT,
   PUBLIC_SPACE_ID,
@@ -44,6 +44,7 @@ import {
   getBaseRoot,
   getDataRoot,
   getPublicSpaceRoot,
+  resetActiveRoot,
   setActiveRoot,
 } from './space-context.mjs';
 
@@ -113,10 +114,10 @@ function describeSpaces(withStats = false) {
   };
 }
 
-/** 把当前空间回写到 run.json，让 `tbench status` 显示的路径不落后于界面 */
+/** 把当前空间回写到 run.json，让 `lantern status` 显示的路径不落后于界面 */
 function syncRunState(dataRoot) {
   const state = loadRunState();
-  // 只在本进程就是被 tbench 托管的那份服务时回写，避免 astro dev 误改 CLI 状态
+  // 只在本进程就是被 lantern 托管的那份服务时回写，避免 astro dev 误改 CLI 状态
   if (!state || state.pid !== process.pid) return;
   saveRunState({ ...state, dataRoot });
 }
@@ -153,12 +154,57 @@ function switchSpace(id) {
   return { ok: true, space: { ...resolved.space, path: root } };
 }
 
-export function tbSpacesPlugin() {
+/**
+ * 让进程内的 activeRoot 与注册表里的 activeId 对齐。
+ *
+ * 注册表是持久的，但进程内的 activeRoot 每次启动都会回到公共空间；
+ * 不对齐的话，界面显示「任务空间」，而菜单分组落盘 / 配置写入 / 文档根全落到公共空间。
+ * 除了启动，GET /__tb_spaces（界面每次加载都会调）也会顺带自愈一次。
+ */
+function syncActiveRoot() {
+  let activeId = '';
+  try {
+    activeId = getActiveSpaceId();
+  } catch {
+    return { ok: false, changed: false };
+  }
+  if (!activeId || activeId === PUBLIC_SPACE_ID) {
+    return { ok: true, id: activeId, changed: false };
+  }
+
+  const resolved = resolveSpace(activeId, getBaseRoot());
+  if (!resolved.ok || !resolved.space.exists) {
+    // 注册表指向的空间已被删掉：退回公共空间，别让服务卡在错误目录
+    setActiveSpace(PUBLIC_SPACE_ID);
+    resetActiveRoot();
+    return { ok: false, id: activeId, changed: true, error: resolved.error };
+  }
+
+  const changed = path.resolve(resolved.space.path) !== path.resolve(getDataRoot());
+  if (!changed) return { ok: true, id: activeId, changed: false };
+
+  let root;
+  try {
+    root = prepareSpaceDir(resolved.space.path);
+  } catch (e) {
+    return { ok: false, id: activeId, changed: false, error: String(e?.message ?? e) };
+  }
+  setActiveRoot(root);
+  // 常驻 shell 的 cwd / env 绑在旧空间上，跟着切
+  closeAllBashSessions();
+  closeAllPwshSessions();
+  syncRunState(root);
+  return { ok: true, id: activeId, changed: true };
+}
+
+export function lhSpacesPlugin() {
   return {
-    name: 'tb-spaces',
+    name: 'lh-spaces',
     configureServer(server) {
       // 首次进入确定基准根；已切换过的空间不会被覆盖
       ensureSpaceContext(server.config.root);
+      // 新进程里 activeRoot 默认是公共空间：按注册表回到用户上次选的空间
+      syncActiveRoot();
 
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0] ?? '';
@@ -167,6 +213,8 @@ export function tbSpacesPlugin() {
         try {
           if (url === PREFIX && req.method === 'GET') {
             const q = new URLSearchParams(req.url.split('?')[1] ?? '');
+            // 自愈：注册表里的空间与进程内的数据根不一致时（如开发服务热重启）先对齐
+            syncActiveRoot();
             // 体积统计需要遍历目录，改为按需（管理面板传 stats=1）
             return sendJson(res, 200, describeSpaces(q.get('stats') === '1'));
           }
@@ -184,6 +232,10 @@ export function tbSpacesPlugin() {
 
           if (url === `${PREFIX}/create` && req.method === 'POST') {
             const body = await readJson(req);
+            const promptText = typeof body.systemPrompt === 'string' ? body.systemPrompt : '';
+            if (promptText.length > 80_000) {
+              return sendJson(res, 400, { ok: false, error: '默认提示词过长' });
+            }
             const created = createSpace({
               name: body.name,
               managedParent: body.managedParent,
@@ -192,6 +244,7 @@ export function tbSpacesPlugin() {
             if (!created.ok) return sendJson(res, 400, { ok: false, error: created.error });
             try {
               prepareSpaceDir(created.space.path);
+              if (promptText.trim()) writeSpaceSystemPrompt(created.space.path, promptText);
             } catch (e) {
               return sendJson(res, 500, {
                 ok: false,
@@ -264,7 +317,7 @@ export function tbSpacesPlugin() {
             const scope = normalizeExportScope(q.get('scope'));
             const resolved = resolveSpace(id, getBaseRoot());
             if (!resolved.ok) return sendJson(res, 404, { ok: false, error: resolved.error });
-            const tmpFile = path.join(os.tmpdir(), `tbench-space-${Date.now().toString(36)}.zip`);
+            const tmpFile = path.join(os.tmpdir(), `lantern-space-${Date.now().toString(36)}.zip`);
             const out = await exportSpaceToZip({
               id: resolved.space.id,
               outFile: tmpFile,
@@ -298,7 +351,7 @@ export function tbSpacesPlugin() {
               return sendJson(res, 400, { ok: false, error: '内容不是合法 base64' });
             }
             if (!buf.length) return sendJson(res, 400, { ok: false, error: '内容为空' });
-            const tmpFile = path.join(os.tmpdir(), `tbench-import-${Date.now().toString(36)}.zip`);
+            const tmpFile = path.join(os.tmpdir(), `lantern-import-${Date.now().toString(36)}.zip`);
             fs.writeFileSync(tmpFile, buf);
             try {
               const out = await importSpaceFromZip({
@@ -316,7 +369,7 @@ export function tbSpacesPlugin() {
           }
 
           if (url === `${PREFIX}/discover` && req.method === 'POST') {
-            // 扫描托管目录：把「带 .tb/space.json 清单的空间文件夹」纳入列表（整体拷贝进来的文件夹靠这里被识别）
+            // 扫描托管目录：把「带 .lantern/space.json 清单的空间文件夹」纳入列表（整体拷贝进来的文件夹靠这里被识别）
             const body = await readJson(req);
             const out = discoverSpaces({
               managedParent: body.managedParent ? String(body.managedParent) : undefined,
