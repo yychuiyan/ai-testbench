@@ -28,7 +28,7 @@ AI 工作台：对话与插件工具、需求 / 用例 / 知识 / 提示词内�
 npx lantern-harness
 ```
 
-执行后会安装全局短命令 `lantern`，之后用 `lantern init` / `lantern web` 操作即可。升级用 `lantern install`。
+执行后会安装全局短命令 `lantern`，之后用 `lantern init` / `lantern web` 操作即可。升级用 `lantern update`。
 
 2、 初始化数据空间（首次必做；可再次执行以更换数据空间）：
 
@@ -61,9 +61,9 @@ lantern logs           # 查看服务日志
 lantern doctor         # 检查运行环境与配置是否正常
 lantern help           # 显示操作命令列表
 lantern version        # 显示当前版本号
-lantern list           # 显示可安装的版本列表
-lantern install        # 安装/更新到最新版本
-lantern install 0.1.x  # 安装/更新到指定版本
+lantern list           # 显示可用版本列表
+lantern update         # 更新到最新版本
+lantern update 0.1.x   # 更新到指定版本
 lantern uninstall      # 卸载本机 lantern 命令（保留数据空间）
 lantern wipe           # 删除当前数据空间（需确认；不可恢复）
 lantern space list     # 列出全部数据空间与当前项

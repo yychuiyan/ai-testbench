@@ -145,8 +145,9 @@ function printHelp() {
   lantern doctor            检查运行环境与配置
   lantern help              显示本帮助
   lantern version           显示当前版本号
-  lantern list              显示可安装的版本列表
-  lantern install [版本]    安装/更新（默认 latest）
+  lantern list              显示可用版本列表
+  lantern update            更新到最新版本
+  lantern update <版本>     更新到指定版本
   lantern uninstall         卸载本机 lantern（保留数据空间）
   lantern wipe              删除当前数据空间（需确认）
 
@@ -518,10 +519,10 @@ function cmdList() {
   }
 }
 
-function cmdInstall(version) {
+function cmdUpdate(version) {
   const pm = getPackageManager();
   const spec = version ? `${PKG_NAME}@${version}` : `${PKG_NAME}@latest`;
-  console.log(`正在安装 ${spec} …`);
+  console.log(version ? `正在更新到 ${spec} …` : `正在更新到最新版本（${spec}）…`);
   const r = spawnSync(pm, pmGlobalArgs(pm, 'install', spec), {
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -946,8 +947,10 @@ async function main() {
       case 'list':
         cmdList();
         break;
+      case 'update':
+      // 旧文档 / 老脚本里的 install 仍可用，输出与 update 一致
       case 'install':
-        cmdInstall(args[0]);
+        cmdUpdate(args[0]);
         break;
       case 'uninstall':
         cmdUninstall();

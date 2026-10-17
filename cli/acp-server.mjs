@@ -13,9 +13,23 @@
  * - session/update  { sessionId, toolCall: { name, status, args?, result? } }
  */
 import readline from 'node:readline';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { headlessAsk, loadHeadlessSettings } from './headless.mjs';
 
 const PROTOCOL_VERSION = 1;
+
+/** 与 package.json 保持同源，避免发版时漏改 */
+const SERVER_VERSION = (() => {
+  try {
+    const pkg = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    return JSON.parse(fs.readFileSync(pkg, 'utf8')).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 function send(msg) {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -74,7 +88,7 @@ export async function runAcpServer(opts) {
           protocolVersion: PROTOCOL_VERSION,
           serverInfo: {
             name: 'lantern-harness-acp',
-            version: '0.1.1',
+            version: SERVER_VERSION,
           },
           capabilities: {
             sessions: true,
