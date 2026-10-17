@@ -1,8 +1,19 @@
 # 版本日志
 
+## [0.1.1] - 2026-10-18
+
+### 变更
+
+- 产品定位从「测试工程师工作台」调整为通用 AI 工作台：README 功能表收敛为 AI 工作台 / 会话记忆 / 插件库三项，用例生成、测试模板库、知识库管理等能力统一由插件库开启；`package.json` 的 `description` 同步
+- `package.json` 的 `keywords` 去掉 `qa` / `测试` / `测试工作台` / `测试用例` / `用例生成`，补上 `ai-workbench` / `local-first` / `byok` / `plugins` / `knowledge-base` / `prompt-library` / `memory`，并加入中文关键词便于站内检索
+
+### 修复
+
+- 纯静态部署（GitHub Pages）没有本地服务时，侧栏顶部不再留一块空白：改为显示不可点击的「工作区不可用」占位；探测完成前保留骨架，避免首帧闪一下再变回空间名
+
 ## [0.1.0] - 2026-10-17
 
-Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进程里隔离多套项目数据，内容库、插件、会话记忆与本地工具开箱可用。
+Lantern Harness 首个版本：AI 工作台。一份进程里隔离多套项目数据，内容库、插件、会话记忆与本地工具开箱可用。
 
 ### 新增
 
@@ -140,4 +151,5 @@ Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进
 - 开发服忽略打开内容库目录与空间元数据目录导致的整页热更新
 - 文档与 CLI 统一 pnpm 优先：安装 / 卸载 / 版本列表优先调用 pnpm（未安装则回退 npm）；README、安装手册、操作手册与贡献约定的开发命令改为 pnpm
 
+[0.1.1]: https://www.npmjs.com/package/lantern-harness/v/0.1.1
 [0.1.0]: https://www.npmjs.com/package/lantern-harness/v/0.1.0
