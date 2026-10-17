@@ -10,6 +10,7 @@ import { after, before, describe, it } from 'node:test';
 
 import {
   autoEnableDetectedPlugins,
+  markPluginsDisabled,
   scanNavGroups,
   syncNavGroups,
 } from '../../builtin/session/lh-nav-groups.mjs';
@@ -139,5 +140,46 @@ describe('新建空间的插件默认开关', () => {
     fs.writeFileSync(path.join(dir, 'a.md'), '# a', 'utf8');
     const out = autoEnableDetectedPlugins(fresh, defaults, []);
     assert.equal(out.plugins.cases, true, '用户放入的内容仍应自动打开对应插件');
+  });
+
+  it('用户手动关掉的插件不会被自动识别重新打开', () => {
+    // 第二个空间：内容已存在，但用户在自动识别之前就关掉了 cases
+    const space2 = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-manual-off-'));
+    fs.mkdirSync(path.join(space2, '.lantern'), { recursive: true });
+    fs.writeFileSync(
+      path.join(space2, '.lantern', 'space.json'),
+      JSON.stringify({ kind: 'lantern-harness-space', id: 'sp_off', name: '手动关闭' }),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(space2, DOC_ROOT_DIRS.cases.dirName), { recursive: true });
+    fs.writeFileSync(path.join(space2, DOC_ROOT_DIRS.cases.dirName, 'a.md'), '# a', 'utf8');
+
+    markPluginsDisabled(space2, ['cases']);
+    const out = autoEnableDetectedPlugins(space2, { ...defaults, cases: false }, []);
+    assert.equal(out.plugins.cases, false, '手动关闭的开关应保持关闭');
+
+    fs.rmSync(space2, { recursive: true, force: true });
+  });
+
+  it('空间目录改名后不会重跑自动识别并覆盖开关', () => {
+    const before = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-rename-a-'));
+    fs.mkdirSync(path.join(before, '.lantern'), { recursive: true });
+    fs.writeFileSync(
+      path.join(before, '.lantern', 'space.json'),
+      JSON.stringify({ kind: 'lantern-harness-space', id: 'sp_rename', name: '改名空间' }),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(before, DOC_ROOT_DIRS.cases.dirName), { recursive: true });
+    fs.writeFileSync(path.join(before, DOC_ROOT_DIRS.cases.dirName, 'a.md'), '# a', 'utf8');
+    const first = autoEnableDetectedPlugins(before, defaults, []);
+    assert.equal(first.plugins.cases, true);
+
+    // 用户随即关掉，并把整个空间目录改名
+    const after = `${before}-renamed`;
+    fs.renameSync(before, after);
+    const second = autoEnableDetectedPlugins(after, { ...defaults, cases: false }, []);
+    assert.equal(second.plugins.cases, false, '改名后不应因为账本换 key 而重新打开');
+
+    fs.rmSync(after, { recursive: true, force: true });
   });
 });

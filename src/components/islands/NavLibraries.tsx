@@ -1436,6 +1436,8 @@ export default function NavLibraries() {
 
   return (
     <>
+      {/* 空标记：所有菜单都关掉时岛屿渲染为空，占位骨架要靠它判断「已挂载」 */}
+      <span className="tw-nav-ready" aria-hidden="true" />
       {nodes.map((node) => {
         if (node.type === 'item') {
           if (!entryVisible(node.id, plugins)) return null;

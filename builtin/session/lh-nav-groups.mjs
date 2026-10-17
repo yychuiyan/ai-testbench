@@ -23,7 +23,7 @@ import path from 'node:path';
 import { DOC_ROOT_DIRS } from '../../lh-plugins/lh-project-docs.mjs';
 import { getUserConfigDir } from '../../cli/user-config.mjs';
 import { getDataRoot } from './space-context.mjs';
-import { GROUP_MANIFEST_FILE, resolveContentRoot } from './space-layout.mjs';
+import { GROUP_MANIFEST_FILE, resolveContentRoot, spaceLocalFile } from './space-layout.mjs';
 
 const PREFIX = '/__tb_nav/groups';
 
@@ -235,9 +235,81 @@ export function scanNavGroups(spaceDir) {
   return { groups: kept, found: kept.length > 0 };
 }
 
+/** 空间身份：优先用清单里的 id（目录改名后仍能对上账），没有清单时退回绝对路径 */
+function autodetectKey(root) {
+  for (const rel of ['.lantern/space.json', 'space.json', '.tb/space.json']) {
+    const raw = readJson(path.join(root, rel), null);
+    const id = typeof raw?.id === 'string' ? raw.id.trim() : '';
+    if (id) return `id:${id}`;
+  }
+  return root;
+}
+
+function ledgerPathOf() {
+  return path.join(getUserConfigDir(), AUTODETECT_FILE);
+}
+
+function readLedgerStore() {
+  const raw = readJson(ledgerPathOf(), null);
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+function writeLedgerStore(store) {
+  try {
+    const fp = ledgerPathOf();
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+  } catch {
+    // 账本写不进去只会导致下次再判断一次，不影响启动
+  }
+}
+
+/** 手动开关记录：跟空间走，目录改名 / 换机器都不会被自动识别覆盖 */
+function manualOffFile(root) {
+  return spaceLocalFile(root, 'plugins-manual.json');
+}
+
+function readManualOff(root) {
+  const raw = readJson(manualOffFile(root), null);
+  const list = Array.isArray(raw?.off) ? raw.off.filter((x) => typeof x === 'string') : [];
+  return new Set(list);
+}
+
+/** 用户在插件页手动关掉 / 打开的开关：记进空间自己的本机状态，自动识别不再覆盖 */
+function updateOffList(spaceDir, add = [], remove = []) {
+  const root = path.resolve(spaceDir);
+  const off = readManualOff(root);
+  for (const id of remove) off.delete(id);
+  for (const id of add) off.add(id);
+  try {
+    const fp = manualOffFile(root);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, `${JSON.stringify({ off: [...off] }, null, 2)}\n`, 'utf8');
+  } catch {
+    // 写不进去只影响下一次自动识别，不影响插件开关本身
+  }
+}
+
+export function markPluginsDisabled(spaceDir, ids) {
+  updateOffList(
+    spaceDir,
+    (ids ?? []).filter((x) => typeof x === 'string'),
+    [],
+  );
+}
+
+export function markPluginsEnabled(spaceDir, ids) {
+  updateOffList(
+    spaceDir,
+    [],
+    (ids ?? []).filter((x) => typeof x === 'string'),
+  );
+}
+
 /**
  * 自动识别内容根并按需打开对应插件（每个根只处理一次）。
  * 识别依据：目录里已有内容，或已被某个分组引用（整份空间拷过来时靠后者）。
+ * 用户手动关掉的开关不会被重新打开。
  * @param {string} spaceDir
  * @param {Record<string, boolean>} plugins 当前空间插件开关
  * @param {Array<{items?: string[]}>} [navGroups] 配置里的分组（磁盘还没文件夹化时也能识别）
@@ -251,13 +323,13 @@ export function autoEnableDetectedPlugins(spaceDir, plugins, navGroups) {
     if (!Array.isArray(g?.items)) continue;
     for (const id of g.items) if (typeof id === 'string') referenced.add(id);
   }
-  const ledgerPath = path.join(getUserConfigDir(), AUTODETECT_FILE);
-  const ledger = readJson(ledgerPath, null);
-  const store = ledger && typeof ledger === 'object' && !Array.isArray(ledger) ? ledger : {};
-  const entry = store[root];
+  const store = readLedgerStore();
+  const key = autodetectKey(root);
+  const entry = store[key] ?? store[root];
   const seen = new Set(
     Array.isArray(entry?.roots) ? entry.roots.filter((x) => typeof x === 'string') : [],
   );
+  const off = readManualOff(root);
 
   let changed = false;
   let ledgerChanged = false;
@@ -269,20 +341,16 @@ export function autoEnableDetectedPlugins(spaceDir, plugins, navGroups) {
     seen.add(rootId);
     ledgerChanged = true;
     const pluginId = ROOT_PLUGIN_IDS[rootId];
-    if (pluginId && next[pluginId] !== true) {
+    if (pluginId && !off.has(pluginId) && next[pluginId] !== true) {
       next[pluginId] = true;
       changed = true;
     }
   }
 
   if (ledgerChanged) {
-    try {
-      store[root] = { roots: [...seen] };
-      fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
-      fs.writeFileSync(ledgerPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
-    } catch {
-      // 账本写不进去只会导致下次再判断一次，不影响启动
-    }
+    store[key] = { ...entry, roots: [...seen] };
+    if (key !== root) delete store[root];
+    writeLedgerStore(store);
   }
   return { plugins: next, changed };
 }
@@ -308,21 +376,16 @@ export function markNavRootsDetected(spaceDir, rootIds) {
   ).filter((id) => Object.hasOwn(DOC_ROOT_DIRS, id));
   if (!ids.length) return [];
 
-  const ledgerPath = path.join(getUserConfigDir(), AUTODETECT_FILE);
-  const ledger = readJson(ledgerPath, null);
-  const store = ledger && typeof ledger === 'object' && !Array.isArray(ledger) ? ledger : {};
-  const entry = store[root];
+  const store = readLedgerStore();
+  const key = autodetectKey(root);
+  const entry = store[key] ?? store[root];
   const seen = new Set(
     Array.isArray(entry?.roots) ? entry.roots.filter((x) => typeof x === 'string') : [],
   );
   for (const id of ids) seen.add(id);
-  try {
-    store[root] = { roots: [...seen] };
-    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
-    fs.writeFileSync(ledgerPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
-  } catch {
-    // 账本写不进去只会导致下次再判断一次，不影响启动
-  }
+  store[key] = { ...entry, roots: [...seen] };
+  if (key !== root) delete store[root];
+  writeLedgerStore(store);
   return ids;
 }
 

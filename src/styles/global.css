@@ -921,6 +921,11 @@ html[data-plugin-off-templates] [data-plugin-nav='templates'] {
   display: none;
 }
 
+/* 岛屿内的零尺寸标记：插件全关时岛屿没有可见菜单，但仍算「已挂载」 */
+.tw-nav-ready {
+  display: none;
+}
+
 /*
  * 用户已存过菜单布局（本地缓存里有 navOrder / navGroups）时，
  * 静态占位按固定顺序平铺，和真实布局不一致，会闪一下「排序前」的样子。
@@ -1907,6 +1912,10 @@ html[data-nav-collapsed='1'] .tw-nav-provider-chip {
   line-height: 1.5;
   color: #b42318;
   background: #fef3f2;
+  /* 空间路径可能很长：允许在任意位置折行，别顶出卡片边框 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 /* 深色下浅红底会是一块刺眼的白斑，改用与工作台红字一致的柔和红 */

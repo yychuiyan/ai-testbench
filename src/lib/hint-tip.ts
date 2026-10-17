@@ -25,6 +25,8 @@ const ARROW_INSET = 14;
 const ANIM_MS = 150;
 /** 气泡与锚点的间距（px） */
 const GAP = 6;
+/** 悬停期间也自动收起：图标按钮的气泡不应一直挂在界面上 */
+const AUTO_HIDE_MS = 3200;
 
 type Pos = { top: number; left: number; maxWidth: number; openUp: boolean; arrowLeft: number };
 
@@ -37,12 +39,19 @@ let pos: Pos | null = null;
 let entered = false;
 let enterRaf = 0;
 let exitTimer = 0;
+let autoHideTimer = 0;
 let watchRaf = 0;
 let inited = false;
 /** 气泡由鼠标悬停打开（而非键盘焦点），此时要盯住指针是否还在锚点上 */
 let openedByPointer = false;
 /** 最近一次指针位置；拿不到时不按位置判断，避免误收 */
 let pointerPos: { x: number; y: number } | null = null;
+/**
+ * 最近一次交互是鼠标还是键盘。
+ * 点击按钮会让它获得焦点：若此时再按 focusin 弹气泡，气泡会因为「有焦点」而不被收起，
+ * 看起来就是点完按钮后气泡一直挂着。只有键盘导航才用焦点弹气泡。
+ */
+let pointerModality = false;
 
 /**
  * 锚点已经不该再挂气泡：被卸载、收进关闭中的弹层、或尺寸归零。
@@ -92,6 +101,11 @@ function startWatch(): void {
       !insideRect(el.getBoundingClientRect(), pointerPos.x, pointerPos.y)
     ) {
       // 布局变化 / 滚动 / 元素被替换后指针已经不在锚点上，但不会补发 mouseout
+      hide();
+      return;
+    }
+    // 键盘打开的气泡：焦点移走（元素被 React 替换、弹层关闭）后同样不会补发 focusout
+    if (!openedByPointer && !el.contains(document.activeElement)) {
       hide();
       return;
     }
@@ -200,12 +214,21 @@ function show(el: HTMLElement, byPointer: boolean): void {
     });
   });
   startWatch();
+  if (autoHideTimer) window.clearTimeout(autoHideTimer);
+  autoHideTimer = window.setTimeout(() => {
+    autoHideTimer = 0;
+    if (current === el) hide();
+  }, AUTO_HIDE_MS);
 }
 
 function hide(): void {
   stopWatch();
   current = null;
   openedByPointer = false;
+  if (autoHideTimer) {
+    window.clearTimeout(autoHideTimer);
+    autoHideTimer = 0;
+  }
   if (!tipEl) return;
   entered = false;
   tipEl.dataset.closed = '';
@@ -224,6 +247,7 @@ function anchorOf(target: EventTarget | null): HTMLElement | null {
 }
 
 function onOver(e: MouseEvent): void {
+  pointerModality = true;
   const el = anchorOf(e.target);
   if (el === current) return;
   if (!el || !qualifies(el)) {
@@ -244,6 +268,8 @@ function onOut(e: MouseEvent): void {
 }
 
 function onFocusIn(e: FocusEvent): void {
+  // 鼠标点击也会触发 focusin：此时不让焦点再弹一次气泡，否则点击后气泡没人收
+  if (pointerModality) return;
   const el = anchorOf(e.target);
   if (el === current) return;
   if (!el || !qualifies(el)) {
@@ -280,14 +306,18 @@ function onMove(): void {
 /** 记录指针位置：布局变化后指针可能已经不在锚点上，靠它兜底收起 */
 function onPointerMove(e: PointerEvent): void {
   pointerPos = { x: e.clientX, y: e.clientY };
+  pointerModality = true;
 }
 
 /** 按下即收起，避免拖拽 / 弹层切换后气泡留在原地 */
 function onPointerDown(): void {
+  pointerModality = true;
   if (current) hide();
 }
 
 function onKey(e: KeyboardEvent): void {
+  // 键盘一介入就切回「焦点驱动」，之后 Tab 到图标按钮仍会正常提示
+  pointerModality = false;
   if (e.key === 'Escape' && current) hide();
 }
 
@@ -322,6 +352,10 @@ export function initHintTips(): void {
   // 软导航：气泡节点会随 body 内容被替换，重置引用即可，下次显示时重建
   document.addEventListener('astro:after-swap', () => {
     stopWatch();
+    if (autoHideTimer) {
+      window.clearTimeout(autoHideTimer);
+      autoHideTimer = 0;
+    }
     current = null;
     if (tipEl?.isConnected) tipEl.remove();
     tipEl = null;
