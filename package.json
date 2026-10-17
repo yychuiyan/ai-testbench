@@ -1,5 +1,5 @@
 {
-  "name": "@lantern-harness/lh",
+  "name": "lantern-harness",
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
@@ -22,9 +22,6 @@
   "homepage": "https://github.com/yychuiyan/lantern-harness#readme",
   "bin": {
     "lantern": "cli/lantern.mjs"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "files": [
     "dist",

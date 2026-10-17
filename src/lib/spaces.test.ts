@@ -1009,7 +1009,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-src-pool-'));
     fs.writeFileSync(
       path.join(root, 'package.json'),
-      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      JSON.stringify({ name: 'lantern-harness', bin: { lantern: 'cli/lantern.mjs' } }),
       'utf8',
     );
     fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
@@ -1028,7 +1028,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-src-flat-shell-'));
     fs.writeFileSync(
       path.join(root, 'package.json'),
-      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      JSON.stringify({ name: 'lantern-harness', bin: { lantern: 'cli/lantern.mjs' } }),
       'utf8',
     );
     fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
@@ -1096,7 +1096,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-prepare-dupe-'));
     fs.writeFileSync(
       path.join(root, 'package.json'),
-      JSON.stringify({ name: '@lantern-harness/lh', bin: { lantern: 'cli/lantern.mjs' } }),
+      JSON.stringify({ name: 'lantern-harness', bin: { lantern: 'cli/lantern.mjs' } }),
       'utf8',
     );
     fs.mkdirSync(path.join(root, 'cli'), { recursive: true });

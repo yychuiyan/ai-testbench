@@ -29,15 +29,13 @@ const hasAstro =
 
 if (!hasAstro) {
   console.warn(
-    '[@lantern-harness/lh] 缺少 dist/，且无法自动构建。请使用 npm 正式包，或在源码目录执行 pnpm build。',
+    '[lantern-harness] 缺少 dist/，且无法自动构建。请使用 npm 正式包，或在源码目录执行 pnpm build。',
   );
   process.exit(0);
 }
 
 const runner = pickRunner();
-console.log(
-  `[@lantern-harness/lh] 未找到 dist/，正在执行 ${runner.cmd} ${runner.args.join(' ')} …`,
-);
+console.log(`[lantern-harness] 未找到 dist/，正在执行 ${runner.cmd} ${runner.args.join(' ')} …`);
 const r = spawnSync(runner.cmd, runner.args, {
   cwd: root,
   stdio: 'inherit',

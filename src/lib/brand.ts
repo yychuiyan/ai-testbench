@@ -2,4 +2,4 @@
 export const APP_NAME = 'Lantern Harness';
 
 /** npm / package.json 名（命令 `lantern`） */
-export const PKG_NAME = '@lantern-harness/lh';
+export const PKG_NAME = 'lantern-harness';

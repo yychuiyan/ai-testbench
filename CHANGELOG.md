@@ -8,7 +8,7 @@ Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进
 
 #### 安装与分发
 
-- 一条命令安装：`npx @lantern-harness/lh`，运行后自动完成全局安装并得到全局命令 `lantern`
+- 一条命令安装：`npx lantern-harness`，运行后自动完成全局安装并得到全局命令 `lantern`
 - npm 一体服务：全局命令 `lantern`（`-y` / `--dir` / `--pick` 选择数据目录）
 - 升级与卸载：`lantern install [版本]`、`lantern uninstall`
 - 源码开发：`pnpm dev`（含本地落盘 API，固定 `127.0.0.1:4321`）、`pnpm start`、静态 `preview`
@@ -19,7 +19,7 @@ Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进
 - 帮助中心：操作手册 / 安装手册 / 版本日志三页，带侧边目录、上下页与文件浏览器；安装手册独立成篇（`docs/安装手册.md`）
 - GitHub Pages 静态部署（`withastro/action`）
 - 操作手册：`docs/操作手册.md`；规格：`docs/会话插件.md`、`docs/全局插件.md`
-- 命令入口：`bin` 仅提供 `lantern`（`cli/lantern.mjs`）；`npx @lantern-harness/lh` 会自动安装全局命令
+- 命令入口：`bin` 仅提供 `lantern`（`cli/lantern.mjs`）；`npx lantern-harness` 会自动安装全局命令
 - 本机配置落在 `~/.config/lantern-harness`（Windows `%APPDATA%/lantern-harness`）；旧安装的 `ai-testbench` 目录首次启动自动复制过来（原目录保留作备份），已有数据空间与模型配置无需手动迁移
 
 #### 多空间
@@ -131,7 +131,7 @@ Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进
 
 #### 工程与质量
 
-- 产品名称改为 **Lantern Harness**，GitHub 仓库为 `lantern-harness`，npm 包名 `@lantern-harness/lh`
+- 产品名称改为 **Lantern Harness**，GitHub 仓库为 `lantern-harness`，npm 包名 `lantern-harness`
 - 仓库内模块前缀统一为 `lh-`：`lh-plugins/`、`lh-*.mjs`（早期用过 `tb-` / `lb-`）；仓库根不再放置内容库目录
 - README 同步安装命令、常用命令与源码启动（含 clone / build / preview）；插件规格与操作手册同步更新；npm 补充中英文 keywords
 - ESLint（`src`）+ Prettier；`simple-git-hooks` + `lint-staged`
@@ -140,4 +140,4 @@ Lantern Harness 首个版本：测试工程师的本地 AI 工作台。一份进
 - 开发服忽略打开内容库目录与空间元数据目录导致的整页热更新
 - 文档与 CLI 统一 pnpm 优先：安装 / 卸载 / 版本列表优先调用 pnpm（未安装则回退 npm）；README、安装手册、操作手册与贡献约定的开发命令改为 pnpm
 
-[0.1.0]: https://www.npmjs.com/package/@lantern-harness/lh/v/0.1.0
+[0.1.0]: https://www.npmjs.com/package/lantern-harness/v/0.1.0

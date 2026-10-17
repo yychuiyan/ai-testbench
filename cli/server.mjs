@@ -83,7 +83,7 @@ export function startLocalServer(opts) {
 
   if (!fs.existsSync(DIST_DIR) || !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
     throw new Error(
-      `未找到构建产物 dist/。请先在仓库执行 pnpm build，或重新安装 @lantern-harness/lh 包。\n路径：${DIST_DIR}`,
+      `未找到构建产物 dist/。请先在仓库执行 pnpm build，或重新安装 lantern-harness 包。\n路径：${DIST_DIR}`,
     );
   }
 

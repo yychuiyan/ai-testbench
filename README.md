@@ -4,7 +4,7 @@
 
 面向测试工程师的 AI 个人工作台：AI 对话、功能测试用例生成、模板库、知识库、会话记忆。
 
-仓库：[yychuiyan/lantern-harness](https://github.com/yychuiyan/lantern-harness) · 文档：[lantern.yychuiyan.com](https://lantern.yychuiyan.com/) · npm 包 `@lantern-harness/lh`，命令 `lantern` · [变更日志](https://lantern.yychuiyan.com/docs/changelog/)
+仓库：[yychuiyan/lantern-harness](https://github.com/yychuiyan/lantern-harness) · 文档：[lantern.yychuiyan.com](https://lantern.yychuiyan.com/) · npm 包 `lantern-harness`，命令 `lantern` · [变更日志](https://lantern.yychuiyan.com/docs/changelog/)
 
 ## 功能
 
@@ -28,7 +28,7 @@
 1、 安装：
 
 ```bash
-npx @lantern-harness/lh
+npx lantern-harness
 ```
 
 执行后会安装全局短命令 `lantern`，之后用 `lantern init` / `lantern web` 操作即可。升级用 `lantern install`。
