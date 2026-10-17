@@ -33,7 +33,12 @@ import {
   spaceManifestLegacyFile,
   spaceMetaDir,
 } from '../builtin/session/space-layout.mjs';
-import { DOC_ROOT_DIRS, migrateLegacyRoot } from '../lh-plugins/lh-project-docs.mjs';
+import {
+  CONTENT_ROOT_PLUGINS,
+  DOC_ROOT_DIRS,
+  isContentRootEnabled,
+  migrateLegacyRoot,
+} from '../lh-plugins/lh-project-docs.mjs';
 import { markNavRootsDetected } from '../builtin/session/lh-nav-groups.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -197,23 +202,97 @@ export function prepareSpaceDir(spaceDir) {
     fs.copyFileSync(PKG_DEFAULTS, destDefaults);
   }
 
+  // 内容目录按插件开关懒建：插件全关的新空间就是一个干净目录，
+  // 不会先铺出「用例管理 / 知识库管理」这类用户还没启用的入口。
   for (const { dirName, legacyDirNames } of Object.values(DOC_ROOT_DIRS)) {
     // 必须先迁移：一旦先建出中文目录，旧目录里的文件就再也不会被搬过来
     migrateLegacyRoot(root, legacyDirNames, dirName);
-    // 内容目录可能被归进了分组文件夹：跟着分组走，别在根上再铺一个空壳
     const dir = resolveContentRoot(root, dirName).abs;
-    fs.mkdirSync(dir, { recursive: true });
-    const keep = path.join(dir, '.gitkeep');
-    if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
+    const enabled = isContentRootEnabled(root, dirName);
+    // 旧版本会给所有内容目录铺一个只有 .gitkeep 的空壳：插件没启用就收掉，
+    // 让升级后的数据空间和全新安装保持一致（有真实内容的目录绝不动）
+    if (!enabled && isDir(dir) && onlyPlaceholders(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      continue;
+    }
+    if (isDir(dir) || isDir(path.join(root, dirName)) || enabled) {
+      fs.mkdirSync(dir, { recursive: true });
+      const keep = path.join(dir, '.gitkeep');
+      if (!fs.existsSync(keep)) fs.writeFileSync(keep, '', 'utf8');
+    }
   }
 
-  // 种子晚于建目录：这样「目标目录已存在」不会阻止种子落位
+  // 种子只补进已存在的目录（种子晚于建目录，这样「目录已存在」不会阻止种子落位）
   seedSpaceDir(root);
 
   // 新建空间：种子不算「用户搬进来的内容」，别让它触发插件自动开启
   if (freshSpace) markNavRootsDetected(root);
 
   return root;
+}
+
+function isDir(abs) {
+  try {
+    return fs.statSync(abs).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 用户手工纳入的外部文件夹：只保证运行时能读到配置，不铺目录、不播种子、
+ * 不写 space.json —— 用户的文件夹保持原样。
+ * @param {string} spaceDir
+ * @returns {string} 解析后的绝对路径
+ */
+export function prepareExternalSpaceDir(spaceDir) {
+  const root = path.resolve(spaceDir);
+  fs.mkdirSync(root, { recursive: true });
+  // 不做旧布局迁移：外部纳入的可能是普通文件夹（自带 config/ 或 .local/），
+  // 把它们搬进 .lantern 等于改了用户的目录结构。
+  fs.mkdirSync(spaceLocalDir(root), { recursive: true });
+  fs.mkdirSync(spaceConfigDir(root), { recursive: true });
+  const destDefaults = spaceConfigFile(root, 'app.defaults.json');
+  if (!fs.existsSync(destDefaults)) {
+    if (!fs.existsSync(PKG_DEFAULTS)) {
+      throw new Error(`缺少包内默认配置：${PKG_DEFAULTS}`);
+    }
+    fs.copyFileSync(PKG_DEFAULTS, destDefaults);
+  }
+  return root;
+}
+
+/** 目录里是否只有我们写下的占位文件（.gitkeep / .DS_Store） */
+function onlyPlaceholders(abs) {
+  try {
+    return fs
+      .readdirSync(abs)
+      .every((n) => n === '.gitkeep' || n === '.DS_Store' || n === 'Thumbs.db');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 启用某个内容库插件后补建对应目录并播种。
+ * @param {string} spaceDir
+ * @param {string[]} pluginIds
+ * @returns {string[]} 本次建出的内容目录名
+ */
+export function ensureContentDirs(spaceDir, pluginIds) {
+  const root = path.resolve(spaceDir);
+  const wanted = new Set(Array.isArray(pluginIds) ? pluginIds : []);
+  const created = [];
+  for (const [key, { dirName }] of Object.entries(DOC_ROOT_DIRS)) {
+    const pluginId = CONTENT_ROOT_PLUGINS[key];
+    if (!pluginId || !wanted.has(pluginId)) continue;
+    const dir = resolveContentRoot(root, dirName).abs;
+    if (isDir(dir)) continue;
+    fs.mkdirSync(dir, { recursive: true });
+    created.push(dirName);
+  }
+  if (created.length) seedSpaceDir(root);
+  return created;
 }
 
 /** 与提示词管理页、工作台读取的文件名一致 */
@@ -274,7 +353,8 @@ export function seedSpaceDir(spaceDir) {
     if (!fs.existsSync(seedDir)) continue;
     // 内容目录可能已在分组文件夹里：种子要播到实际位置
     const destDir = resolveContentRoot(root, dirName).abs;
-    fs.mkdirSync(destDir, { recursive: true });
+    // 目录不存在说明这个内容库插件没启用：不播种，空间保持干净
+    if (!isDir(destDir)) continue;
     if (!isPublic && dirName === DOC_ROOT_DIRS.knowledge.dirName) continue;
     if (!isPublic && dirName === DOC_ROOT_DIRS.prompts.dirName) {
       const from = path.join(seedDir, SPACE_SYSTEM_PROMPT_FILE);

@@ -15,7 +15,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
-import { resolveContentRoot } from '../builtin/session/space-layout.mjs';
+import {
+  resolveContentRoot,
+  spaceConfigFile,
+  spaceLocalFile,
+} from '../builtin/session/space-layout.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -220,15 +224,24 @@ function createDocsPlugin(opts) {
     configureServer(server) {
       const readyFlag = { done: false };
 
-      /** 每次请求按当前数据空间解析根目录（切换空间后自动生效） */
+      /** 每个请求按当前数据空间解析根目录（切换空间后自动生效） */
       const resolveDocsRoot = () => {
         const projectRoot = shared ? getPublicSpaceRoot() : getDataRoot();
         // 旧目录迁移必须在建目录之前做，否则搬迁逻辑再也触发不到
         migrateLegacyRoot(projectRoot, legacyDirNames, dirName);
         // 内容目录可能被归进了分组文件夹，按实际位置取
         const absRoot = resolveContentRoot(projectRoot, dirName).abs;
-        ensureRoot(absRoot, onReady, readyFlag);
+        // 插件没启用就不铺目录：读不到内容即可，别在数据空间里留下空文件夹
+        if (isContentRootEnabled(projectRoot, dirName)) {
+          ensureRoot(absRoot, onReady, readyFlag);
+        }
         return absRoot;
+      };
+
+      /** 只算路径、不建目录：health 探测不该替没启用的插件铺出空目录 */
+      const peekDocsRoot = () => {
+        const projectRoot = shared ? getPublicSpaceRoot() : getDataRoot();
+        return resolveContentRoot(projectRoot, dirName).abs;
       };
 
       function basenameOfRel(rel) {
@@ -294,22 +307,28 @@ function createDocsPlugin(opts) {
         const url = req.url?.split('?')[0] ?? '';
         if (!url.startsWith(prefix)) return next();
 
-        const absRoot = resolveDocsRoot();
+        // health 只是「服务在不在」的探针：不建目录、不播种，避免禁用中的插件被探测出空目录
+        const healthProbe = url === `${prefix}/health` && req.method === 'GET';
+        const absRoot = healthProbe ? peekDocsRoot() : resolveDocsRoot();
 
         try {
-          if (url === `${prefix}/health` && req.method === 'GET') {
-            ensureRoot(absRoot, onReady, readyFlag);
+          if (healthProbe) {
             return sendJson(res, 200, {
               ok: true,
               mode: 'project-docs',
               root: dirName,
               absRoot,
+              exists: fs.existsSync(absRoot),
             });
           }
 
           if (url === `${prefix}/list` && req.method === 'POST') {
             const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
             const { abs, display } = resolveUnderRoot(absRoot, body.path || '.');
+            // 插件未启用时内容目录还没建：根返回空列表，避免页面把它当报错
+            if (!fs.existsSync(abs) && display === '.') {
+              return sendJson(res, 200, { path: '.', entries: [] });
+            }
             if (!fs.existsSync(abs))
               return sendJson(res, 404, { error: 'not found', path: display });
             const st = fs.statSync(abs);
@@ -675,6 +694,38 @@ export const DOC_ROOT_DIRS = {
   prompts: { dirName: '提示词管理', legacyDirNames: ['prompts', '提示词'] },
   knowledge: { dirName: '知识库管理', legacyDirNames: ['knowledge', '知识库'] },
 };
+
+/** 内容目录 key → 对应插件 id（目录按插件开关懒建，插件关着就不该铺出空目录） */
+export const CONTENT_ROOT_PLUGINS = {
+  requirements: 'requirements',
+  cases: 'cases',
+  templates: 'templates',
+  prompts: 'prompts',
+  knowledge: 'knowledgeLib',
+};
+
+function readJsonOr(fp, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 该空间里这个内容目录的插件是否已启用：空间本机配置优先，其次空间内默认配置。
+ * @param {string} spaceDir
+ * @param {string} dirName 中文内容目录名
+ */
+export function isContentRootEnabled(spaceDir, dirName) {
+  const key = Object.keys(DOC_ROOT_DIRS).find((k) => DOC_ROOT_DIRS[k].dirName === dirName);
+  if (!key) return false;
+  const pluginId = CONTENT_ROOT_PLUGINS[key];
+  if (!pluginId) return false;
+  const defaults = readJsonOr(spaceConfigFile(spaceDir, 'app.defaults.json'), {})?.plugins ?? {};
+  const local = readJsonOr(spaceLocalFile(spaceDir, 'app.config.json'), {})?.plugins ?? {};
+  return (local[pluginId] ?? defaults[pluginId]) === true;
+}
 
 export function lhRequirementsPlugin() {
   return createDocsPlugin({

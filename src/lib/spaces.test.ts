@@ -40,10 +40,13 @@ import {
 } from '../../builtin/session/space-context.mjs';
 import { displaySpacePath, SPACE_POOL_DIR } from '../../builtin/session/space-layout.mjs';
 import {
+  ensureContentDirs,
+  prepareExternalSpaceDir,
   prepareSpaceDir,
   prepareSpacesRoot,
   writeSpaceSystemPrompt,
 } from '../../cli/data-root.mjs';
+import { DOC_ROOT_DIRS, isContentRootEnabled } from '../../lh-plugins/lh-project-docs.mjs';
 
 const ORIGINAL_XDG = process.env.XDG_CONFIG_HOME;
 
@@ -179,6 +182,25 @@ describe('listSpaces / resolveSpace', () => {
     setActiveSpace(space.id);
     assert.equal(getActiveSpaceId(), space.id);
     assert.equal(listSpaces(base).spaces.find((s) => s.isActive)?.name, '激活项');
+  });
+
+  it('整个数据目录改名后按清单身份重定位注册表路径', () => {
+    const space = okSpace(createSpace({ name: '改名保留', managedParent: base, baseRoot: base }));
+    setActiveSpace(space.id);
+
+    // 模拟用户把整个数据目录换了位置（注册表还记着旧绝对路径）
+    const moved = `${base}-moved`;
+    fs.renameSync(base, moved);
+    try {
+      const listed = listSpaces(moved);
+      const found = listed.spaces.find((s) => s.id === space.id);
+      assert.ok(found, '空间不应因为根目录改名而消失');
+      assert.equal(found!.exists, true, '应按清单身份找回目录');
+      assert.equal(found!.path, path.join(moved, '改名保留'));
+      assert.equal((resolveSpace(space.id, moved) as { ok: boolean }).ok, true);
+    } finally {
+      fs.renameSync(moved, base);
+    }
   });
 });
 
@@ -519,7 +541,7 @@ describe('空间清单 space.json（自包含）', () => {
 });
 
 describe('discoverSpaces 扫描纳入', () => {
-  it('纳入带清单的文件夹；无清单目录与重名目录被跳过', () => {
+  it('纳入带清单的文件夹；重名目录跳过；无清单目录只列为候选', () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-discover-'));
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-discover-other-'));
 
@@ -540,12 +562,18 @@ describe('discoverSpaces 扫描纳入', () => {
     const out = discoverSpaces({ managedParent: parent }) as {
       added: Array<{ id: string; name: string }>;
       skipped: Array<{ path: string; reason: string }>;
+      candidates: Array<{ name: string }>;
     };
     assert.equal(out.added.length, 1);
     assert.equal(out.added[0]!.name, '拷来的空间', '名称以目录名为准');
     assert.equal(out.added[0]!.id, 'sp_from_elsewhere');
     assert.equal(out.skipped.length, 1);
     assert.match(out.skipped[0]!.reason, /同名/);
+    assert.deepEqual(
+      out.candidates.map((c) => c.name),
+      ['普通目录'],
+      '普通目录不擅自纳入，等用户确认',
+    );
 
     // 清单会被同步成目录名，避免搬移后身份与登记名不一致
     const m = readSpaceManifest(incoming) as { ok: boolean; manifest?: { name: string } };
@@ -556,6 +584,92 @@ describe('discoverSpaces 扫描纳入', () => {
     assert.equal(again.added.length, 0);
 
     for (const d of [parent, other]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('确认纳入的普通文件夹只登记：不写清单、不铺目录、不播种子', () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-adopt-'));
+    const plain = path.join(parent, '资料文件夹');
+    fs.mkdirSync(path.join(plain, '用例管理'), { recursive: true });
+    fs.writeFileSync(path.join(plain, '用例管理', 'a.md'), '# a', 'utf8');
+    fs.mkdirSync(path.join(plain, '提示词管理'), { recursive: true });
+
+    // 默认只列为候选，不动文件夹
+    const scan = discoverSpaces({ managedParent: parent }) as {
+      added: unknown[];
+      candidates: Array<{ path: string; hasContent?: boolean }>;
+    };
+    assert.equal(scan.added.length, 0);
+    assert.equal(scan.candidates[0]!.hasContent, true, '带内容库目录的候选应有标记');
+    assert.equal(fs.existsSync(path.join(plain, '.lantern')), false);
+
+    // 用户确认后：登记进列表，仍然不写任何元数据
+    const out = discoverSpaces({ managedParent: parent, adopt: ['资料文件夹'] }) as {
+      added: Array<{ name: string; external?: boolean }>;
+    };
+    assert.equal(out.added.length, 1);
+    assert.equal(out.added[0]!.external, true);
+    assert.equal(fs.existsSync(path.join(plain, '.lantern')), false, '不能写 space.json 或骨架');
+    assert.equal(fs.readFileSync(path.join(plain, '用例管理', 'a.md'), 'utf8'), '# a');
+
+    // 再扫一次：外部空间不会被补写清单
+    const again = discoverSpaces({ managedParent: parent }) as {
+      backfilled: string[];
+      added: unknown[];
+    };
+    assert.deepEqual(again.added, []);
+    assert.deepEqual(again.backfilled, []);
+    assert.equal(fs.existsSync(path.join(plain, '.lantern')), false);
+
+    // 切到该空间时只补运行时配置：不搬动已有目录、不建内容目录、不播种子
+    fs.mkdirSync(path.join(plain, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(plain, 'config', 'keep.txt'), 'mine', 'utf8');
+    prepareExternalSpaceDir(plain);
+    assert.equal(fs.existsSync(path.join(plain, '.lantern', 'config', 'app.defaults.json')), true);
+    assert.equal(fs.existsSync(path.join(plain, '.lantern', 'local')), true);
+    assert.equal(fs.existsSync(path.join(plain, '.lantern', SPACE_MANIFEST_FILE)), false);
+    assert.equal(
+      fs.existsSync(path.join(plain, 'config', 'keep.txt')),
+      true,
+      '不搬动用户的 config/',
+    );
+    assert.equal(fs.existsSync(path.join(plain, '测试模板库')), false, '不铺没启用的目录');
+    assert.equal(
+      fs.existsSync(path.join(plain, '提示词管理', '默认提示词.md')),
+      false,
+      '已有的内容目录也不播种子',
+    );
+
+    // 删除数据时不代删用户自己的文件夹（没有空间元数据，无法确认是 Lantern 铺的）
+    const adoptedId = (out.added[0] as { id: string }).id;
+    const removed = removeSpace({ id: adoptedId, purge: true, baseRoot: base }) as {
+      purged: boolean;
+      warning?: string;
+    };
+    assert.equal(removed.purged, false);
+    assert.match(removed.warning ?? '', /未删除磁盘数据/);
+    assert.equal(fs.existsSync(plain), true, '外部文件夹必须保留');
+
+    fs.rmSync(parent, { recursive: true, force: true });
+  });
+
+  it('外部纳入的空间在池根整体搬移后按名称恢复路径', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-external-move-'));
+    const dir = path.join(root, '资料文件夹');
+    fs.mkdirSync(dir, { recursive: true });
+    const adopted = discoverSpaces({ managedParent: root, adopt: ['资料文件夹'] }) as {
+      added: Array<{ id: string; name: string }>;
+    };
+    assert.equal(adopted.added.length, 1);
+
+    const moved = `${root}-moved`;
+    fs.renameSync(root, moved);
+    const listed = listSpaces(moved);
+    const found = listed.spaces.find((s) => s.id === adopted.added[0]!.id);
+    assert.ok(found, '搬移后仍应在列表里');
+    assert.equal(path.resolve(found.path), path.resolve(path.join(moved, '资料文件夹')));
+    assert.equal(found.exists, true);
+
+    fs.rmSync(moved, { recursive: true, force: true });
   });
 
   it('为已登记但缺清单的空间补写清单；id 撞车时换新 id', () => {
@@ -745,12 +859,12 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
       '.lantern/config/app.defaults.json',
       '.lantern/local',
       '需求文档库',
-      '用例管理',
-      '测试模板库',
-      '提示词管理',
-      '知识库管理',
     ]) {
       assert.equal(fs.existsSync(path.join(pub, name)), true, `公共空间缺少 ${name}`);
+    }
+    // 插件默认关闭：没有内容的空间不应被铺出空的内容目录
+    for (const name of ['用例管理', '测试模板库', '提示词管理', '知识库管理']) {
+      assert.equal(fs.existsSync(path.join(pub, name)), false, `插件关闭时不应建 ${name}`);
     }
     // 内容目录在空间根可见，元数据不再与内容混在一起
     assert.equal(fs.existsSync(path.join(pub, 'config')), false, 'config 应改名为 .lantern/config');
@@ -959,6 +1073,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     fs.mkdirSync(path.join(root, '用例管理'), { recursive: true });
     fs.writeFileSync(path.join(root, '用例管理', 'outer.md'), 'outer', 'utf8');
     fs.writeFileSync(path.join(root, '用例管理', 'inner.md'), 'shadowed', 'utf8');
+    fs.mkdirSync(path.join(pub, '用例管理'), { recursive: true });
     fs.writeFileSync(path.join(pub, '用例管理', 'inner.md'), 'inner', 'utf8');
 
     prepareSpacesRoot(root);
@@ -991,6 +1106,9 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     assert.equal(path.basename(path.dirname(pub)), SPACE_POOL_DIR, '应使用 空间池 布局');
 
     // 1) 内容与池里完全一致：合并后应整份删掉，不再挂在仓库根
+    //    插件默认关闭，先手动放一份内容进池里的公共空间，才能比较「完全一致」
+    fs.mkdirSync(path.join(pub, '提示词管理'), { recursive: true });
+    fs.writeFileSync(path.join(pub, '提示词管理', '默认提示词.md'), 'seed', 'utf8');
     const dup = path.join(root, '公共空间');
     fs.mkdirSync(path.join(dup, '提示词管理'), { recursive: true });
     fs.writeFileSync(
@@ -1016,7 +1134,7 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('prepareSpaceDir 只处理单个空间目录，不再往下嵌套公共空间，并播下种子文档', () => {
+  it('prepareSpaceDir 只处理单个空间目录，不再往下嵌套公共空间，内容目录按插件开关懒建', () => {
     const space = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-spacedir-'));
     prepareSpaceDir(space);
     assert.equal(fs.existsSync(path.join(space, '.lantern', 'config', 'app.defaults.json')), true);
@@ -1024,11 +1142,23 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     assert.equal(fs.existsSync(path.join(space, 'config')), false, '不应在空间根留下 config');
     assert.equal(fs.existsSync(path.join(space, '.local')), false, '不应在空间根留下 .local');
     assert.equal(fs.existsSync(path.join(space, '公共空间')), false, '单空间目录不应再嵌套');
-    // 非公共空间：只播默认提示词，不从公共空间同步其它提示词 / 知识库文件
+    // 插件全关：数据空间应当是干净的，不先铺出任何内容目录
+    for (const dirName of Object.values(DOC_ROOT_DIRS).map((d) => d.dirName)) {
+      assert.equal(fs.existsSync(path.join(space, dirName)), false, `插件关闭时不应建 ${dirName}`);
+    }
+
+    // 打开提示词管理后：补建目录并播下默认提示词
+    fs.mkdirSync(path.join(space, '.lantern', 'local'), { recursive: true });
+    fs.writeFileSync(
+      path.join(space, '.lantern', 'local', 'app.config.json'),
+      JSON.stringify({ plugins: { prompts: true, templates: true } }),
+      'utf8',
+    );
+    prepareSpaceDir(space);
     assert.equal(
       fs.existsSync(path.join(space, '提示词管理', '默认提示词.md')),
       true,
-      '默认提示词应被播种',
+      '启用提示词管理后应播种默认提示词',
     );
     assert.equal(
       fs.existsSync(path.join(space, '提示词管理', '功能测试用例提示词v1.0.md')),
@@ -1072,10 +1202,33 @@ describe('prepareSpacesRoot：池根、空间池与旧布局迁移', () => {
     );
 
     // 用户改动过的文件不被覆盖
+    fs.mkdirSync(path.join(space, '知识库管理'), { recursive: true });
     const customKb = path.join(space, '知识库管理', '本空间笔记.md');
     fs.writeFileSync(customKb, 'mine', 'utf8');
     prepareSpaceDir(space);
     assert.equal(fs.readFileSync(customKb, 'utf8'), 'mine', '已存在的文件不得被覆盖');
+
+    fs.rmSync(space, { recursive: true, force: true });
+  });
+
+  it('启用内容库插件后按需补建目录并播种', () => {
+    const space = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-lazy-dir-'));
+    prepareSpaceDir(space);
+    assert.equal(fs.existsSync(path.join(space, '用例管理')), false);
+    assert.equal(isContentRootEnabled(space, '用例管理'), false);
+
+    fs.mkdirSync(path.join(space, '.lantern', 'local'), { recursive: true });
+    fs.writeFileSync(
+      path.join(space, '.lantern', 'local', 'app.config.json'),
+      JSON.stringify({ plugins: { cases: true } }),
+      'utf8',
+    );
+    assert.equal(isContentRootEnabled(space, '用例管理'), true);
+    const created = ensureContentDirs(space, ['cases']);
+    assert.deepEqual(created, ['用例管理']);
+    assert.equal(fs.existsSync(path.join(space, '用例管理')), true);
+    assert.equal(fs.existsSync(path.join(space, '知识库管理')), false, '没启用的插件仍不建目录');
+    assert.deepEqual(ensureContentDirs(space, ['cases']), [], '已存在的目录不重复建');
 
     fs.rmSync(space, { recursive: true, force: true });
   });

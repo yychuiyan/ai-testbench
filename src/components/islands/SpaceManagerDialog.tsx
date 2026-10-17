@@ -66,6 +66,11 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
   >(null);
   const [copyTarget, setCopyTarget] = useState<SpaceInfo | null>(null);
   const [copyName, setCopyName] = useState('');
+  /** 扫描到的「不是数据空间」的文件夹：确认后才登记，不改动文件夹内容 */
+  const [candidates, setCandidates] = useState<
+    Array<{ path: string; name: string; hasContent?: boolean }>
+  >([]);
+  const [adoptPick, setAdoptPick] = useState<Record<string, boolean>>({});
 
   const fileRef = useRef<HTMLInputElement>(null);
   const briefRef = useRef<HTMLTextAreaElement>(null);
@@ -262,6 +267,7 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
     setBusy('discover');
     setError('');
     setNotice('');
+    setCandidates([]);
     const out = await discoverSpaces();
     setBusy(null);
     if (!out.ok) {
@@ -271,10 +277,42 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
     const added = out.added?.length ?? 0;
     const backfilled = out.backfilled?.length ?? 0;
     const skipped = out.skipped?.length ?? 0;
+    const cands = out.candidates ?? [];
     const parts: string[] = [];
-    parts.push(added ? t('space.discoverAdded', { n: added }) : t('space.discoverNone'));
+    // 有候选时由下面的确认面板说明，别再提示「没有发现」
+    if (added) parts.push(t('space.discoverAdded', { n: added }));
+    else if (!cands.length) parts.push(t('space.discoverNone'));
     if (backfilled) parts.push(t('space.discoverBackfilled', { n: backfilled }));
     if (skipped) parts.push(t('space.discoverSkipped', { n: skipped }));
+    setNotice(parts.join('；'));
+    // 有「不是数据空间」的文件夹：列出来让用户确认是否纳入
+    setCandidates(cands);
+    setAdoptPick(Object.fromEntries(cands.map((c) => [c.path, c.hasContent === true])));
+    await load(false);
+  }
+
+  async function doAdoptSelected() {
+    const picked = candidates.filter((c) => adoptPick[c.path]).map((c) => c.path);
+    if (!picked.length) {
+      setCandidates([]);
+      setNotice(t('space.candidatesIgnored'));
+      return;
+    }
+    setBusy('discover');
+    setError('');
+    const out = await discoverSpaces(picked);
+    setBusy(null);
+    if (!out.ok) {
+      setError(out.error || '纳入失败');
+      return;
+    }
+    setCandidates([]);
+    const n = out.added?.length ?? 0;
+    const skipped = out.skipped ?? [];
+    const parts = [n ? t('space.candidatesAdopted', { n }) : t('space.candidatesIgnored')];
+    if (skipped.length) {
+      parts.push(t('space.candidatesRejected', { names: skipped.map((s) => s.reason).join('、') }));
+    }
     setNotice(parts.join('；'));
     await load(false);
   }
@@ -494,6 +532,78 @@ export default function SpaceManagerDialog({ open, onClose, onListChanged }: Pro
                   >
                     ✕
                   </button>
+                </div>
+              ) : null}
+
+              {candidates.length ? (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                  <div className="text-xs font-medium text-amber-800">
+                    {t('space.candidatesTitle', { n: candidates.length })}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-snug text-amber-700/90">
+                    {t('space.candidatesHint')}
+                  </p>
+                  <div className="mt-2 max-h-44 overflow-auto rounded-md border border-amber-200/70 bg-white divide-y divide-stone-100">
+                    {candidates.map((c) => (
+                      <label
+                        key={c.path}
+                        className="flex items-start gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-stone-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={adoptPick[c.path] === true}
+                          onChange={(e) =>
+                            setAdoptPick((prev) => ({ ...prev, [c.path]: e.target.checked }))
+                          }
+                          className="mt-0.5 accent-[#4176e6]"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs text-stone-800 truncate">{c.name}</span>
+                          <span className="block text-[10px] text-stone-400 truncate font-mono">
+                            {spaceBaseRoot ? displaySpacePath(c.path, spaceBaseRoot) : c.path}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAdoptPick(Object.fromEntries(candidates.map((c) => [c.path, true])))
+                      }
+                      className="text-[11px] text-[#4176e6] hover:underline"
+                    >
+                      {t('space.candidatesSelectAll')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdoptPick({})}
+                      className="text-[11px] text-stone-500 hover:underline"
+                    >
+                      {t('space.candidatesClear')}
+                    </button>
+                    <span className="flex-1" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCandidates([]);
+                        setAdoptPick({});
+                        setNotice(t('space.candidatesIgnored'));
+                      }}
+                      className="px-2.5 py-1 text-[11px] rounded-md border border-stone-200 text-stone-600 hover:bg-stone-50"
+                    >
+                      {t('space.candidatesIgnore')}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={working}
+                      onClick={() => void doAdoptSelected()}
+                      className="px-2.5 py-1 text-[11px] rounded-md bg-[#4176e6] text-white hover:bg-[#3565c7] disabled:opacity-40"
+                    >
+                      {t('space.candidatesAdopt')}
+                    </button>
+                  </div>
                 </div>
               ) : null}
 

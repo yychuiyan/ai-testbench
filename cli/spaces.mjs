@@ -31,6 +31,7 @@ import {
   spaceMetaDir,
 } from '../builtin/session/space-layout.mjs';
 import { getUserConfigDir } from './user-config.mjs';
+import { DOC_ROOT_DIRS } from '../lh-plugins/lh-project-docs.mjs';
 
 export const PUBLIC_SPACE_ID = 'public';
 export const PUBLIC_SPACE_NAME = '公共空间';
@@ -89,6 +90,35 @@ export function defaultManagedParent(baseRoot) {
 }
 
 /**
+ * 注册表里的绝对路径失效时（整个仓库/数据目录被改名或搬移）按清单身份在新池根下重定位。
+ * 只认清单 id / 名称都对得上的目录，避免把同名但无关的文件夹当成原空间。
+ * @param {string} abs 失效的旧路径
+ * @param {string} root 池根
+ * @param {string} pool 空间所在目录
+ * @param {{ id: string, name: string }} entry 注册表条目
+ * @returns {string | null}
+ */
+function rebaseMissingSpacePath(abs, root, pool, entry) {
+  const candidates = [];
+  const marker = `${path.sep}${SPACE_POOL_DIR}${path.sep}`;
+  const idx = abs.lastIndexOf(marker);
+  // 仓库/数据目录整体改名：旧路径里「空间池/<名称>」这段仍然有效
+  if (idx >= 0) candidates.push(path.join(pool, abs.slice(idx + marker.length)));
+  // 用户目录布局（没有空间池这一层）：按空间名在新池根下找
+  candidates.push(path.join(pool, entry.name));
+  if (path.resolve(pool) !== path.resolve(root)) candidates.push(path.join(root, entry.name));
+
+  for (const candidate of candidates) {
+    const next = path.resolve(candidate);
+    if (next === abs || !isDir(next)) continue;
+    const read = readSpaceManifest(next);
+    if (!read.ok) continue;
+    if (read.manifest.id === entry.id || read.manifest.name === entry.name) return next;
+  }
+  return null;
+}
+
+/**
  * 按当前池布局改写注册表路径：用户目录把 `空间池/X` 抬到 `X`；源码仓库把误摊的 `X` 收回 `空间池/X`。
  * @param {string} [baseRoot]
  */
@@ -101,6 +131,25 @@ export function relocateSpaceRegistryPaths(baseRoot) {
   for (const s of reg.spaces) {
     const abs = path.resolve(s.path);
     let next = null;
+    if (!isDir(abs)) {
+      // 旧根被改名 / 搬走：先按清单身份找回来
+      const rebased = rebaseMissingSpacePath(abs, root, pool, s);
+      if (rebased) {
+        s.path = rebased;
+        dirty = true;
+        continue;
+      }
+      // 外部纳入的文件夹没有清单可按身份找回，只能按名称在新池根下匹配
+      if (s.external) {
+        const byName = path.resolve(pool, s.name);
+        if (byName !== abs && isDir(byName)) {
+          s.path = byName;
+          dirty = true;
+          continue;
+        }
+      }
+      // 找不到身份时继续走常规布局改写：目录可能只是被池迁移挪了位置
+    }
     if (pool === root) {
       const rel = path.relative(nestedPrefix, abs);
       if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
@@ -149,6 +198,8 @@ export function loadSpacesRegistry() {
             name: String(it?.name || '').trim(),
             path: path.resolve(String(it?.path || '')),
             createdAt: Number(it?.createdAt) || 0,
+            // 用户手工确认纳入的文件夹：不写 space.json，保持目录原样
+            ...(it?.external === true ? { external: true } : {}),
           }))
           .filter((it) => it.id && it.name && it.path && it.path !== path.sep)
       : [];
@@ -304,6 +355,13 @@ function looksLikeSpaceDir(abs) {
   return hasLocal && hasDefaults;
 }
 
+/** 目录里是否有内容库的已知子目录（只拷内容、没拷元数据的空间靠这个提示出来） */
+function hasKnownContentDir(abs) {
+  return Object.values(DOC_ROOT_DIRS).some(({ dirName, legacyDirNames }) =>
+    [dirName, ...(legacyDirNames ?? [])].some((n) => isDir(path.join(abs, n))),
+  );
+}
+
 /**
  * 扫描空间池，把「空间文件夹」纳入注册表。
  *
@@ -311,7 +369,11 @@ function looksLikeSpaceDir(abs) {
  * - 带 `.lantern/space.json`（或旧 `.lantern/space.json` / 根目录清单）的目录：按清单识别，并把清单同步为目录名 / 新 id
  * - 不带清单但形如数据空间的老目录：一并纳入并补写清单
  * - 已登记但缺清单的空间：只补写清单
- * @param {{ managedParent?: string, baseRoot?: string }} [opts]
+ * - 其它目录：不擅自纳入，作为 `candidates` 返回，由界面问用户是否纳入
+ *
+ * `opts.adopt` 传入用户确认纳入的目录：只登记进注册表（`external: true`），
+ * **不往文件夹里写任何元数据**（没有 space.json、不铺骨架、不播种子）。
+ * @param {{ managedParent?: string, baseRoot?: string, adopt?: string[] }} [opts]
  */
 export function discoverSpaces(opts = {}) {
   const reg = loadSpacesRegistry();
@@ -319,12 +381,62 @@ export function discoverSpaces(opts = {}) {
   const added = [];
   const backfilled = [];
   const skipped = [];
-  if (!isDir(parent)) return { ok: true, managedParent: parent, added, backfilled, skipped };
+  const candidates = [];
+  if (!isDir(parent)) {
+    return { ok: true, managedParent: parent, added, backfilled, skipped, candidates };
+  }
 
   const usedIds = new Set(reg.spaces.map((s) => s.id));
   const usedNames = new Set(reg.spaces.map((s) => s.name.toLowerCase()));
   const publicDir = path.resolve(path.join(parent, PUBLIC_SPACE_DIR));
+  const adoptList = Array.isArray(opts.adopt)
+    ? opts.adopt.filter((x) => typeof x === 'string' && x.trim())
+    : [];
 
+  // ① 用户确认纳入的非标准文件夹：只登记，文件保持原样
+  for (const raw of adoptList) {
+    const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(parent, raw);
+    const name = path.basename(abs);
+    if (path.dirname(abs) !== parent) {
+      skipped.push({ path: abs, reason: '只能纳入扫描目录下的直接子文件夹' });
+      continue;
+    }
+    if (abs === publicDir || name === PUBLIC_SPACE_DIR || name === SPACE_POOL_DIR) continue;
+    if (reg.spaces.some((s) => path.resolve(s.path) === abs)) continue;
+    let st;
+    try {
+      st = fs.lstatSync(abs);
+    } catch {
+      skipped.push({ path: abs, reason: '目录不存在' });
+      continue;
+    }
+    if (!st.isDirectory() || st.isSymbolicLink()) {
+      skipped.push({ path: abs, reason: '不是普通文件夹（或为符号链接）' });
+      continue;
+    }
+    const clean = sanitizeSpaceName(name);
+    if (!clean.ok) {
+      skipped.push({ path: abs, reason: clean.error });
+      continue;
+    }
+    if (usedNames.has(clean.name.toLowerCase())) {
+      skipped.push({ path: abs, reason: `已存在同名空间「${clean.name}」` });
+      continue;
+    }
+    const entry = {
+      id: newSpaceId(),
+      name: clean.name,
+      path: abs,
+      createdAt: Date.now(),
+      external: true,
+    };
+    reg.spaces.push(entry);
+    usedIds.add(entry.id);
+    usedNames.add(clean.name.toLowerCase());
+    added.push(entry);
+  }
+
+  // ② 常规扫描
   for (const ent of fs.readdirSync(parent, { withFileTypes: true })) {
     // 符号链接不跟随：避免把链接指向的任意目录纳入并后续物理删除
     if (!ent.isDirectory() || ent.isSymbolicLink()) continue;
@@ -334,8 +446,9 @@ export function discoverSpaces(opts = {}) {
 
     const registered = reg.spaces.find((s) => path.resolve(s.path) === abs);
     if (registered) {
-      // 已登记但缺清单：补写，使老空间同样可整体搬移
-      if (!resolveManifestPath(abs)) {
+      // 已登记但缺清单：补写，使老空间同样可整体搬移。
+      // 用户确认纳入的外部文件夹不写清单，保持原样。
+      if (!registered.external && !resolveManifestPath(abs)) {
         try {
           writeSpaceManifest(abs, registered);
           backfilled.push(registered.name);
@@ -347,8 +460,26 @@ export function discoverSpaces(opts = {}) {
     }
 
     const read = readSpaceManifest(abs);
-    // 既没有清单、又不像数据空间的目录：静默忽略（避免误纳入用户的普通文件夹）
-    if (!read.ok && !looksLikeSpaceDir(abs)) continue;
+    // 既没有清单、又不像数据空间的目录：不擅自纳入（避免误把用户的普通文件夹当成空间），
+    // 而是作为候选交给界面确认；名字非法或重名的直接报跳过。
+    if (!read.ok && !looksLikeSpaceDir(abs)) {
+      const clean = sanitizeSpaceName(ent.name);
+      if (!clean.ok) {
+        if (hasKnownContentDir(abs)) skipped.push({ path: abs, reason: clean.error });
+        continue;
+      }
+      if (usedNames.has(clean.name.toLowerCase())) {
+        skipped.push({ path: abs, reason: `已存在同名空间「${clean.name}」` });
+        continue;
+      }
+      if (ent.name.startsWith('.')) continue;
+      candidates.push({
+        path: abs,
+        name: clean.name,
+        hasContent: hasKnownContentDir(abs),
+      });
+      continue;
+    }
 
     // 以目录名为准：登记名与目录名必须一致，否则重命名 / 删除都要额外兜底
     const clean = sanitizeSpaceName(ent.name);
@@ -385,7 +516,7 @@ export function discoverSpaces(opts = {}) {
   }
 
   if (added.length) saveSpacesRegistry(reg);
-  return { ok: true, managedParent: parent, added, backfilled, skipped };
+  return { ok: true, managedParent: parent, added, backfilled, skipped, candidates };
 }
 
 /**
@@ -498,7 +629,9 @@ export function renameSpace(id, nextName, baseRoot) {
     target.path = nextPath;
   }
   saveSpacesRegistry(reg);
-  // 清单内的名称必须跟着改，否则搬移后身份与登记名不一致
+  // 清单内的名称必须跟着改，否则搬移后身份与登记名不一致。
+  // 用户手工纳入的外部文件夹不写清单，保持目录原样。
+  if (target?.external) return { ok: true, space: { ...space, name: clean.name, path: nextPath } };
   try {
     writeSpaceManifest(nextPath, {
       id: space.id,
@@ -562,6 +695,17 @@ export function removeSpace({ id, purge = false, baseRoot }) {
   saveSpacesRegistry(reg);
 
   if (!purge) return { ok: true, purged: false, space };
+
+  // 用户手工纳入的外部文件夹：没有空间元数据就不是我们铺的目录，
+  // 只移出列表，绝不代删（那可能是他自己的资料文件夹）
+  if (space.external && !resolveManifestPath(space.path)) {
+    return {
+      ok: true,
+      purged: false,
+      space,
+      warning: '已从列表移除；该文件夹不是 Lantern 创建的空间（无空间元数据），未删除磁盘数据',
+    };
+  }
 
   // 物理删除前的最后一道闸：确认目标确实是数据空间，避免手滑删掉普通目录
   const guard = assertLooksLikeSpace(space.path, defaultManagedParent(baseRoot));

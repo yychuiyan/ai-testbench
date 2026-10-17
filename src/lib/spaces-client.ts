@@ -48,9 +48,11 @@ export interface SpaceDiscoverResult {
   ok: boolean;
   error?: string;
   managedParent?: string;
-  added?: Array<{ id: string; name: string; path: string }>;
+  added?: Array<{ id: string; name: string; path: string; external?: boolean }>;
   backfilled?: string[];
   skipped?: Array<{ path: string; reason: string }>;
+  /** 不是数据空间、等待用户确认是否纳入的文件夹 */
+  candidates?: Array<{ path: string; name: string; hasContent?: boolean }>;
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -141,9 +143,15 @@ export function exportSpaceHref(id: string, scope: ExportScope = 'full'): string
   return `${API}/export?id=${encodeURIComponent(id)}${suffix}`;
 }
 
-/** 扫描托管目录，纳入带清单的空间文件夹（整体拷贝进来的空间靠这里被识别） */
-export function discoverSpaces(): Promise<SpaceDiscoverResult> {
-  return postJson<SpaceDiscoverResult>(`${API}/discover`, {});
+/**
+ * 扫描托管目录，纳入带清单的空间文件夹（整体拷贝进来的空间靠这里被识别）。
+ * @param adopt 用户确认纳入的普通文件夹：只登记进列表，不往文件夹里写元数据
+ */
+export function discoverSpaces(adopt?: string[]): Promise<SpaceDiscoverResult> {
+  return postJson<SpaceDiscoverResult>(
+    `${API}/discover`,
+    Array.isArray(adopt) && adopt.length ? { adopt } : {},
+  );
 }
 
 /** 导入 zip：文件转 base64 后提交（服务端只接受 JSON 体） */

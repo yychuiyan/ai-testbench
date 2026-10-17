@@ -159,6 +159,8 @@ function printHelp() {
   lantern space import <file.zip> [新名称] 从 zip 导入
   lantern space discover    扫描托管目录，纳入带 .lantern/space.json 清单的空间文件夹
                            （--parent <目录> 指定要扫描的目录）
+                           其它文件夹会列为候选；--adopt <文件夹名> 确认纳入
+                           （只登记进列表，不写入元数据，内容保持原样）
 
 进阶:
   lantern ask <提示词>      无界面单轮问答，直接输出结果
@@ -725,7 +727,11 @@ async function cmdSpaceAsync(args, flags) {
     }
 
     case 'discover': {
-      const out = discoverSpaces({ managedParent: flags.parent, baseRoot: base });
+      const out = discoverSpaces({
+        managedParent: flags.parent,
+        baseRoot: base,
+        adopt: flags.adopt?.length ? flags.adopt : undefined,
+      });
       console.log(`扫描目录：${displaySpacePath(out.managedParent, base)}`);
       if (out.added.length) {
         console.log(`已纳入 ${out.added.length} 个空间：`);
@@ -739,6 +745,16 @@ async function cmdSpaceAsync(args, flags) {
         );
       }
       for (const s of out.skipped) console.log(`跳过 ${s.path}：${s.reason}`);
+      if (out.candidates.length) {
+        console.log(`发现 ${out.candidates.length} 个不是数据空间的文件夹（未纳入）：`);
+        for (const c of out.candidates) {
+          console.log(`  ${c.name}  ${displaySpacePath(c.path, base)}`);
+        }
+        console.log(
+          '如需纳入，用 --adopt 指定（可重复）：lantern space discover --adopt <文件夹名>',
+        );
+        console.log('纳入只登记进列表，不写入 .lantern/space.json，文件夹内容保持原样。');
+      }
       return;
     }
 
@@ -825,6 +841,8 @@ function parseArgv(argv) {
     use: false,
     contentOnly: false,
     parent: null,
+    /** 用户确认纳入的普通文件夹（可重复），仅用于 space discover */
+    adopt: [],
   };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -839,6 +857,11 @@ function parseArgv(argv) {
       flags.parent = argv[++i];
       if (!flags.parent) throw new Error('--parent 需要路径参数');
     } else if (a.startsWith('--parent=')) flags.parent = a.slice('--parent='.length);
+    else if (a === '--adopt') {
+      const v = argv[++i];
+      if (!v) throw new Error('--adopt 需要文件夹名或路径');
+      flags.adopt.push(v);
+    } else if (a.startsWith('--adopt=')) flags.adopt.push(a.slice('--adopt='.length));
     else if (a === '--use') flags.use = true;
     else if (a === '-d' || a === '--dir') {
       flags.dir = argv[++i];

@@ -14,7 +14,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { prepareSpaceDir, writeSpaceSystemPrompt } from '../../cli/data-root.mjs';
+import {
+  prepareExternalSpaceDir,
+  prepareSpaceDir,
+  writeSpaceSystemPrompt,
+} from '../../cli/data-root.mjs';
 import {
   EXPORT_SCOPE_CONTENT,
   PUBLIC_SPACE_ID,
@@ -137,8 +141,11 @@ function switchSpace(id) {
 
   let root;
   try {
-    // 公共空间的 path 已是 `<池根>/公共空间`，这里只补该空间自己的骨架
-    root = prepareSpaceDir(resolved.space.path);
+    // 公共空间的 path 已是 `<池根>/公共空间`，这里只补该空间自己的骨架。
+    // 手工纳入的外部文件夹只补运行时配置，不铺目录 / 不播种子。
+    root = resolved.space.external
+      ? prepareExternalSpaceDir(resolved.space.path)
+      : prepareSpaceDir(resolved.space.path);
   } catch (e) {
     return { ok: false, status: 500, error: e instanceof Error ? e.message : String(e) };
   }
@@ -185,7 +192,9 @@ function syncActiveRoot() {
 
   let root;
   try {
-    root = prepareSpaceDir(resolved.space.path);
+    root = resolved.space.external
+      ? prepareExternalSpaceDir(resolved.space.path)
+      : prepareSpaceDir(resolved.space.path);
   } catch (e) {
     return { ok: false, id: activeId, changed: false, error: String(e?.message ?? e) };
   }
@@ -369,18 +378,26 @@ export function lhSpacesPlugin() {
           }
 
           if (url === `${PREFIX}/discover` && req.method === 'POST') {
-            // 扫描托管目录：把「带 .lantern/space.json 清单的空间文件夹」纳入列表（整体拷贝进来的文件夹靠这里被识别）
+            // 扫描托管目录：把「带 .lantern/space.json 清单的空间文件夹」纳入列表（整体拷贝进来的文件夹靠这里被识别）。
+            // 其它文件夹作为 candidates 返回，由界面确认后带 adopt 再次提交（只登记，不写元数据）。
             const body = await readJson(req);
             const out = discoverSpaces({
               managedParent: body.managedParent ? String(body.managedParent) : undefined,
               baseRoot: getBaseRoot(),
+              adopt: Array.isArray(body.adopt) ? body.adopt.map((x) => String(x)) : undefined,
             });
             return sendJson(res, 200, {
               ok: true,
               managedParent: out.managedParent,
-              added: out.added.map((s) => ({ id: s.id, name: s.name, path: s.path })),
+              added: out.added.map((s) => ({
+                id: s.id,
+                name: s.name,
+                path: s.path,
+                ...(s.external ? { external: true } : {}),
+              })),
               backfilled: out.backfilled,
               skipped: out.skipped,
+              candidates: out.candidates,
             });
           }
 

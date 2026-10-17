@@ -139,18 +139,16 @@ describe('POST /__tb_spaces/create 与 switch', () => {
     assert.equal(data.switched, true);
 
     const space = data.space as { path: string };
-    // prepareSpaceDir 应铺好隐藏元数据目录（.lantern/config + .lantern/local）与五个内容目录
-    for (const dirName of [
-      '.lantern',
-      '.lantern/config',
-      '.lantern/local',
-      '需求文档库',
-      '用例管理',
-      '提示词管理',
-      '知识库管理',
-      '测试模板库',
-    ]) {
+    // prepareSpaceDir 铺好隐藏元数据目录；插件全关时内容目录不预先创建
+    for (const dirName of ['.lantern', '.lantern/config', '.lantern/local']) {
       assert.equal(fs.existsSync(path.join(space.path, dirName)), true, `缺少 ${dirName}`);
+    }
+    for (const dirName of ['需求文档库', '用例管理', '提示词管理', '知识库管理', '测试模板库']) {
+      assert.equal(
+        fs.existsSync(path.join(space.path, dirName)),
+        false,
+        `插件关闭时不应建 ${dirName}`,
+      );
     }
     assert.equal(
       path.resolve(path.dirname(space.path)),
@@ -362,6 +360,7 @@ describe('GET /__tb_spaces/export 范围', () => {
       'p',
       'utf8',
     );
+    fs.mkdirSync(path.join(space.path, '需求文档库'), { recursive: true });
     fs.writeFileSync(path.join(space.path, '需求文档库', 'a.md'), '# a', 'utf8');
 
     const JSZip = (await import('jszip')).default;
@@ -413,6 +412,40 @@ describe('POST /__tb_spaces/discover', () => {
     const listed = await getJson('/__tb_spaces');
     const names = (listed.spaces as Array<Record<string, unknown>>).map((s) => s.name);
     assert.ok(names.includes('外部拷入'));
+  });
+
+  it('只有内容目录的文件夹先列为候选，确认纳入后只登记、不写元数据', async () => {
+    const bare = path.join(managed, '只拷了内容');
+    fs.mkdirSync(path.join(bare, '用例管理'), { recursive: true });
+    fs.writeFileSync(path.join(bare, '用例管理', 'a.md'), '# a', 'utf8');
+
+    // 第一次扫描：不擅自纳入，只列为候选
+    const first = await postJson('/__tb_spaces/discover', {});
+    assert.equal(first.status, 200);
+    const added = (first.data.added as Array<{ name: string }>).map((s) => s.name);
+    assert.equal(added.includes('只拷了内容'), false, '缺元数据的目录不能自动纳入');
+    const candidates = first.data.candidates as Array<{ path: string; hasContent?: boolean }>;
+    const cand = candidates.find((c) => path.resolve(c.path) === path.resolve(bare));
+    assert.ok(cand, '应作为候选返回，等用户确认');
+    assert.equal(cand.hasContent, true, '带内容库目录的候选应被标记');
+
+    // 用户确认：纳入列表，但不写 .lantern（文件夹保持原样）
+    const adopt = await postJson('/__tb_spaces/discover', { adopt: [bare] });
+    assert.equal(adopt.status, 200);
+    const adopted = adopt.data.added as Array<{ name: string; external?: boolean }>;
+    assert.ok(adopted.some((s) => s.name === '只拷了内容' && s.external === true));
+    assert.equal(fs.existsSync(path.join(bare, '.lantern')), false, '不得写入任何空间元数据');
+    assert.equal(fs.readFileSync(path.join(bare, '用例管理', 'a.md'), 'utf8'), '# a');
+
+    const listed = await getJson('/__tb_spaces');
+    const names = (listed.spaces as Array<Record<string, unknown>>).map((s) => s.name);
+    assert.ok(names.includes('只拷了内容'));
+
+    // 再扫一次：外部空间不会被补写 space.json
+    const again = await postJson('/__tb_spaces/discover', {});
+    const backfilled = again.data.backfilled as string[];
+    assert.equal(backfilled.includes('只拷了内容'), false, '外部纳入的空间不补写清单');
+    assert.equal(fs.existsSync(path.join(bare, '.lantern')), false);
   });
 });
 

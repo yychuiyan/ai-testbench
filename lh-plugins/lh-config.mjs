@@ -20,8 +20,13 @@ import {
 import { querySessionIndex, syncSessionQueryIndex } from './session-query-sqlite.mjs';
 import { getDataRoot, getPublicSpaceRoot } from '../builtin/session/space-context.mjs';
 import { spaceConfigFile, spaceLocalFile } from '../builtin/session/space-layout.mjs';
-import { autoEnableDetectedPlugins } from '../builtin/session/lh-nav-groups.mjs';
+import {
+  autoEnableDetectedPlugins,
+  markPluginsDisabled,
+  markPluginsEnabled,
+} from '../builtin/session/lh-nav-groups.mjs';
 import { getGlobalModelsPath } from '../cli/user-config.mjs';
+import { ensureContentDirs } from '../cli/data-root.mjs';
 import { listStorageDomains } from './storage-domain.mjs';
 
 const PREFIX = '/__tb_config';
@@ -316,6 +321,19 @@ export function lhConfigPlugin() {
             const defaults = readJson(defaultsPath(root), {});
             const incoming = body.config ?? body;
             const merged = sanitizeForLocalWrite(mergeWithDefaults(defaults, incoming));
+            // 手动关掉 / 打开的插件记进识别账本：自动识别不再把它打开
+            const beforePlugins = ensureLocalConfig(root).plugins ?? {};
+            const afterPlugins = merged.plugins ?? {};
+            const turnedOff = Object.keys(afterPlugins).filter(
+              (id) => beforePlugins[id] === true && afterPlugins[id] === false,
+            );
+            const turnedOn = Object.keys(afterPlugins).filter(
+              (id) => afterPlugins[id] === true && beforePlugins[id] !== true,
+            );
+            if (turnedOff.length) markPluginsDisabled(root, turnedOff);
+            if (turnedOn.length) markPluginsEnabled(root, turnedOn);
+            // 打开内容库插件时才铺对应目录（新装空间默认是干净目录）
+            if (turnedOn.length) ensureContentDirs(root, turnedOn);
             if (incoming?.model) writeGlobalModel(incoming.model);
             writeJson(localConfigPath(root), stripModel(merged));
             const config = { ...merged, model: resolveGlobalModel(root) };
