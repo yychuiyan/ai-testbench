@@ -1,5 +1,17 @@
 # 版本日志
 
+## [0.1.2] - 2026-10-18
+
+### 变更
+
+- 升级命令由 `lantern install [版本]` 改为 `lantern update` / `lantern update <版本>`，帮助与文档同步；`lantern install` 保留为兼容别名
+- ACP `initialize` 的版本号改为读 `package.json`，不再随发版手改
+
+### 修复
+
+- 重新 `lantern init` 换了数据目录后，空间列表与「当前空间」仍指向上一个数据目录里的空间：注册表改为按池根分区（每条空间记 `root`，激活项记 `activeByRoot`），列表只看当前数据目录；旧版全局 `activeId` 与无 `root` 的条目在读取时按路径推断归属，向后兼容
+- `lantern web` / `lantern status` 把生效的空间目录标成「当前空间」，不再和数据目录混为一谈
+
 ## [0.1.1] - 2026-10-18
 
 ### 变更
@@ -151,5 +163,6 @@ Lantern Harness 首个版本：AI 工作台。一份进程里隔离多套项目�
 - 开发服忽略打开内容库目录与空间元数据目录导致的整页热更新
 - 文档与 CLI 统一 pnpm 优先：安装 / 卸载 / 版本列表优先调用 pnpm（未安装则回退 npm）；README、安装手册、操作手册与贡献约定的开发命令改为 pnpm
 
+[0.1.2]: https://www.npmjs.com/package/lantern-harness/v/0.1.2
 [0.1.1]: https://www.npmjs.com/package/lantern-harness/v/0.1.1
 [0.1.0]: https://www.npmjs.com/package/lantern-harness/v/0.1.0
