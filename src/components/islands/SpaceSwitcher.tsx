@@ -4,7 +4,8 @@
  * - 显示当前空间名，点击展开列表即可热切换（切换成功后整页重载，
  *   因为各页面在挂载时读到的数据仍来自旧空间）。
  * - 底部入口打开数据空间管理面板（增删改 / 复制 / 导入导出）。
- * - 静态部署（无本地服务）时不渲染，避免出现点了没反应的按钮。
+ * - 静态部署（无本地服务）时渲染一个不可点击的「工作区不可用」占位，
+ *   避免侧栏顶部留一块空白，也让「为什么点不了」有明确交代。
  *
  * 首帧用 sessionStorage 缓存直接渲染：岛屿是 client:only，服务端不输出，
  * 没有缓存时刷新会先空一块再「弹」出来。缓存命中则首帧就是正确内容，
@@ -58,6 +59,8 @@ function markNoLocalService(on: boolean): void {
 export default function SpaceSwitcher() {
   const cached = readCache();
   const [available, setAvailable] = useState(cached !== null);
+  /** 探测是否已有结论：未结论前不渲染（保留骨架），避免首帧闪「工作区不可用」 */
+  const [probed, setProbed] = useState(cached !== null);
   const [list, setList] = useState<SpaceList | null>(cached);
   const [managerOpen, setManagerOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -68,8 +71,9 @@ export default function SpaceSwitcher() {
     void (async () => {
       const ok = await spacesAvailable();
       if (!alive) return;
+      setProbed(true);
       if (!ok) {
-        // 纯静态部署：不渲染切换器，骨架也一并撤掉
+        // 纯静态部署：切换器退化为「工作区不可用」占位，骨架也一并撤掉
         setAvailable(false);
         markNoLocalService(true);
         return;
@@ -109,8 +113,25 @@ export default function SpaceSwitcher() {
     window.location.reload();
   }
 
-  // 静态部署下没有本地服务，直接不渲染
-  if (!available) return null;
+  // 探测中：留静态骨架占位，避免先闪一下「工作区不可用」
+  if (!probed) return null;
+
+  // 静态部署（无本地服务）：不可切换，只说明当前工作区不可用
+  if (!available) {
+    return (
+      <div className="tw-nav-space">
+        <div className="tw-nav-space-btn tw-nav-space-btn--off">
+          <span className="tw-nav-space-ico" aria-hidden="true">
+            <SpaceGlyph />
+          </span>
+          <span className="tw-nav-space-text">
+            <span className="tw-nav-space-cap">{t('space.offlineCap')}</span>
+            <span className="tw-nav-space-name">{t('space.offline')}</span>
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   const active = list?.spaces.find((s) => s.isActive);
   const others = (list?.spaces ?? []).filter((s) => !s.isActive);
@@ -121,20 +142,7 @@ export default function SpaceSwitcher() {
         <Menu as="div" className="tw-nav-space-menu">
           <MenuButton className="tw-nav-space-btn" data-hint={t('space.label')}>
             <span className="tw-nav-space-ico" aria-hidden="true">
-              <svg
-                viewBox="0 0 24 24"
-                width="15"
-                height="15"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3 7.5 12 3l9 4.5-9 4.5-9-4.5Z" />
-                <path d="m3 12.5 9 4.5 9-4.5" />
-                <path d="m3 17 9 4.5 9-4.5" />
-              </svg>
+              <SpaceGlyph />
             </span>
             <span className="tw-nav-space-text">
               <span className="tw-nav-space-cap">{t('space.current')}</span>
@@ -258,5 +266,25 @@ export default function SpaceSwitcher() {
         }}
       />
     </>
+  );
+}
+
+/** 空间图标（切换器与不可用占位共用） */
+function SpaceGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 7.5 12 3l9 4.5-9 4.5-9-4.5Z" />
+      <path d="m3 12.5 9 4.5 9-4.5" />
+      <path d="m3 17 9 4.5 9-4.5" />
+    </svg>
   );
 }

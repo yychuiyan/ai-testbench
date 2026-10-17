@@ -1745,6 +1745,24 @@ html[data-nav-collapsed='1'] .tw-nav-provider-chip {
   border-color: color-mix(in srgb, var(--tw-accent) 35%, var(--tw-border));
 }
 
+/* 纯静态部署：不可点击的「工作区不可用」占位，不给 hover 反馈 */
+.tw-nav-space-btn--off,
+.tw-nav-space-btn--off:hover {
+  cursor: default;
+  border-style: dashed;
+  background: transparent;
+  border-color: var(--tw-border);
+}
+
+.tw-nav-space-btn--off .tw-nav-space-ico {
+  color: var(--tw-label-tertiary);
+}
+
+.tw-nav-space-btn--off .tw-nav-space-name {
+  font-weight: 500;
+  color: var(--tw-label-secondary);
+}
+
 .tw-nav-space-ico {
   flex: none;
   display: inline-flex;

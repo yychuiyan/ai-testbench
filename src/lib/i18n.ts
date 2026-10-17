@@ -148,6 +148,8 @@ const ZH = {
   'space.othersEmpty': '还没有其他空间。可点下方「管理空间」新建或导入。',
   'space.busyRuns': '仍有会话在运行，请先停止后再切换空间。',
   'space.publicLocked': '公共空间不支持重命名或删除。',
+  'space.offline': '工作区不可用',
+  'space.offlineCap': '未连接本地服务',
   'settings.general': '通用设置',
   'settings.model': '模型',
   'settings.close': '关闭',
@@ -369,6 +371,8 @@ const EN: Record<MsgKey, string> = {
   'space.othersEmpty': 'No other spaces yet. Open Manage spaces below to create or import one.',
   'space.busyRuns': 'A session is still running. Stop it before switching spaces.',
   'space.publicLocked': 'The built-in public space cannot be renamed or deleted.',
+  'space.offline': 'Workspace unavailable',
+  'space.offlineCap': 'Local service offline',
 
   'settings.general': 'General',
   'settings.model': 'Models',
