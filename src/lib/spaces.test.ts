@@ -184,6 +184,33 @@ describe('listSpaces / resolveSpace', () => {
     assert.equal(listSpaces(base).spaces.find((s) => s.isActive)?.name, '激活项');
   });
 
+  it('换了数据目录后不会列出上一个数据目录里的空间', () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-spaces-other-'));
+    try {
+      prepareSpacesRoot(other);
+      const space = okSpace(
+        createSpace({ name: '旧池空间', managedParent: managed, baseRoot: base }),
+      );
+      setActiveSpace(space.id);
+
+      // 切到另一个数据目录：只该看到它自己的公共空间，激活项回到公共空间
+      const listed = listSpaces(other);
+      assert.deepEqual(
+        listed.spaces.map((s) => s.name),
+        [PUBLIC_SPACE_NAME],
+      );
+      assert.equal(listed.activeId, PUBLIC_SPACE_ID);
+      assert.equal(getActiveSpaceId(), PUBLIC_SPACE_ID);
+
+      // 切回原目录：空间与激活项都还在
+      const back = listSpaces(base);
+      assert.ok(back.spaces.some((s) => s.id === space.id));
+      assert.equal(back.activeId, space.id);
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('整个数据目录改名后按清单身份重定位注册表路径', () => {
     const space = okSpace(createSpace({ name: '改名保留', managedParent: base, baseRoot: base }));
     setActiveSpace(space.id);
@@ -329,7 +356,7 @@ describe('removeSpace 与磁盘删除闸门', () => {
       JSON.stringify({
         managedParent: managed,
         activeId: PUBLIC_SPACE_ID,
-        spaces: [{ id: 'sp_manual', name: '外部目录', path: outside, createdAt: 1 }],
+        spaces: [{ id: 'sp_manual', name: '外部目录', path: outside, createdAt: 1, root: base }],
       }),
     );
 

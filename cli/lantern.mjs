@@ -36,6 +36,7 @@ import {
   createSpace,
   discoverSpaces,
   exportSpaceToZip,
+  forgetRegistryRoot,
   importSpaceFromZip,
   listSpaces,
   PUBLIC_SPACE_LABEL,
@@ -43,6 +44,7 @@ import {
   renameSpace,
   resolveSpace,
   setActiveSpace,
+  setRegistryRoot,
 } from './spaces.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -205,6 +207,7 @@ function requireDataRoot(dirOverride) {
   if (dirOverride) {
     const dataRoot = path.resolve(dirOverride);
     if (!fs.existsSync(dataRoot)) fs.mkdirSync(dataRoot, { recursive: true });
+    setRegistryRoot(dataRoot);
     return dataRoot;
   }
   const result = resolveConfiguredDataRoot();
@@ -212,6 +215,8 @@ function requireDataRoot(dirOverride) {
     printDataRootUnavailable(result);
     process.exit(1);
   }
+  // 注册表按池根分区：换过数据空间后，只认这个目录下的空间
+  setRegistryRoot(result.dataRoot);
   return result.dataRoot;
 }
 
@@ -239,6 +244,8 @@ async function cmdInit() {
   }
   prepareSpacesRoot(spacesRoot);
   saveUserConfig({ dataRoot: spacesRoot, host: '127.0.0.1', port: 4321 });
+  // 换数据目录后注册表要按新池根分区，别把上一个目录的空间与激活项带过来
+  setRegistryRoot(spacesRoot);
   console.log('');
   console.log('数据目录已关联：');
   console.log(`  ${spacesRoot}`);
@@ -267,7 +274,7 @@ async function runForegroundServer(dataRoot) {
   console.log('');
   console.log('Lantern Harness 已启动');
   console.log(`  地址：${url}`);
-  console.log(`  数据空间：${root}`);
+  console.log(`  当前空间：${root}`);
   console.log('  按 Ctrl+C 停止');
   console.log('');
 }
@@ -278,7 +285,7 @@ function cmdStart({ foreground = false, dir = null } = {}) {
   if (alive) {
     console.log(`服务已在运行（pid ${alive.pid}）`);
     console.log(`  地址：${alive.url}`);
-    console.log(`  数据空间：${alive.dataRoot}`);
+    console.log(`  当前空间：${alive.dataRoot}`);
     return;
   }
 
@@ -311,7 +318,7 @@ function cmdStart({ foreground = false, dir = null } = {}) {
       console.log('');
       console.log('Lantern Harness 已在后台启动');
       console.log(`  地址：${state.url}`);
-      console.log(`  数据空间：${state.dataRoot}`);
+      console.log(`  当前空间：${state.dataRoot}`);
       console.log(`  日志：${logPath}`);
       console.log('  停止：lantern stop');
       console.log('');
@@ -388,6 +395,7 @@ function cmdStatus() {
   if (run) {
     console.log(`状态：运行中（pid ${run.pid}）`);
     console.log(`地址：${run.url}`);
+    console.log(`当前空间：${run.dataRoot}`);
   } else {
     console.log('状态：未运行');
   }
@@ -526,8 +534,12 @@ function cmdInstall(version) {
 /** CLI 里的「基准根」：与网页端一致 —— 已记住的数据空间 */
 function spaceBaseRoot() {
   const result = resolveConfiguredDataRoot();
-  if (result.ok) return result.dataRoot;
+  if (result.ok) {
+    setRegistryRoot(result.dataRoot);
+    return result.dataRoot;
+  }
   // 尚未 init 时，池根退化到当前目录，保证 space 命令本身可用
+  setRegistryRoot(process.cwd());
   return process.cwd();
 }
 
@@ -823,6 +835,7 @@ async function cmdWipe() {
   if (run) cmdStop();
 
   fs.rmSync(resolved, { recursive: true, force: true });
+  forgetRegistryRoot(resolved);
   clearDataRootFromConfig();
   console.log('数据空间已删除，配置中的关联已清除。');
   console.log('如需继续使用，请使用 lantern init 初始化或选择已有数据空间。');

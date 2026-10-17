@@ -37,6 +37,7 @@ import {
   resolveSpace,
   sanitizeSpaceName,
   setActiveSpace,
+  setRegistryRoot,
   spaceSize,
 } from '../../cli/spaces.mjs';
 import { loadRunState, saveRunState } from '../../cli/user-config.mjs';
@@ -212,6 +213,8 @@ export function lhSpacesPlugin() {
     configureServer(server) {
       // 首次进入确定基准根；已切换过的空间不会被覆盖
       ensureSpaceContext(server.config.root);
+      // 注册表按池根分区：先告诉它当前是哪个数据目录，才能只认自己的空间与激活项
+      setRegistryRoot(getBaseRoot());
       // 新进程里 activeRoot 默认是公共空间：按注册表回到用户上次选的空间
       syncActiveRoot();
 

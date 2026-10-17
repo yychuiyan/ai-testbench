@@ -3,6 +3,11 @@
  *
  * 文件位置：`~/.config/lantern-harness/spaces.json`（与 CLI 的 config.json 同目录）
  *
+ * 一份文件里按「池根」分区：每个空间条目记着自己属于哪个数据目录（`root`），
+ * 激活项也按池根分别记录（`activeByRoot`）。`lantern init` 换了数据空间之后，
+ * 列表只看新池根下的空间，不会把上一个数据目录里的空间一并列出来。
+ * 旧版全局 `activeId` / 无 `root` 的条目在读取时按路径推断归属，向后兼容。
+ *
  * 「公共空间」是内建虚拟项，不入库：用户数据目录下直接是 `公共空间/`，源码仓库则在 `空间池/公共空间/`。
  * 新建空间会自动归进同一层（与公共空间同级）。界面路径隐去「空间池」。
  * 与自定义空间同构，因此可以整体拷贝 / 备份。
@@ -81,12 +86,59 @@ export function getSpacesPath() {
   return path.join(getUserConfigDir(), 'spaces.json');
 }
 
+/** 当前池根：由 CLI / 服务端在知道数据目录后告知，供无 baseRoot 参数的调用（激活项）使用 */
+let registryRoot = '';
+
+/** @param {string} [root] */
+export function setRegistryRoot(root) {
+  if (root) registryRoot = path.resolve(root);
+  return registryRoot;
+}
+
+/** 条目所属池根：优先读登记值，其次按路径推断（`<根>/空间池/<名称>` 或 `<根>/<名称>`） */
+function inferEntryRoot(p) {
+  const abs = path.resolve(String(p || ''));
+  const marker = `${path.sep}${SPACE_POOL_DIR}${path.sep}`;
+  const idx = abs.lastIndexOf(marker);
+  return idx > 0 ? abs.slice(0, idx) : '';
+}
+
+function sameRoot(a, b) {
+  if (!a || !b) return false;
+  return path.resolve(a) === path.resolve(b);
+}
+
+/** abs 是否落在 dir 内（含 dir 本身） */
+function isInsideDir(abs, dir) {
+  if (!abs || !dir) return false;
+  const rel = path.relative(path.resolve(dir), path.resolve(abs));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function rootKey(root) {
+  const abs = root || registryRoot;
+  return abs ? path.resolve(abs) : '';
+}
+
+function activeIdForRoot(reg, root) {
+  const key = rootKey(root);
+  const id = key ? reg.activeByRoot?.[key] : '';
+  return String(id || PUBLIC_SPACE_ID);
+}
+
 /**
  * 新建空间的默认父目录：与公共空间同级（用户数据目录 = 选中的文件夹；源码仓库 = 空间池）。
  * @param {string} [baseRoot] 池根；缺省用 cwd
  */
 export function defaultManagedParent(baseRoot) {
   return poolPath(baseRoot || process.cwd());
+}
+
+/** 登记条目时推导它属于哪个池根：优先用调用方给的池根，其次从父目录反推 */
+function resolveEntryRoot(baseRoot, parent) {
+  return path.resolve(
+    baseRoot || inferEntryRoot(parent) || parent || registryRoot || process.cwd(),
+  );
 }
 
 /**
@@ -120,16 +172,36 @@ function rebaseMissingSpacePath(abs, root, pool, entry) {
 
 /**
  * 按当前池布局改写注册表路径：用户目录把 `空间池/X` 抬到 `X`；源码仓库把误摊的 `X` 收回 `空间池/X`。
+ *
+ * 只改写「属于本池根」的条目。其它池根的条目原样保留 —— 除非它登记的池根已经不存在
+ * （整个数据目录被改名 / 搬移），这时按清单身份把它接到当前池根下，继续可用。
  * @param {string} [baseRoot]
  */
 export function relocateSpaceRegistryPaths(baseRoot) {
-  const root = path.resolve(baseRoot || process.cwd());
+  const root = path.resolve(baseRoot || registryRoot || process.cwd());
   const pool = poolPath(root);
   const nestedPrefix = path.join(root, SPACE_POOL_DIR);
-  const reg = loadSpacesRegistry();
+  const reg = loadSpacesRegistry(root);
   let dirty = false;
   for (const s of reg.spaces) {
     const abs = path.resolve(s.path);
+    const own = s.root ? path.resolve(s.root) : root;
+    if (!sameRoot(own, root)) {
+      // 别的数据空间：池根还在就不要动，否则换空间时会串台
+      if (isDir(own)) continue;
+      // 池根整个被改名 / 搬走：按清单身份接到当前池根
+      let next = isDir(abs) ? null : rebaseMissingSpacePath(abs, root, pool, s);
+      if (!next && s.external) {
+        const byName = path.resolve(pool, s.name);
+        if (byName !== abs && isDir(byName)) next = byName;
+      }
+      if (next) {
+        s.path = next;
+        s.root = root;
+        dirty = true;
+      }
+      continue;
+    }
     let next = null;
     if (!isDir(abs)) {
       // 旧根被改名 / 搬走：先按清单身份找回来
@@ -176,34 +248,63 @@ function newSpaceId() {
 
 function emptyRegistry() {
   // managedParent 不再落进注册表：它由池根推导，存下来只会在换机器后变成死路径
-  return { activeId: PUBLIC_SPACE_ID, spaces: [] };
+  return { activeId: PUBLIC_SPACE_ID, activeByRoot: {}, spaces: [] };
 }
 
 /**
  * 读取注册表；任何损坏都退回空注册表（宁可重置元数据，也不能让服务起不来）。
  *
  * 不再读取/推断 `managedParent`：空间位置一律由池根推导（见 `defaultManagedParent`）。
- * @returns {{ activeId: string, spaces: Array<{id:string,name:string,path:string,createdAt:number}> }}
+ * 条目缺 `root` 时按路径推断；推断不出来的（老版本的外部纳入）归到当前池根，保持旧行为。
+ * @param {string} [root] 当前池根；缺省用 `setRegistryRoot` 记下的值
+ * @returns {{ activeId: string, activeByRoot: Record<string, string>, spaces: Array<{id:string,name:string,path:string,createdAt:number,root:string}> }}
  */
-export function loadSpacesRegistry() {
+export function loadSpacesRegistry(root) {
   const fp = getSpacesPath();
   if (!fs.existsSync(fp)) return emptyRegistry();
+  const cur = rootKey(root);
   try {
     const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
     if (!raw || typeof raw !== 'object') return emptyRegistry();
     const spaces = Array.isArray(raw.spaces)
       ? raw.spaces
-          .map((it) => ({
-            id: String(it?.id || '').trim(),
-            name: String(it?.name || '').trim(),
-            path: path.resolve(String(it?.path || '')),
-            createdAt: Number(it?.createdAt) || 0,
-            // 用户手工确认纳入的文件夹：不写 space.json，保持目录原样
-            ...(it?.external === true ? { external: true } : {}),
-          }))
+          .map((it) => {
+            const abs = path.resolve(String(it?.path || ''));
+            // 归属推断：登记值 → 路径里的「空间池」段 → 当前池根内（老版本的外部纳入）
+            // 都不成立时留空：不属于任何池根，不会被任何数据目录列出来
+            const own =
+              String(it?.root || '').trim() ||
+              inferEntryRoot(abs) ||
+              (cur && isInsideDir(abs, cur) ? cur : '');
+            return {
+              id: String(it?.id || '').trim(),
+              name: String(it?.name || '').trim(),
+              path: abs,
+              createdAt: Number(it?.createdAt) || 0,
+              // 用户手工确认纳入的文件夹：不写 space.json，保持目录原样
+              ...(it?.external === true ? { external: true } : {}),
+              ...(own ? { root: path.resolve(own) } : {}),
+            };
+          })
           .filter((it) => it.id && it.name && it.path && it.path !== path.sep)
       : [];
-    return { activeId: String(raw.activeId || PUBLIC_SPACE_ID), spaces };
+    const activeByRoot = {};
+    const rawActive = raw.activeByRoot;
+    if (rawActive && typeof rawActive === 'object' && !Array.isArray(rawActive)) {
+      for (const [k, v] of Object.entries(rawActive)) {
+        const key = String(k || '').trim();
+        const id = String(v || '').trim();
+        if (!key || !id) continue;
+        activeByRoot[path.resolve(key)] = id;
+      }
+    }
+    // 旧版只有一个全局 activeId：归到它所属空间的那个池根，别让它跨数据目录生效
+    const legacyActive = String(raw.activeId || PUBLIC_SPACE_ID);
+    if (legacyActive !== PUBLIC_SPACE_ID) {
+      const owner = spaces.find((s) => s.id === legacyActive && s.root);
+      if (owner?.root && !activeByRoot[owner.root]) activeByRoot[owner.root] = legacyActive;
+    }
+    return { activeId: legacyActive, activeByRoot, spaces };
   } catch {
     return emptyRegistry();
   }
@@ -212,9 +313,17 @@ export function loadSpacesRegistry() {
 export function saveSpacesRegistry(reg) {
   const dir = getUserConfigDir();
   fs.mkdirSync(dir, { recursive: true });
+  const spaces = Array.isArray(reg.spaces) ? reg.spaces : [];
+  const activeByRoot = { ...(reg.activeByRoot || {}) };
+  for (const [k, v] of Object.entries(activeByRoot)) {
+    if (!k || !v) delete activeByRoot[k];
+  }
+  // activeId 只作旧版本兼容：写当前池根的激活项，读代码以 activeByRoot 为准
+  const cur = rootKey();
   const next = {
-    activeId: String(reg.activeId || PUBLIC_SPACE_ID),
-    spaces: Array.isArray(reg.spaces) ? reg.spaces : [],
+    activeId: String((cur && activeByRoot[cur]) || reg.activeId || PUBLIC_SPACE_ID),
+    activeByRoot,
+    spaces,
   };
   fs.writeFileSync(getSpacesPath(), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   return next;
@@ -376,8 +485,9 @@ function hasKnownContentDir(abs) {
  * @param {{ managedParent?: string, baseRoot?: string, adopt?: string[] }} [opts]
  */
 export function discoverSpaces(opts = {}) {
-  const reg = loadSpacesRegistry();
+  const reg = loadSpacesRegistry(opts.baseRoot);
   const parent = path.resolve(opts.managedParent || defaultManagedParent(opts.baseRoot));
+  const ownerRoot = resolveEntryRoot(opts.baseRoot, parent);
   const added = [];
   const backfilled = [];
   const skipped = [];
@@ -428,6 +538,7 @@ export function discoverSpaces(opts = {}) {
       name: clean.name,
       path: abs,
       createdAt: Date.now(),
+      root: ownerRoot,
       external: true,
     };
     reg.spaces.push(entry);
@@ -500,6 +611,7 @@ export function discoverSpaces(opts = {}) {
       name: clean.name,
       path: abs,
       createdAt: (read.ok ? read.manifest.createdAt : 0) || Date.now(),
+      root: ownerRoot,
     };
     reg.spaces.push(entry);
     usedIds.add(id);
@@ -524,10 +636,14 @@ export function discoverSpaces(opts = {}) {
  * @param {string} baseRoot 池根
  */
 export function listSpaces(baseRoot) {
-  relocateSpaceRegistryPaths(baseRoot);
-  const reg = loadSpacesRegistry();
+  const root = path.resolve(baseRoot);
+  setRegistryRoot(root);
+  relocateSpaceRegistryPaths(root);
+  const reg = loadSpacesRegistry(root);
+  // 只列本池根下的空间：换数据目录后不会串到上一个数据目录
+  const mine = reg.spaces.filter((s) => sameRoot(s.root, root));
   // 公共空间也是选中文件夹里的一个目录，与自定义空间同构
-  const publicRoot = path.resolve(publicSpacePath(baseRoot));
+  const publicRoot = path.resolve(publicSpacePath(root));
   const all = [
     {
       id: PUBLIC_SPACE_ID,
@@ -536,16 +652,17 @@ export function listSpaces(baseRoot) {
       createdAt: 0,
       isPublic: true,
     },
-    ...reg.spaces.map((s) => ({ ...s, isPublic: false })),
+    ...mine.map((s) => ({ ...s, isPublic: false })),
   ];
+  const activeId = activeIdForRoot(reg, root);
   return {
-    baseRoot: path.resolve(baseRoot),
-    managedParent: defaultManagedParent(baseRoot),
-    activeId: reg.activeId,
+    baseRoot: root,
+    managedParent: defaultManagedParent(root),
+    activeId,
     spaces: all.map((s) => ({
       ...s,
       exists: isDir(s.path),
-      isActive: s.id === reg.activeId,
+      isActive: s.id === activeId,
     })),
   };
 }
@@ -573,10 +690,11 @@ export function createSpace({ name, managedParent, baseRoot }) {
   const clean = sanitizeSpaceName(name);
   if (!clean.ok) return { ok: false, error: clean.error };
 
+  const parent = path.resolve(managedParent || defaultManagedParent(baseRoot));
+  setRegistryRoot(baseRoot || inferEntryRoot(parent));
   const reg = loadSpacesRegistry();
   if (nameTaken(reg, clean.name)) return { ok: false, error: `已存在同名空间「${clean.name}」` };
 
-  const parent = path.resolve(managedParent || defaultManagedParent(baseRoot));
   const dir = path.join(parent, clean.name);
 
   // 目录可能已存在（例如用户手工建过）：不能贸然复用，否则会把无关内容当成数据空间
@@ -588,7 +706,13 @@ export function createSpace({ name, managedParent, baseRoot }) {
     return { ok: false, error: `创建目录失败：${e instanceof Error ? e.message : String(e)}` };
   }
 
-  const entry = { id: newSpaceId(), name: clean.name, path: dir, createdAt: Date.now() };
+  const entry = {
+    id: newSpaceId(),
+    name: clean.name,
+    path: dir,
+    createdAt: Date.now(),
+    root: resolveEntryRoot(baseRoot, parent),
+  };
   try {
     writeSpaceManifest(dir, entry);
   } catch (e) {
@@ -667,7 +791,13 @@ export function copySpace(id, nextName, baseRoot) {
     return { ok: false, error: `复制失败：${e instanceof Error ? e.message : String(e)}` };
   }
 
-  const entry = { id: newSpaceId(), name: clean.name, path: dir, createdAt: Date.now() };
+  const entry = {
+    id: newSpaceId(),
+    name: clean.name,
+    path: dir,
+    createdAt: Date.now(),
+    root: resolveEntryRoot(baseRoot, parent),
+  };
   try {
     // 拷贝继承的是源空间的清单（含源 id），必须改写成新身份
     writeSpaceManifest(dir, entry);
@@ -691,6 +821,9 @@ export function removeSpace({ id, purge = false, baseRoot }) {
 
   const reg = loadSpacesRegistry();
   reg.spaces = reg.spaces.filter((s) => s.id !== space.id);
+  for (const [key, val] of Object.entries(reg.activeByRoot || {})) {
+    if (val === space.id) delete reg.activeByRoot[key];
+  }
   if (reg.activeId === space.id) reg.activeId = PUBLIC_SPACE_ID;
   saveSpacesRegistry(reg);
 
@@ -744,16 +877,35 @@ export function assertLooksLikeSpace(dir, managedParent) {
   return { ok: true };
 }
 
-/** 设置当前空间（持久化，重启后沿用） */
+/** 设置当前空间（按池根分别持久化，重启后沿用） */
 export function setActiveSpace(id) {
   const reg = loadSpacesRegistry();
-  reg.activeId = String(id || PUBLIC_SPACE_ID);
+  const wanted = String(id || PUBLIC_SPACE_ID);
+  const owner = reg.spaces.find((s) => s.id === wanted);
+  const key = rootKey() || owner?.root || '';
+  if (key) {
+    if (!reg.activeByRoot) reg.activeByRoot = {};
+    reg.activeByRoot[path.resolve(key)] = wanted;
+  }
+  reg.activeId = wanted;
   saveSpacesRegistry(reg);
-  return reg.activeId;
+  return wanted;
 }
 
 export function getActiveSpaceId() {
-  return loadSpacesRegistry().activeId;
+  const reg = loadSpacesRegistry();
+  const key = rootKey();
+  if (!key) return String(reg.activeId || PUBLIC_SPACE_ID);
+  return String(reg.activeByRoot?.[key] || PUBLIC_SPACE_ID);
+}
+
+/** 忘掉某个池根的全部登记（`lantern wipe` 删掉数据目录后调用，避免留下死路径） */
+export function forgetRegistryRoot(root) {
+  const key = path.resolve(root);
+  const reg = loadSpacesRegistry(key);
+  reg.spaces = reg.spaces.filter((s) => !sameRoot(s.root, key));
+  if (reg.activeByRoot) delete reg.activeByRoot[key];
+  saveSpacesRegistry(reg);
 }
 
 // ── 文件系统工具 ──────────────────────────────────────────────
@@ -925,10 +1077,11 @@ export async function importSpaceFromZip({ zipFile, name, managedParent, baseRoo
   const clean = sanitizeSpaceName(name ?? manifest?.name ?? fallbackName);
   if (!clean.ok) return { ok: false, error: clean.error };
 
+  const parent = path.resolve(managedParent || defaultManagedParent(baseRoot));
+  setRegistryRoot(baseRoot || inferEntryRoot(parent));
   const reg = loadSpacesRegistry();
   if (nameTaken(reg, clean.name)) return { ok: false, error: `已存在同名空间「${clean.name}」` };
 
-  const parent = path.resolve(managedParent || defaultManagedParent(baseRoot));
   const dir = path.join(parent, clean.name);
   if (fs.existsSync(dir)) return { ok: false, error: `目录已存在：${dir}` };
 
@@ -952,6 +1105,7 @@ export async function importSpaceFromZip({ zipFile, name, managedParent, baseRoo
     name: clean.name,
     path: dir,
     createdAt: Date.now(),
+    root: resolveEntryRoot(baseRoot, parent),
   };
   writeSpaceManifest(dir, entry);
 
